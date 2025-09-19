@@ -1,0 +1,24 @@
+# File: src/core/state.zx
+entity SelfEvolvingState:
+  parameters: Map<text, any>
+  adjustment_history: List<ParameterAdjustment>
+  
+  action propose_adjustment(parameter: text, new_value: any, reason: text):
+    let adjustment = ParameterAdjustment(
+      parameter: parameter,
+      new_value: new_value,
+      reason: reason,
+      proposed_by: context.sender,
+      timestamp: DateTime.now()
+    )
+    
+    # AI validation of proposed adjustment
+    let validation = zenith_ai.validate_adjustment(adjustment)
+    if validation.valid:
+      self.pending_adjustments.add(adjustment)
+      print "Adjustment proposed: {parameter} -> {new_value}"
+  
+  action apply_adjustment(adjustment: ParameterAdjustment):
+    self.parameters[adjustment.parameter] = adjustment.new_value
+    self.adjustment_history.add(adjustment)
+    print "Applied adjustment: {adjustment.parameter} = {adjustment.new_value}"
