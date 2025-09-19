@@ -1,1 +1,19 @@
+# File: src/core/consensus.zx
+use { zenith_ai } from "../../zenith-ai/modules/blockchain_ai.zx"
 
+entity AIEnhancedConsensus:
+  current_difficulty: integer = 3
+  block_time_target: integer = 12  # seconds
+  validators: Map<Address, integer>
+  
+  action select_validator() -> Address:
+    # Use Zenith AI to select the most optimal validator
+    let selection = zenith_ai.analyze_validators(validators)
+    return selection.address
+  
+  action adjust_difficulty(actual_block_time: integer):
+    # AI-powered difficulty adjustment
+    let analysis = zenith_ai.analyze_network_conditions()
+    if analysis.recommend_difficulty_adjustment:
+      self.current_difficulty = analysis.optimal_difficulty
+      print "AI adjusted difficulty to: {current_difficulty}"
