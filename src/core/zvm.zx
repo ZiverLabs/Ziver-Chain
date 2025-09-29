@@ -1,1 +1,142 @@
+# Ziver Virtual Machine - Executes Zexus smart contracts
 
+entity ZiverVirtualMachine:
+  contracts: Map<Address, Contract>
+  gas_limit: integer = 10_000_000
+  state: Map<text, any>
+  
+  entity Contract:
+    address: Address
+    code: text  # Zexus source code
+    compiled_code: byte[]?  # Compiled bytecode
+    storage: Map<text, any>
+    owner: Address
+    balance: integer = 0
+  
+  action deploy_contract(code: text, owner: Address, initial_balance: integer = 0) -> Address:
+    """
+    Deploys a new smart contract to the blockchain.
+    """
+    # Compile Zexus code to bytecode
+    let compiled_code = self.compile_contract(code)
+    
+    # Generate contract address
+    let contract_address = self.generate_contract_address(owner, code)
+    
+    # Create contract instance
+    let contract = Contract(
+      address: contract_address,
+      code: code,
+      compiled_code: compiled_code,
+      owner: owner,
+      balance: initial_balance
+    )
+    
+    self.contracts[contract_address] = contract
+    print "Contract deployed at: {contract_address}"
+    return contract_address
+  
+  action execute_contract(contract_address: Address, function: text, args: List<any>, caller: Address, value: integer = 0) -> any:
+    """
+    Executes a function in a smart contract.
+    """
+    if not self.contracts.has(contract_address):
+      throw ContractNotFoundError(message: "Contract not found: {contract_address}")
+    
+    let contract = self.contracts[contract_address]
+    
+    # Verify the contract has the requested function
+    if not self.has_function(contract, function):
+      throw FunctionNotFoundError(message: "Function not found: {function}")
+    
+    # Execute with gas tracking
+    let gas_used = 0
+    let start_gas = self.gas_limit
+    
+    try:
+      let result = self.execute_function(contract, function, args, caller, value, gas_used)
+      
+      # Deduct gas costs
+      let gas_cost = start_gas - gas_used
+      if gas_cost > caller.balance:
+        throw InsufficientGasError(message: "Insufficient gas: {gas_cost} > {caller.balance}")
+      
+      caller.balance -= gas_cost
+      return result
+      
+    catch error:
+      # Revert state changes on error
+      self.revert_state()
+      throw error
+  
+  action compile_contract(code: text) -> byte[]:
+    """
+    Compiles Zexus source code to ZVM bytecode.
+    This would integrate with the Zexus compiler.
+    """
+    # Placeholder for Zexus compiler integration
+    external action compile_zexus(code: text) -> byte[] from "zexus_compiler"
+    
+    return compile_zexus(code)
+  
+  action generate_contract_address(owner: Address, code: text) -> Address:
+    """
+    Generates a deterministic contract address.
+    """
+    let nonce = self.get_contract_nonce(owner)
+    let input = "{owner}{code}{nonce}"
+    let hash = crypto.hash_data(input)
+    return "CONTRACT_" + hash.slice(0, 40)
+
+# Example smart contract in Zexus
+entity ExampleTokenContract:
+  # This would be the actual contract code
+  owners: Map<Address, integer>
+  total_supply: integer
+  name: text = "ExampleToken"
+  symbol: text = "EXT"
+  
+  action constructor(initial_supply: integer):
+    """
+    Contract constructor - called on deployment.
+    """
+    self.total_supply = initial_supply
+    self.owners[context.caller] = initial_supply
+    
+    # Emit event
+    emit Transfer(from: "0x0", to: context.caller, amount: initial_supply)
+  
+  action transfer(to: Address, amount: integer) -> boolean:
+    """
+    Transfers tokens to another address.
+    """
+    let from = context.caller
+    
+    if self.owners[from] < amount:
+      return false
+    
+    if amount <= 0:
+      return false
+    
+    # Update balances
+    self.owners[from] -= amount
+    self.owners[to] = (self.owners[to] ?? 0) + amount
+    
+    # Emit event
+    emit Transfer(from: from, to: to, amount: amount)
+    
+    return true
+  
+  action balance_of(owner: Address) -> integer:
+    """
+    Returns the token balance of an address.
+    """
+    return self.owners[owner] ?? 0
+
+# Virtual machine context
+entity ExecutionContext:
+  caller: Address
+  value: integer
+  gas_remaining: integer
+  block_number: integer
+  timestamp: datetime
