@@ -1,4 +1,6 @@
 # Quantum-resistant block implementation
+# This file defines the core block structure and mining logic
+
 entity ZiverBlock:
   index: integer
   timestamp: datetime
@@ -7,22 +9,127 @@ entity ZiverBlock:
   validator: Address
   nonce: integer
   hash: text
-  ai_explanation: text  # Zenith AI-generated explanation
-  quantum_signature: text  # SPHINCS+ signature
+  quantum_signature: text
+  ai_explanation: text?
   
-  action calculate_hash() -> text:
-    let block_data = """
-      {index}{timestamp}{previous_hash}{transactions.to_json()}{validator}{nonce}
-    """
-    return crypto.sha3_512(block_data)
+  # Link to Rust/C++ implementation for heavy computation
+  external action calculate_hash() -> text from "blockchain_core"
+  external action verify_quantum_signature() -> boolean from "crypto_engine"
   
   action mine_block(difficulty: integer):
-    while not hash.starts_with("0" * difficulty):
-      self.nonce += 1
-      self.hash = self.calculate_hash()
-      # Zenith AI optimization placeholder
-      # zenith_ai.optimize_mining(self)
+    """
+    Mines a block by finding a nonce that produces a hash with the required difficulty.
+    This uses external cryptographic functions for performance.
+    """
+    let start_time = DateTime.now()
+    let attempts = 0
     
-    # Generate AI explanation for the block
-    self.ai_explanation = zenith_ai.explain_block(self)
-    self.quantum_signature = crypto.sphincs_sign(self.hash)
+    while not self.is_valid_hash(difficulty):
+      self.nonce += 1
+      attempts += 1
+      self.hash = self.calculate_hash()
+      
+      # AI optimization hook - can suggest nonce strategies
+      if attempts % 1000 == 0:
+        let suggestion = zenith_ai.optimize_mining(self, attempts, DateTime.now() - start_time)
+        if suggestion.new_strategy:
+          self.nonce = suggestion.suggested_nonce
+    
+    let mining_time = DateTime.now() - start_time
+    print "Block mined in {mining_time.seconds}s with {attempts} attempts"
+    return true
+  
+  action is_valid_hash(difficulty: integer) -> boolean:
+    """
+    Checks if the current hash meets the difficulty requirement.
+    Difficulty is the number of leading zeros required.
+    """
+    return self.hash.starts_with("0" * difficulty)
+  
+  action add_transaction(transaction: Transaction) -> boolean:
+    """
+    Adds a transaction to the block if valid and there's space.
+    """
+    if self.transactions.count() >= config.max_transactions_per_block:
+      return false
+    
+    if not transaction.verify():
+      return false
+    
+    self.transactions.add(transaction)
+    return true
+  
+  action verify_block() -> boolean:
+    """
+    Verifies the entire block including transactions and cryptographic proofs.
+    """
+    # Verify hash matches content
+    if self.hash != self.calculate_hash():
+      return false
+    
+    # Verify quantum signature
+    if not self.verify_quantum_signature():
+      return false
+    
+    # Verify all transactions
+    for each transaction in self.transactions:
+      if not transaction.verify():
+        return false
+    
+    # Verify timestamp is reasonable
+    let current_time = DateTime.now()
+    if self.timestamp > current_time + config.max_future_time:
+      return false
+    
+    return true
+
+entity Transaction:
+  from: Address
+  to: Address
+  amount: integer
+  fee: integer
+  timestamp: datetime
+  signature: text
+  data: text?  # For smart contract calls
+  explanation: text?  # AI-generated explanation
+  
+  action verify() -> boolean:
+    """
+    Verifies transaction signature and basic validity.
+    """
+    external action verify_signature() -> boolean from "crypto_engine"
+    
+    if self.amount <= 0:
+      return false
+    
+    if self.fee < config.min_transaction_fee:
+      return false
+    
+    return self.verify_signature()
+  
+  action get_explanation() -> text:
+    """
+    Generates AI explanation for the transaction purpose.
+    """
+    if self.explanation:
+      return self.explanation
+    
+    # Use Zenith AI to generate explanation
+    let context = {
+      from: self.from,
+      to: self.to, 
+      amount: self.amount,
+      timestamp: self.timestamp,
+      data: self.data
+    }
+    
+    self.explanation = zenith_ai.explain_transaction(context)
+    return self.explanation
+
+# Blockchain configuration
+entity BlockchainConfig:
+  max_transactions_per_block: integer = 1000
+  block_time_target: integer = 12  # seconds
+  min_transaction_fee: integer = 100  # base units
+  max_future_time: integer = 300  # seconds
+  difficulty_adjustment_blocks: integer = 2016
