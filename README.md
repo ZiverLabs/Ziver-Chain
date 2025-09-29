@@ -16,8 +16,6 @@ Ziver Chain is a next-generation blockchain that combines AI-enhanced consensus,
 
 ## 🏗️ Architecture
 
-```
-
 src/
 ├──core/                 # Core blockchain logic
 │├── block.zx         # Block structure and mining
