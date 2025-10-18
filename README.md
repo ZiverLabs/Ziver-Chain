@@ -5,10 +5,16 @@ Ziver Chain is a next-generation blockchain that combines AI-enhanced consensus,
 ## ✨ Features
 
 - **🤖 AI-Enhanced Consensus**: Zenith AI optimizes validator selection and network parameters
+
+- **🪞Bounce back feature**: Allows Tokens sent to wallets that are none existent, wrong, or doesn't match the strings for Zexus to bounce back to the user's wallet
+
 - **🔒 Quantum-Resistant Cryptography**: SPHINCS+ and lattice-based cryptography for future-proof security
+
 - **🔄 Self-Evolving Architecture**: Automatic parameter adjustments without hard forks
+
 - **📖 Explainable Transactions**: Every transaction includes AI-generated explanations
-- **⚡ High Performance**: Built on TON with multi-chain compatibility
+
+- **⚡ High Performance**: Built on Ziver-Chain with multi-chain compatibility for all different types of chains.
 
 ## 🏗️ Architecture
 
