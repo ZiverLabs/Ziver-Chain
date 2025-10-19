@@ -1,1 +1,38 @@
+# Ziver Chain Main Entry Point
+use { createBlockchain, addBlock } from "./core/blockchain.zx"
+use { Crypto } from "./core/crypto.zx" 
+use { P2PNetwork } from "./network/p2p.zx"
 
+action main():
+    print "🚀 Starting Ziver Chain Node..."
+    print "✨ Quantum-Resistant Blockchain Initializing..."
+    
+    # Initialize components
+    let crypto = Crypto()
+    let network = P2PNetwork(node_id: "main_node_001")
+    
+    # Start network
+    network.start_node(8545)
+    
+    # Create blockchain
+    let blockchain = createBlockchain()
+    print "📦 Genesis block created"
+    
+    # Add some test blocks
+    blockchain = addBlock(blockchain, "First transaction batch")
+    blockchain = addBlock(blockchain, "Second transaction batch") 
+    
+    print "🔗 Blockchain height: " + string(len(blockchain))
+    print "🏁 Ziver Chain Node Ready!"
+    
+    # Display final state
+    print ""
+    print "=== NODE STATUS ==="
+    print "Blocks: " + string(len(blockchain))
+    print "Peers: " + string(len(network.peers))
+    print "Cryptography: Quantum-Resistant (SPHINCS+)"
+    print "Consensus: PoS + AI (Placeholder)")
+    print "==================="
+
+# Run the node
+main()
