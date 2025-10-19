@@ -1,37 +1,49 @@
-# Zexus Blockchain: Block Structure
+# Ziver Chain: Block Structure with Real Cryptography
+use { Crypto } from "./crypto.zx"
 
 entity Block:
     index: integer
-    timestamp: integer
+    timestamp: integer  
     data: text
     previous_hash: text
     hash: text
     nonce: integer
+    signature: text?  # For validator signatures
 
 action createBlock(index: integer, data: text, previous_hash: text) -> Block:
-    let timestamp = 1234567890  # We'll replace with real time later
+    let crypto = Crypto()
+    let timestamp = 1234567890  # Will replace with real time
     let nonce = 0
-    let hash = "0"  # We'll implement real hashing soon
+    
+    # Calculate real hash
+    let content = string(index) + string(timestamp) + data + previous_hash + string(nonce)
+    let hash = crypto.hash_data(content)
     
     return Block(index, timestamp, data, previous_hash, hash, nonce)
 
-action calculateHash(block: Block) -> text:
-    # Simple hash simulation for now
-    # We'll integrate real cryptography later
-    let content = string(block.index) + string(block.timestamp) + block.data + block.previous_hash + string(block.nonce)
-    return "hash_" + content
+action mineBlock(block: Block, difficulty: integer) -> Block:
+    """
+    Simple Proof-of-Work mining simulation
+    """
+    let crypto = Crypto()
+    let target = "0" * difficulty
+    
+    while true:
+        let content = string(block.index) + string(block.timestamp) + block.data + block.previous_hash + string(block.nonce)
+        let hash = crypto.hash_data(content)
+        
+        if hash.startsWith(target):
+            block.hash = hash
+            return block
+        
+        block.nonce = block.nonce + 1
 
-action isValidBlock(block: Block, previous_block: Block) -> boolean:
-    if block.previous_hash != previous_block.hash:
-        return false
-    if block.index != previous_block.index + 1:
-        return false
-    return true
+# Test with real hashing
+print "⛏️ Testing Block Mining..."
+let genesis = createBlock(0, "Genesis Block", "0")
+let mined_block = mineBlock(genesis, 2)  # Difficulty 2
 
-# Test our block creation
-let genesisBlock = createBlock(0, "Genesis Block", "0")
-print "Genesis Block Created:"
-print "Index: " + string(genesisBlock.index)
-print "Data: " + genesisBlock.data
-print "Hash: " + genesisBlock.hash
-EOF
+print "Genesis Block Mined:"
+print "  Hash: " + mined_block.hash
+print "  Nonce: " + string(mined_block.nonce)
+print "  Valid: " + string(mined_block.hash.startsWith("00"))
