@@ -1,0 +1,30 @@
+# Ziver Chain P2P Network Layer
+entity P2PNetwork:
+    peers: List<text>  # List of peer addresses
+    node_id: text
+    
+    action start_node(port: integer):
+        print "🔄 Starting P2P node on port " + string(port)
+        print "Node ID: " + self.node_id
+        # Placeholder for actual network implementation
+        print "📡 Listening for peers..."
+    
+    action connect_to_peer(address: text):
+        print "🔗 Connecting to peer: " + address
+        self.peers = push(self.peers, address)
+        print "✅ Connected to " + string(len(self.peers)) + " peers"
+    
+    action broadcast_block(block: Block):
+        print "📢 Broadcasting block " + string(block.index) + " to " + string(len(self.peers)) + " peers"
+        for each peer in self.peers:
+            print "  → Sending to: " + peer
+
+# Test network
+let network = P2PNetwork(node_id: "node_001")
+network.start_node(8545)
+network.connect_to_peer("192.168.1.100:8545")
+network.connect_to_peer("192.168.1.101:8545")
+
+# Simulate block broadcast
+let test_block = createBlock(1, "Test Block", "0")
+network.broadcast_block(test_block)
