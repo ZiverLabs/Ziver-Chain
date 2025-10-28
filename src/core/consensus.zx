@@ -1,127 +1,115 @@
-# AI-enhanced Proof of Stake consensus mechanism
-# Combines traditional PoS with Zenith AI optimization
+# src/core/consensus.zx
+# Simple Proof of Stake Consensus (AI placeholder ready)
 
-entity AIPoSConsensus:
-  validators: Map<Address, ValidatorInfo>
-  current_difficulty: integer = 1
-  total_stake: integer = 0
-  last_block_time: datetime?
-  
-  entity ValidatorInfo:
-    address: Address
-    stake: integer
-    performance_score: float = 1.0
-    last_validated: datetime?
-    uptime: float = 1.0
-    ai_trust_score: float = 1.0
-  
-  action select_validator() -> Address:
-    """
-    Selects the next validator using AI-enhanced weighted random selection.
-    Considers stake, performance, and AI trust scores.
-    """
-    if self.validators.is_empty():
-      throw NoValidatorsError(message: "No validators available")
+entity PoSConsensus:
+    validators: Map<Address, Validator>
+    total_stake: integer = 0
+    block_reward: integer = 100
+    difficulty: integer = 1
     
-    # Calculate total weight (stake × performance × AI trust)
-    let total_weight = 0
-    let weights = Map<Address, integer>()
+    entity Validator:
+        address: Address
+        stake: integer
+        performance: float = 1.0
+        last_active: integer?
+        # AI placeholder - will be enhanced later
+        ai_trust_score: float = 1.0
     
-    for each validator in self.validators:
-      let weight = integer(validator.stake * validator.performance_score * validator.ai_trust_score)
-      weights[validator.address] = weight
-      total_weight += weight
+    action register_validator(address: Address, stake: integer):
+        """
+        Register a new validator with stake
+        """
+        if self.validators.has(address):
+            print "Validator already registered"
+            return
+        
+        let validator = Validator(
+            address: address,
+            stake: stake,
+            last_active: DateTime.now().timestamp()
+        )
+        
+        self.validators[address] = validator
+        self.total_stake += stake
+        print "Validator registered: " + address + " with stake: " + string(stake)
     
-    # Weighted random selection
-    let random_value = Math.random_int(0, total_weight - 1)
-    let current_sum = 0
+    action select_validator() -> Address:
+        """
+        Select next validator based on stake weight
+        """
+        if self.validators.is_empty():
+            throw "No validators available"
+        
+        # Simple weighted random selection based on stake
+        let random_value = Math.random_int(0, self.total_stake - 1)
+        let current_sum = 0
+        
+        for each validator in self.validators.values():
+            current_sum += validator.stake
+            if random_value < current_sum:
+                # Update last active time
+                validator.last_active = DateTime.now().timestamp()
+                return validator.address
+        
+        # Fallback to first validator
+        return self.validators.keys()[0]
     
-    for each validator in self.validators:
-      current_sum += weights[validator.address]
-      if random_value < current_sum:
-        return validator.address
+    action validate_transaction(tx: Transaction) -> boolean:
+        """
+        Validate a transaction
+        """
+        let crypto = Crypto()
+        
+        # Basic validation
+        if tx.value < 0:
+            return false
+        
+        if tx.from == tx.to:
+            return false
+        
+        if tx.gas_limit < tx.gas_used:
+            return false
+        
+        # Verify signature
+        let tx_content = tx.from + tx.to + string(tx.value) + (tx.data ?? "") + string(tx.nonce)
+        let signature_valid = crypto.verify_signature(tx_content, tx.signature, tx.from)
+        
+        return signature_valid
     
-    # Fallback to highest stake
-    return self.get_highest_stake_validator()
-  
-  action get_highest_stake_validator() -> Address:
-    """
-    Returns the validator with the highest effective stake.
-    """
-    let highest_stake = 0
-    let selected_validator: Address?
+    action process_block_reward(validator: Address, block: Block) -> List<Transaction>:
+        """
+        Process block rewards for validator
+        """
+        let reward_tx = Transaction(
+            hash: crypto.hash_data("reward_" + string(block.index) + validator),
+            from: "0x0000000000000000000000000000000000000000",  # System address
+            to: validator,
+            value: self.block_reward,
+            data: "block_reward",
+            gas_limit: 0,
+            gas_used: 0,
+            nonce: 0,
+            signature: "system_reward",
+            status: "confirmed"
+        )
+        
+        return [reward_tx]
     
-    for each validator in self.validators:
-      let effective_stake = validator.stake * validator.performance_score
-      if effective_stake > highest_stake:
-        highest_stake = effective_stake
-        selected_validator = validator.address
-    
-    return selected_validator ?? throw NoValidatorsError(message: "No validators found")
-  
-  action adjust_difficulty(actual_block_time: integer):
-    """
-    Adjusts mining difficulty based on actual block time vs target.
-    Uses AI to smooth adjustments and prevent oscillations.
-    """
-    let target_time = config.block_time_target
-    let time_ratio = float(actual_block_time) / float(target_time)
-    
-    # AI analysis of network conditions
-    let network_analysis = zenith_ai.analyze_network_conditions({
-      current_difficulty: self.current_difficulty,
-      actual_block_time: actual_block_time,
-      target_block_time: target_time,
-      time_ratio: time_ratio,
-      total_stake: self.total_stake,
-      validator_count: self.validators.count()
-    })
-    
-    if network_analysis.recommend_adjustment:
-      # Use AI-recommended adjustment for smoother transitions
-      self.current_difficulty = network_analysis.suggested_difficulty
-    else:
-      # Traditional adjustment as fallback
-      if time_ratio < 0.9:  # Blocks too fast
-        self.current_difficulty += 1
-      elif time_ratio > 1.1:  # Blocks too slow
-        self.current_difficulty = Math.max(1, self.current_difficulty - 1)
-    
-    print "Difficulty adjusted to: {self.current_difficulty}"
-  
-  action update_validator_performance(validator: Address, block_result: BlockResult):
-    """
-    Updates validator performance based on block validation results.
-    """
-    if not self.validators.has(validator):
-      return
-    
-    let validator_info = self.validators[validator]
-    
-    # Update basic metrics
-    validator_info.last_validated = DateTime.now()
-    
-    # Calculate performance score (0.0 to 1.0)
-    if block_result.success:
-      validator_info.performance_score = Math.min(1.0, validator_info.performance_score + 0.01)
-      
-      # AI analysis of validation quality
-      let ai_analysis = zenith_ai.analyze_validation_quality(block_result)
-      validator_info.ai_trust_score = ai_analysis.trust_score
-    else:
-      validator_info.performance_score = Math.max(0.1, validator_info.performance_score - 0.1)
-      validator_info.ai_trust_score = Math.max(0.1, validator_info.ai_trust_score - 0.2)
-    
-    # Update uptime (simplified)
-    let time_since_last = DateTime.now() - (validator_info.last_validated ?? DateTime.now())
-    if time_since_last.hours < 24:  # Active in last 24 hours
-      validator_info.uptime = 0.95 * validator_info.uptime + 0.05 * 1.0
-    else:
-      validator_info.uptime = 0.95 * validator_info.uptime + 0.05 * 0.0
+    # AI placeholder - will be enhanced with Zenith AI
+    action ai_analyze_validator_performance(validator: Address) -> float:
+        """
+        Placeholder for AI-driven validator performance analysis
+        Returns trust score between 0.0 and 1.0
+        """
+        # For now, return basic performance
+        if self.validators.has(validator):
+            return self.validators[validator].performance
+        return 0.0
 
-entity BlockResult:
-  success: boolean
-  block_hash: text
-  validation_time: integer  # milliseconds
-  errors: List<text>
-  ai_analysis: text?
+# Test consensus
+print "⚖️ Testing Consensus Module..."
+let consensus = PoSConsensus()
+let test_validator = "ZIV_test_validator_123"
+consensus.register_validator(test_validator, 1000)
+let selected = consensus.select_validator()
+print "Selected validator: " + selected
