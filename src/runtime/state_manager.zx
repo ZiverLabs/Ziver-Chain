@@ -1,0 +1,176 @@
+# src/runtime/state_manager.zx
+# Advanced State Management for Blockchain State
+
+entity StateManager:
+    current_state: ChainState
+    state_history: Map<integer, ChainState>  # block_number -> state
+    state_transitions: List<StateTransition>
+    
+    action constructor():
+        self.current_state = ChainState()
+        print "🔄 State Manager initialized"
+
+    action apply_block(block: Block) -> boolean:
+        """
+        Apply block to current state
+        """
+        print "📝 Applying block #" + string(block.index) + " to state"
+        
+        # Save current state for potential rollback
+        self.state_history[block.index - 1] = self.current_state.copy()
+        
+        # Process transactions in block
+        for each tx in block.transactions:
+            if not self.apply_transaction(tx):
+                print "❌ Transaction failed, rolling back block"
+                self.rollback_to_block(block.index - 1)
+                return false
+        
+        # Update block-related state
+        self.current_state.block_number = block.index
+        self.current_state.block_hash = block.hash
+        self.current_state.total_difficulty += block.difficulty
+        
+        print "✅ Block #" + string(block.index) + " applied successfully"
+        return true
+
+    action apply_transaction(tx: Transaction) -> boolean:
+        """
+        Apply transaction to state
+        """
+        let transition = StateTransition(
+            transaction_hash: tx.hash,
+            from: tx.from,
+            to: tx.to,
+            value: tx.value,
+            data: tx.data
+        )
+        
+        # Update balances
+        let from_balance = self.current_state.balances[tx.from] ?? 0
+        let to_balance = self.current_state.balances[tx.to] ?? 0
+        
+        if from_balance < tx.value:
+            print "❌ Insufficient balance for transaction"
+            return false
+        
+        self.current_state.balances[tx.from] = from_balance - tx.value
+        self.current_state.balances[tx.to] = to_balance + tx.value
+        
+        # Update nonce
+        self.current_state.nonces[tx.from] = tx.nonce
+        
+        # Record state transition
+        self.state_transitions.add(transition)
+        
+        return true
+
+    action rollback_to_block(block_number: integer):
+        """
+        Rollback state to specific block
+        """
+        if self.state_history.has(block_number):
+            self.current_state = self.state_history[block_number]
+            print "↩️ Rolled back to block #" + string(block_number)
+        else:
+            print "❌ Cannot rollback to block #" + string(block_number)
+
+    action get_state_root() -> text:
+        """
+        Calculate state root hash
+        """
+        let crypto = Crypto()
+        let state_data = string(self.current_state.block_number) + 
+                        self.current_state.block_hash + 
+                        string(self.current_state.total_difficulty)
+        
+        return crypto.hash_data(state_data)
+
+    action get_account_state(address: Address) -> AccountState:
+        """
+        Get comprehensive account state
+        """
+        return AccountState(
+            address: address,
+            balance: self.current_state.balances[address] ?? 0,
+            nonce: self.current_state.nonces[address] ?? 0,
+            storage_root: "0x",  # Would calculate from storage
+            code_hash: "0x"     # Would calculate from code
+        )
+
+    action get_contract_storage(contract_address: Address, key: text) -> any:
+        """
+        Get contract storage value
+        """
+        let storage_key = contract_address + "_" + key
+        return self.current_state.contract_storage[storage_key]
+
+    action set_contract_storage(contract_address: Address, key: text, value: any):
+        """
+        Set contract storage value
+        """
+        let storage_key = contract_address + "_" + key
+        self.current_state.contract_storage[storage_key] = value
+
+entity ChainState:
+    block_number: integer = 0
+    block_hash: text = "0x0"
+    total_difficulty: integer = 0
+    balances: Map<Address, integer> = {}
+    nonces: Map<Address, integer> = {}
+    contract_storage: Map<text, any> = {}
+    contract_code: Map<Address, text> = {}
+    
+    action copy() -> ChainState:
+        """
+        Create a deep copy of the state
+        """
+        return ChainState(
+            block_number: self.block_number,
+            block_hash: self.block_hash,
+            total_difficulty: self.total_difficulty,
+            balances: self.balances.copy(),
+            nonces: self.nonces.copy(),
+            contract_storage: self.contract_storage.copy(),
+            contract_code: self.contract_code.copy()
+        )
+
+entity StateTransition:
+    transaction_hash: text
+    from: Address
+    to: Address
+    value: integer
+    data: text?
+    timestamp: integer = DateTime.now().timestamp()
+
+entity AccountState:
+    address: Address
+    balance: integer
+    nonce: integer
+    storage_root: text
+    code_hash: text
+
+# Test state management
+print "🗄️ Testing State Manager..."
+let state_manager = StateManager()
+
+let test_tx = Transaction(
+    hash: "test_tx_hash",
+    from: "ZIV_sender",
+    to: "ZIV_receiver", 
+    value: 100,
+    data: null,
+    gas_limit: 21000,
+    gas_used: 21000,
+    nonce: 1,
+    signature: "test_sig",
+    status: "pending"
+)
+
+# Set initial balance
+state_manager.current_state.balances["ZIV_sender"] = 1000
+
+print "Initial balance sender: " + string(state_manager.get_account_state("ZIV_sender").balance)
+state_manager.apply_transaction(test_tx)
+print "After tx balance sender: " + string(state_manager.get_account_state("ZIV_sender").balance)
+print "After tx balance receiver: " + string(state_manager.get_account_state("ZIV_receiver").balance)
