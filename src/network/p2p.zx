@@ -1,84 +1,93 @@
-# src/network/p2p.zx
-# Basic P2P Networking Layer
-
-entity Peer:
-    address: text
-    port: integer
-    version: text
-    last_seen: integer
-
+# src/network/p2p.zx (UPDATED - Integrated with your code)
 entity P2PNetwork:
-    peers: List<Peer>
+    peers: List<text>  # List of peer addresses
     node_id: text
+    port: integer?
     is_listening: boolean = false
-    
-    action start_network(port: integer):
+
+    action start_node(port: integer):
         """
-        Start the P2P network
+        Start the P2P node (your existing code)
         """
+        self.port = port
         self.is_listening = true
-        print "🔄 P2P Network started on port: " + string(port)
         
-        # Start listening for connections
-        self.start_listening(port)
-    
-    action connect_to_peer(peer_address: text, peer_port: integer):
-        """
-        Connect to a new peer
-        """
-        let new_peer = Peer(
-            address: peer_address,
-            port: peer_port,
-            version: "1.0",
-            last_seen: DateTime.now().timestamp()
-        )
+        print "🔄 Starting P2P node on port " + string(port)
+        print "Node ID: " + self.node_id
+        print "📡 Listening for peers..."
         
-        self.peers.add(new_peer)
-        print "🔗 Connected to peer: " + peer_address + ":" + string(peer_port)
-    
+        # Start background listener
+        self.start_message_processor()
+
+    action connect_to_peer(address: text):
+        """
+        Connect to a peer (your existing code)
+        """
+        print "🔗 Connecting to peer: " + address
+        self.peers = push(self.peers, address)
+        print "✅ Connected to " + string(self.peers.count()) + " peers"
+
     action broadcast_block(block: Block):
         """
-        Broadcast new block to all peers
+        Broadcast block to all peers (your existing code)
         """
         print "📢 Broadcasting block " + string(block.index) + " to " + string(self.peers.count()) + " peers"
-        
         for each peer in self.peers:
-            self.send_to_peer(peer, "NEW_BLOCK", block)
-    
+            print "  → Sending to: " + peer
+            self.send_block_to_peer(peer, block)
+
     action broadcast_transaction(tx: Transaction):
         """
-        Broadcast new transaction to all peers
+        Broadcast transaction to all peers
         """
         print "📢 Broadcasting transaction to " + string(self.peers.count()) + " peers"
-        
         for each peer in self.peers:
-            self.send_to_peer(peer, "NEW_TRANSACTION", tx)
-    
-    action handle_message(peer: Peer, message_type: text, data: any):
+            self.send_transaction_to_peer(peer, tx)
+
+    # Enhanced methods
+    action send_block_to_peer(peer: text, block: Block):
         """
-        Handle incoming P2P messages
+        Send block to specific peer
         """
-        print "📨 Received " + message_type + " from " + peer.address
+        # Implementation would use actual network calls
+        print "  📦 Sending block #" + string(block.index) + " to " + peer
+
+    action send_transaction_to_peer(peer: text, tx: Transaction):
+        """
+        Send transaction to specific peer
+        """
+        print "  💸 Sending transaction to " + peer
+
+    action start_message_processor():
+        """
+        Background process to handle incoming messages
+        """
+        print "🔄 Starting message processor..."
+        # This would run in background and process incoming network messages
+
+    action discover_peers():
+        """
+        Discover peers on the network
+        """
+        print "🔍 Discovering peers..."
+        # Would use peer discovery protocol
         
-        if message_type == "NEW_BLOCK":
-            self.process_new_block(data)
-        elif message_type == "NEW_TRANSACTION":
-            self.process_new_transaction(data)
-        elif message_type == "PEER_LIST":
-            self.process_peer_list(data)
-    
-    # Placeholder implementations
-    action start_listening(port: integer):
-        print "👂 Listening for connections on port " + string(port)
-    
-    action send_to_peer(peer: Peer, message_type: text, data: any):
-        print "➡️ Sending " + message_type + " to " + peer.address
-    
-    action process_new_block(block: Block):
-        print "🆕 Processing new block: " + string(block.index)
-    
-    action process_new_transaction(tx: Transaction):
-        print "🆕 Processing new transaction: " + tx.hash.slice(0, 16)
-    
-    action process_peer_list(peers: List<Peer>):
-        print "👥 Processing peer list: " + string(peers.count()) + " peers"
+        # For now, connect to some bootstrap nodes
+        let bootstrap_nodes = [
+            "127.0.0.1:3031",
+            "127.0.0.1:3032", 
+            "127.0.0.1:3033"
+        ]
+        
+        for each node in bootstrap_nodes:
+            self.connect_to_peer(node)
+
+# Test the enhanced network
+print "🌐 Testing Enhanced Network..."
+let network = P2PNetwork(node_id: "node_001")
+network.start_node(8545)
+network.discover_peers()
+
+# Test broadcasting
+let test_block = createBlock(1, "Test Block", "0")
+network.broadcast_block(test_block)
