@@ -1,64 +1,102 @@
-# Ziver Chain Crypto Module - Quantum-Resistant Cryptography
-# Phase 1: Bridge to external cryptographic libraries
+# src/core/crypto.zx
+# Quantum-Resistant Cryptography Implementation
 
-# External cryptographic operations (implemented in Rust/Python)
-external action sha256_hash(data: text) -> text from "crypto_bridge"
-external action generate_sphincs_keypair() -> KeyPair from "crypto_bridge"  
-external action sphincs_sign(message: text, private_key: text) -> text from "crypto_bridge"
-external action sphincs_verify(message: text, signature: text, public_key: text) -> boolean from "crypto_bridge"
+external action sphincs_plus_keygen() -> KeyPair from "crypto_native"
+external action sphincs_plus_sign(message: text, private_key: text) -> text from "crypto_native"
+external action sphincs_plus_verify(message: text, signature: text, public_key: text) -> boolean from "crypto_native"
+external action sha256_hash(data: text) -> text from "crypto_native"
+external action keccak256_hash(data: text) -> text from "crypto_native"
 
-# Zexus-native cryptographic interface
+entity KeyPair:
+    public_key: text
+    private_key: text
+    address: text
+
 entity Crypto:
     action hash_data(data: text) -> text:
         """
-        Hashes data using SHA-256 (transitional - will upgrade to quantum-resistant)
+        Uses SHA-256 for hashing (transitional to quantum-resistant)
         """
         return sha256_hash(data)
     
-    action generate_wallet() -> Wallet:
+    action keccak_hash(data: text) -> text:
         """
-        Generates a quantum-resistant wallet
+        Keccak-256 for Ethereum compatibility
         """
-        let keypair = generate_sphincs_keypair()
+        return keccak256_hash(data)
+    
+    action generate_keypair() -> KeyPair:
+        """
+        Generates quantum-resistant keypair using SPHINCS+
+        """
+        let keypair = sphincs_plus_keygen()
+        # Generate address from public key
         let address = "ZIV_" + self.hash_data(keypair.public_key).slice(0, 40)
         
-        return Wallet(
-            address: address,
+        return KeyPair(
             public_key: keypair.public_key,
-            key_type: "SPHINCS+"
+            private_key: keypair.private_key,
+            address: address
         )
     
     action sign_message(message: text, private_key: text) -> text:
         """
-        Signs a message with quantum-resistant signature
+        Signs message with quantum-resistant signature
         """
-        return sphincs_sign(message, private_key)
+        return sphincs_plus_sign(message, private_key)
     
     action verify_signature(message: text, signature: text, public_key: text) -> boolean:
         """
-        Verifies a quantum-resistant signature
+        Verifies quantum-resistant signature
         """
-        return sphincs_verify(message, signature, public_key)
+        return sphincs_plus_verify(message, signature, public_key)
+    
+    action calculate_merkle_root(transactions: List<Transaction>) -> text:
+        """
+        Calculates Merkle root from transaction list
+        """
+        if transactions.is_empty():
+            return self.hash_data("empty")
+        
+        # Start with transaction hashes
+        let hashes = []
+        for each tx in transactions:
+            let tx_hash = self.hash_data(tx.hash + tx.from + tx.to + string(tx.value) + (tx.data ?? ""))
+            hashes.add(tx_hash)
+        
+        # Build merkle tree
+        while hashes.count() > 1:
+            let new_hashes = []
+            let i = 0
+            while i < hashes.count():
+                if i + 1 < hashes.count():
+                    let combined = hashes[i] + hashes[i + 1]
+                    new_hashes.add(self.hash_data(combined))
+                    i += 2
+                else:
+                    new_hashes.add(hashes[i])
+                    i += 1
+            hashes = new_hashes
+        
+        return hashes[0]
+    
+    action derive_address(public_key: text) -> text:
+        """
+        Derives address from public key
+        """
+        let hash = self.keccak_hash(public_key)
+        return "0x" + hash.slice(hash.count() - 40)
 
-# Simple wallet structure
-entity Wallet:
-    address: text
-    public_key: text  
-    key_type: text
-    balance: integer = 0
-
-# Test the crypto module
+# Test cryptography
+print "🔐 Testing Cryptography Module..."
 let crypto = Crypto()
-print "🔐 Testing Quantum-Resistant Cryptography..."
+let keypair = crypto.generate_keypair()
+print "Keypair generated:"
+print "  Address: " + keypair.address
+print "  Public Key: " + keypair.public_key.slice(0, 20) + "..."
 
-let wallet = crypto.generate_wallet()
-print "Wallet generated: " + wallet.address
-print "Public key: " + wallet.public_key.slice(0, 20) + "..."
-print "Key type: " + wallet.key_type
-
-# Test hashing
-let test_data = "Hello Ziver Chain!"
-let hash = crypto.hash_data(test_data)
-print "Hash of test data: " + hash.slice(0, 16) + "..."
-
-print "✅ Crypto module ready for integration!"
+# Test signing
+let test_message = "Hello Ziver Chain!"
+let signature = crypto.sign_message(test_message, keypair.private_key)
+let verified = crypto.verify_signature(test_message, signature, keypair.public_key)
+print "Signature test: " + string(verified)
