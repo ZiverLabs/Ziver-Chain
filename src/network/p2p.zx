@@ -1,0 +1,84 @@
+# src/network/p2p.zx
+# Basic P2P Networking Layer
+
+entity Peer:
+    address: text
+    port: integer
+    version: text
+    last_seen: integer
+
+entity P2PNetwork:
+    peers: List<Peer>
+    node_id: text
+    is_listening: boolean = false
+    
+    action start_network(port: integer):
+        """
+        Start the P2P network
+        """
+        self.is_listening = true
+        print "🔄 P2P Network started on port: " + string(port)
+        
+        # Start listening for connections
+        self.start_listening(port)
+    
+    action connect_to_peer(peer_address: text, peer_port: integer):
+        """
+        Connect to a new peer
+        """
+        let new_peer = Peer(
+            address: peer_address,
+            port: peer_port,
+            version: "1.0",
+            last_seen: DateTime.now().timestamp()
+        )
+        
+        self.peers.add(new_peer)
+        print "🔗 Connected to peer: " + peer_address + ":" + string(peer_port)
+    
+    action broadcast_block(block: Block):
+        """
+        Broadcast new block to all peers
+        """
+        print "📢 Broadcasting block " + string(block.index) + " to " + string(self.peers.count()) + " peers"
+        
+        for each peer in self.peers:
+            self.send_to_peer(peer, "NEW_BLOCK", block)
+    
+    action broadcast_transaction(tx: Transaction):
+        """
+        Broadcast new transaction to all peers
+        """
+        print "📢 Broadcasting transaction to " + string(self.peers.count()) + " peers"
+        
+        for each peer in self.peers:
+            self.send_to_peer(peer, "NEW_TRANSACTION", tx)
+    
+    action handle_message(peer: Peer, message_type: text, data: any):
+        """
+        Handle incoming P2P messages
+        """
+        print "📨 Received " + message_type + " from " + peer.address
+        
+        if message_type == "NEW_BLOCK":
+            self.process_new_block(data)
+        elif message_type == "NEW_TRANSACTION":
+            self.process_new_transaction(data)
+        elif message_type == "PEER_LIST":
+            self.process_peer_list(data)
+    
+    # Placeholder implementations
+    action start_listening(port: integer):
+        print "👂 Listening for connections on port " + string(port)
+    
+    action send_to_peer(peer: Peer, message_type: text, data: any):
+        print "➡️ Sending " + message_type + " to " + peer.address
+    
+    action process_new_block(block: Block):
+        print "🆕 Processing new block: " + string(block.index)
+    
+    action process_new_transaction(tx: Transaction):
+        print "🆕 Processing new transaction: " + tx.hash.slice(0, 16)
+    
+    action process_peer_list(peers: List<Peer>):
+        print "👥 Processing peer list: " + string(peers.count()) + " peers"
