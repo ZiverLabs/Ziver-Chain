@@ -1,38 +1,184 @@
-# Ziver Chain Main Entry Point
-use { createBlockchain, addBlock } from "./core/blockchain.zx"
-use { Crypto } from "./core/crypto.zx" 
+# src/main.zx
+# Main Ziver Chain Node
+
+use { Block, create_genesis_block, create_block, validate_block } from "./core/block.zx"
+use { Crypto } from "./core/crypto.zx"
+use { PoSConsensus } from "./core/consensus.zx"
 use { P2PNetwork } from "./network/p2p.zx"
+use { ZiverVirtualMachine } from "./core/zvm.zx"
 
-action main():
-    print "🚀 Starting Ziver Chain Node..."
-    print "✨ Quantum-Resistant Blockchain Initializing..."
+entity ZiverNode:
+    blockchain: List<Block>
+    pending_transactions: List<Transaction>
+    consensus: PoSConsensus
+    network: P2PNetwork
+    zvm: ZiverVirtualMachine
+    node_wallet: KeyPair
+    is_mining: boolean = false
     
-    # Initialize components
-    let crypto = Crypto()
-    let network = P2PNetwork(node_id: "main_node_001")
+    action initialize():
+        """
+        Initialize the blockchain node
+        """
+        print "🚀 Initializing Ziver Node..."
+        
+        # Generate node wallet
+        let crypto = Crypto()
+        self.node_wallet = crypto.generate_keypair()
+        
+        # Initialize components
+        self.consensus = PoSConsensus()
+        self.network = P2PNetwork()
+        self.zvm = ZiverVirtualMachine()
+        
+        # Create or load blockchain
+        if self.blockchain.is_empty():
+            let genesis = create_genesis_block()
+            self.blockchain.add(genesis)
+            print "✅ Genesis block created"
+        
+        # Register as validator
+        self.consensus.register_validator(self.node_wallet.address, 1000)
+        
+        print "✅ Node initialized with address: " + self.node_wallet.address
     
-    # Start network
-    network.start_node(8545)
+    action start(port: integer = 3030):
+        """
+        Start the blockchain node
+        """
+        print "🎯 Starting Ziver Node..."
+        
+        # Start networking
+        self.network.start_network(port)
+        
+        # Connect to bootstrap nodes (would be configurable)
+        self.network.connect_to_peer("127.0.0.1", 3031)
+        self.network.connect_to_peer("127.0.0.1", 3032)
+        
+        # Start consensus
+        self.start_consensus()
+        
+        print "✅ Ziver Node running on port " + string(port)
     
-    # Create blockchain
-    let blockchain = createBlockchain()
-    print "📦 Genesis block created"
+    action start_consensus():
+        """
+        Start the consensus process
+        """
+        self.is_mining = true
+        
+        while self.is_mining:
+            # Check if we're selected as validator
+            let selected_validator = self.consensus.select_validator()
+            
+            if selected_validator == self.node_wallet.address:
+                print "🎲 Selected as block validator!"
+                self.mine_block()
+            
+            # Wait before next round
+            wait 10 seconds
     
-    # Add some test blocks
-    blockchain = addBlock(blockchain, "First transaction batch")
-    blockchain = addBlock(blockchain, "Second transaction batch") 
+    action mine_block():
+        """
+        Mine a new block
+        """
+        if self.pending_transactions.is_empty():
+            print "⏳ No transactions to mine"
+            return
+        
+        let previous_block = self.blockchain[self.blockchain.count() - 1]
+        
+        # Validate pending transactions
+        let valid_transactions = []
+        for each tx in self.pending_transactions:
+            if self.consensus.validate_transaction(tx):
+                valid_transactions.add(tx)
+        
+        if valid_transactions.is_empty():
+            print "⏳ No valid transactions to mine"
+            return
+        
+        # Create new block
+        let new_block = create_block(
+            previous_block: previous_block,
+            transactions: valid_transactions,
+            validator: self.node_wallet.address,
+            private_key: self.node_wallet.private_key
+        )
+        
+        # Add block reward transaction
+        let reward_txs = self.consensus.process_block_reward(self.node_wallet.address, new_block)
+        new_block.transactions = reward_txs + valid_transactions
+        
+        # Validate the block
+        if validate_block(new_block, previous_block):
+            self.blockchain.add(new_block)
+            
+            # Broadcast to network
+            self.network.broadcast_block(new_block)
+            
+            # Clear mined transactions from pending
+            self.pending_transactions = []
+            
+            print "✅ New block mined: #" + string(new_block.index) + " with " + string(valid_transactions.count()) + " transactions"
+        else:
+            print "❌ Block validation failed"
     
-    print "🔗 Blockchain height: " + string(len(blockchain))
-    print "🏁 Ziver Chain Node Ready!"
+    action add_transaction(tx: Transaction):
+        """
+        Add a transaction to pending pool
+        """
+        if self.consensus.validate_transaction(tx):
+            self.pending_transactions.add(tx)
+            self.network.broadcast_transaction(tx)
+            print "✅ Transaction added to pool: " + tx.hash.slice(0, 16)
+            return true
+        else:
+            print "❌ Invalid transaction"
+            return false
     
-    # Display final state
-    print ""
-    print "=== NODE STATUS ==="
-    print "Blocks: " + string(len(blockchain))
-    print "Peers: " + string(len(network.peers))
-    print "Cryptography: Quantum-Resistant (SPHINCS+)"
-    print "Consensus: PoS + AI (Placeholder)")
-    print "==================="
+    action get_balance(address: Address) -> integer:
+        """
+        Get balance for an address (simplified)
+        """
+        # This would scan all transactions in reality
+        return 1000  # Placeholder
+    
+    action create_transaction(to: Address, value: integer, data: text? = null) -> Transaction:
+        """
+        Create and sign a transaction
+        """
+        let crypto = Crypto()
+        
+        let tx_content = self.node_wallet.address + to + string(value) + (data ?? "") + string(DateTime.now().timestamp())
+        let signature = crypto.sign_message(tx_content, self.node_wallet.private_key)
+        
+        let tx = Transaction(
+            hash: crypto.hash_data(tx_content),
+            from: self.node_wallet.address,
+            to: to,
+            value: value,
+            data: data,
+            gas_limit: 21000,
+            gas_used: 21000,
+            nonce: DateTime.now().timestamp(),
+            signature: signature,
+            status: "pending"
+        )
+        
+        return tx
 
-# Run the node
-main()
+# Start the node
+print "🏁 Starting Ziver Blockchain..."
+let node = ZiverNode()
+node.initialize()
+node.start(3030)
+
+# Example usage
+print "💡 Example: Creating transaction..."
+let test_tx = node.create_transaction("ZIV_test_recipient", 100, "test transfer")
+node.add_transaction(test_tx)
+
+print "📊 Node status:"
+print "  Block height: " + string(node.blockchain.count())
+print "  Pending transactions: " + string(node.pending_transactions.count())
+print "  Node address: " + node.node_wallet.address
