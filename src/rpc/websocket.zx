@@ -1,0 +1,137 @@
+# src/rpc/websocket.zx
+# WebSocket RPC for real-time updates
+
+entity WebSocketRPCServer:
+    port: integer
+    rpc_server: JSONRPCServer
+    connections: List<WebSocketConnection>
+    subscriptions: Map<text, List<text>>  # topic -> connection_ids
+
+    entity WebSocketConnection:
+        id: text
+        connected_at: integer
+        last_active: integer
+
+    action constructor(rpc_server: JSONRPCServer, port: integer = 8546):
+        self.rpc_server = rpc_server
+        self.port = port
+        self.subscriptions = {
+            "newHeads": [],
+            "logs": [],
+            "newPendingTransactions": []
+        }
+
+    action start():
+        """
+        Start WebSocket server
+        """
+        print "🔌 WebSocket RPC starting on ws://localhost:" + string(self.port)
+        self.start_websocket_server()
+
+    action handle_connection(connection_id: text):
+        """
+        Handle new WebSocket connection
+        """
+        let connection = WebSocketConnection(
+            id: connection_id,
+            connected_at: DateTime.now().timestamp(),
+            last_active: DateTime.now().timestamp()
+        )
+        
+        self.connections.add(connection)
+        print "🔗 WebSocket connected: " + connection_id
+
+    action handle_message(connection_id: text, message: Map<text, any>):
+        """
+        Handle WebSocket message
+        """
+        let method = message["method"] ?? ""
+        
+        if method == "eth_subscribe":
+            self.handle_subscription(connection_id, message)
+        elif method == "eth_unsubscribe":
+            self.handle_unsubscription(connection_id, message)
+        else:
+            # Handle regular RPC call
+            let response = self.rpc_server.handle_request(message)
+            self.send_to_connection(connection_id, response)
+
+    action handle_subscription(connection_id: text, message: Map<text, any>):
+        """
+        Handle subscription request
+        """
+        let subscription_type = message["params"][0] ?? ""
+        let subscription_id = "sub_" + Math.random_int(1000, 9999)
+        
+        if self.subscriptions.has(subscription_type):
+            self.subscriptions[subscription_type].add(connection_id)
+            
+            let response = {
+                "jsonrpc": "2.0",
+                "id": message["id"] ?? 1,
+                "result": subscription_id
+            }
+            
+            self.send_to_connection(connection_id, response)
+            print "📡 Subscription created: " + subscription_type + " for " + connection_id
+        else:
+            let response = {
+                "jsonrpc": "2.0",
+                "id": message["id"] ?? 1,
+                "error": {
+                    "code": -32602,
+                    "message": "Invalid subscription type"
+                }
+            }
+            self.send_to_connection(connection_id, response)
+
+    action broadcast_new_block(block: Block):
+        """
+        Broadcast new block to subscribers
+        """
+        let subscribers = self.subscriptions["newHeads"] ?? []
+        let notification = {
+            "jsonrpc": "2.0",
+            "method": "eth_subscription",
+            "params": {
+                "subscription": "newHeads",
+                "result": self.rpc_server.format_block(block, false)
+            }
+        }
+        
+        for each connection_id in subscribers:
+            self.send_to_connection(connection_id, notification)
+
+    action broadcast_new_transaction(tx: Transaction):
+        """
+        Broadcast new transaction to subscribers
+        """
+        let subscribers = self.subscriptions["newPendingTransactions"] ?? []
+        let notification = {
+            "jsonrpc": "2.0",
+            "method": "eth_subscription",
+            "params": {
+                "subscription": "newPendingTransactions",
+                "result": tx.hash
+            }
+        }
+        
+        for each connection_id in subscribers:
+            self.send_to_connection(connection_id, notification)
+
+    action send_to_connection(connection_id: text, message: Map<text, any>):
+        """
+        Send message to specific connection
+        """
+        print "📤 Sending to " + connection_id + ": " + string(message)
+
+    action start_websocket_server():
+        """
+        Start WebSocket server (placeholder)
+        """
+        print "🔄 WebSocket server running on port " + string(self.port)
+
+# Test WebSocket server
+print "🔌 Testing WebSocket RPC..."
+let ws_server = WebSocketRPCServer(rpc_server, 8546)
+ws_server.start()
