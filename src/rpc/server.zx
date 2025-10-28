@@ -1,1 +1,229 @@
+# src/rpc/server.zx
+# JSON-RPC 2.0 API Server for Ziver Chain
 
+entity JSONRPCServer:
+    port: integer
+    node: ZiverNode
+    methods: Map<text, Action>
+    is_running: boolean = false
+
+    action constructor(node: ZiverNode, port: integer = 8545):
+        self.node = node
+        self.port = port
+        self.register_methods()
+        print "🔄 JSON-RPC Server initialized on port " + string(port)
+
+    action register_methods():
+        """
+        Register all available RPC methods
+        """
+        self.methods = {
+            "web3_clientVersion": self.web3_clientVersion,
+            "net_version": self.net_version,
+            "net_listening": self.net_listening,
+            "net_peerCount": self.net_peerCount,
+            "eth_blockNumber": self.eth_blockNumber,
+            "eth_getBalance": self.eth_getBalance,
+            "eth_getBlockByNumber": self.eth_getBlockByNumber,
+            "eth_getBlockByHash": self.eth_getBlockByHash,
+            "eth_getTransactionCount": self.eth_getTransactionCount,
+            "eth_sendTransaction": self.eth_sendTransaction,
+            "eth_sendRawTransaction": self.eth_sendRawTransaction,
+            "eth_getTransactionReceipt": self.eth_getTransactionReceipt,
+            "eth_call": self.eth_call,
+            "eth_estimateGas": self.eth_estimateGas,
+            "ziver_getWalletInfo": self.ziver_getWalletInfo,
+            "ziver_createWallet": self.ziver_createWallet,
+            "ziver_bridgeAssets": self.ziver_bridgeAssets,
+            "ziver_deployToken": self.ziver_deployToken
+        }
+
+    action start():
+        """
+        Start the RPC server
+        """
+        self.is_running = true
+        print "🚀 JSON-RPC Server starting on http://localhost:" + string(self.port)
+        self.start_http_server()
+
+    action handle_request(request: Map<text, any>) -> Map<text, any>:
+        """
+        Handle incoming JSON-RPC request
+        """
+        let method = request["method"] ?? ""
+        let params = request["params"] ?? []
+        let id = request["id"] ?? 1
+
+        print "📨 RPC Request: " + method + " ID: " + string(id)
+
+        if not self.methods.has(method):
+            return self.error_response(id, -32601, "Method not found")
+
+        try:
+            let result = self.methods[method](params)
+            return self.success_response(id, result)
+        catch error:
+            return self.error_response(id, -32000, "Internal error: " + error.message)
+
+    # Core Ethereum-compatible methods
+    action web3_clientVersion(params: List<any>) -> text:
+        return "ZiverChain/v1.0.0/zexus"
+
+    action net_version(params: List<any>) -> text:
+        return "12345"  # Ziver Chain ID
+
+    action net_listening(params: List<any>) -> boolean:
+        return self.node.network.is_listening
+
+    action net_peerCount(params: List<any>) -> text:
+        let count = self.node.network.peers.count()
+        return "0x" + Math.to_hex_string(count)
+
+    action eth_blockNumber(params: List<any>) -> text:
+        let block_number = self.node.blockchain.count() - 1
+        return "0x" + Math.to_hex_string(block_number)
+
+    action eth_getBalance(params: List<any>) -> text:
+        let address = params[0] ?? ""
+        let block_tag = params[1] ?? "latest"
+        
+        let balance = self.node.get_balance(address)
+        return "0x" + Math.to_hex_string(balance)
+
+    action eth_getBlockByNumber(params: List<any>) -> Map<text, any>:
+        let block_number_hex = params[0] ?? "latest"
+        let full_tx = params[1] ?? false
+        
+        let block_number = 0
+        if block_number_hex == "latest":
+            block_number = self.node.blockchain.count() - 1
+        else:
+            block_number = Math.hex_to_int(block_number_hex)
+        
+        if block_number >= self.node.blockchain.count():
+            return null
+        
+        let block = self.node.blockchain[block_number]
+        return self.format_block(block, full_tx)
+
+    action eth_sendTransaction(params: List<any>) -> text:
+        let tx_data = params[0] ?? {}
+        
+        let tx = Transaction(
+            hash: "",
+            from: tx_data["from"] ?? "",
+            to: tx_data["to"] ?? "",
+            value: Math.hex_to_int(tx_data["value"] ?? "0x0"),
+            data: tx_data["data"] ?? "",
+            gas_limit: Math.hex_to_int(tx_data["gas"] ?? "0x5208"),
+            gas_used: 0,
+            nonce: Math.hex_to_int(tx_data["nonce"] ?? "0x0"),
+            signature: tx_data["signature"] ?? "",
+            status: "pending"
+        )
+        
+        let success = self.node.add_transaction(tx)
+        if success:
+            return tx.hash
+        else:
+            throw "Transaction failed"
+
+    # Ziver-specific methods
+    action ziver_getWalletInfo(params: List<any>) -> Map<text, any>:
+        let wallet_address = params[0] ?? ""
+        return self.node.get_wallet_info(wallet_address)
+
+    action ziver_createWallet(params: List<any>) -> text:
+        let owner_address = params[0] ?? ""
+        return self.node.create_wallet(owner_address)
+
+    action ziver_bridgeAssets(params: List<any>) -> boolean:
+        let wallet_address = params[0] ?? ""
+        let source_chain = params[1] ?? ""
+        let target_chain = params[2] ?? ""
+        let amount = params[3] ?? 0
+        let token_address = params[4] ?? null
+        
+        return self.node.bridge_assets(wallet_address, source_chain, target_chain, amount, token_address)
+
+    action ziver_deployToken(params: List<any>) -> text:
+        let name = params[0] ?? ""
+        let symbol = params[1] ?? ""
+        let supply = params[2] ?? 0
+        let owner = params[3] ?? ""
+        
+        return self.node.deploy_token(name, symbol, supply, owner)
+
+    # Helper methods
+    action format_block(block: Block, full_tx: boolean) -> Map<text, any>:
+        let transactions = []
+        if full_tx:
+            for each tx in block.transactions:
+                transactions.add(self.format_transaction(tx))
+        else:
+            for each tx in block.transactions:
+                transactions.add(tx.hash)
+        
+        return {
+            "number": "0x" + Math.to_hex_string(block.index),
+            "hash": block.hash,
+            "parentHash": block.previous_hash,
+            "nonce": "0x" + Math.to_hex_string(block.nonce),
+            "transactionsRoot": block.merkle_root,
+            "miner": block.validator,
+            "difficulty": "0x" + Math.to_hex_string(block.difficulty),
+            "totalDifficulty": "0x" + Math.to_hex_string(block.difficulty),
+            "size": "0x200",
+            "timestamp": "0x" + Math.to_hex_string(block.timestamp),
+            "transactions": transactions,
+            "gasLimit": "0x" + Math.to_hex_string(1000000),
+            "gasUsed": "0x" + Math.to_hex_string(50000)
+        }
+
+    action format_transaction(tx: Transaction) -> Map<text, any>:
+        return {
+            "hash": tx.hash,
+            "from": tx.from,
+            "to": tx.to,
+            "value": "0x" + Math.to_hex_string(tx.value),
+            "input": tx.data ?? "0x",
+            "gas": "0x" + Math.to_hex_string(tx.gas_limit),
+            "gasUsed": "0x" + Math.to_hex_string(tx.gas_used),
+            "nonce": "0x" + Math.to_hex_string(tx.nonce)
+        }
+
+    action success_response(id: integer, result: any) -> Map<text, any>:
+        return {
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        }
+
+    action error_response(id: integer, code: integer, message: text) -> Map<text, any>:
+        return {
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": code,
+                "message": message
+            }
+        }
+
+    action start_http_server():
+        """
+        Start HTTP server (placeholder for actual implementation)
+        """
+        print "🌐 HTTP Server listening on port " + string(self.port)
+        print "📚 Available methods: " + string(self.methods.keys())
+
+# Test the RPC server
+print "🔌 Testing JSON-RPC Server..."
+let rpc_server = JSONRPCServer(node, 8545)
+rpc_server.start()
+
+# Test some methods
+let test_result = rpc_server.web3_clientVersion([])
+print "Client Version: " + test_result
+
+let block_number = rpc_server.eth_blockNumber([])
+print "Current Block: " + block_number
