@@ -1,115 +1,257 @@
 # src/core/consensus.zx
-# Simple Proof of Stake Consensus (AI placeholder ready)
+use "crypto" as crypto
+use "datetime" as datetime
+use "math" as math
 
-entity PoSConsensus:
-    validators: Map<Address, Validator>
-    total_stake: integer = 0
-    block_reward: integer = 100
-    difficulty: integer = 1
-    
-    entity Validator:
-        address: Address
-        stake: integer
-        performance: float = 1.0
-        last_active: integer?
-        # AI placeholder - will be enhanced later
-        ai_trust_score: float = 1.0
-    
-    action register_validator(address: Address, stake: integer):
+// Modern protocol-based design for consensus
+protocol ConsensusProtocol {
+    action register_validator(address: string, stake: integer) -> boolean
+    action select_validator() -> string
+    action validate_transaction(tx: any) -> boolean
+    action process_block_reward(validator: string, block: any) -> list
+}
+
+contract PoSConsensus implements ConsensusProtocol {
+    persistent storage validators: map
+    persistent storage total_stake: integer = 0
+    persistent storage block_reward: integer = 100
+    persistent storage difficulty: integer = 1
+
+    action init() {
+        this.validators = {}
+    }
+
+    contract Validator {
+        persistent storage address: string
+        persistent storage stake: integer
+        persistent storage performance: float = 1.0
+        persistent storage last_active: integer?
+        persistent storage ai_trust_score: float = 1.0
+
+        action init(address: string, stake: integer) {
+            this.address = address
+            this.stake = stake
+            this.last_active = datetime.now().timestamp()
+        }
+    }
+
+    action register_validator(address: string, stake: integer) -> boolean {
         """
         Register a new validator with stake
         """
-        if self.validators.has(address):
-            print "Validator already registered"
-            return
-        
-        let validator = Validator(
-            address: address,
-            stake: stake,
-            last_active: DateTime.now().timestamp()
-        )
-        
-        self.validators[address] = validator
-        self.total_stake += stake
-        print "Validator registered: " + address + " with stake: " + string(stake)
-    
-    action select_validator() -> Address:
+        if this.validators.has(address) {
+            print("Validator already registered")
+            return false
+        }
+
+        let validator = Validator(address: address, stake: stake)
+        this.validators[address] = validator
+        this.total_stake += stake
+        print("Validator registered: " + address + " with stake: " + string(stake))
+        return true
+    }
+
+    action select_validator() -> string {
         """
-        Select next validator based on stake weight
+        Select next validator based on stake weight with AI scoring
         """
-        if self.validators.is_empty():
+        if this.validators.is_empty() {
             throw "No validators available"
-        
-        # Simple weighted random selection based on stake
-        let random_value = Math.random_int(0, self.total_stake - 1)
+        }
+
+        // Calculate weighted scores with AI trust factor
+        let weighted_scores = []
+        let total_weight = 0
+
+        for each address, validator in this.validators {
+            let ai_score = this.ai_analyze_validator_performance(address)
+            let weight = integer(validator.stake * ai_score)
+            weighted_scores.push({"address": address, "weight": weight})
+            total_weight += weight
+        }
+
+        if total_weight == 0 {
+            // Fallback to simple stake-based selection
+            return this.select_validator_fallback()
+        }
+
+        // Weighted random selection
+        let random_value = math.random_int(0, total_weight - 1)
         let current_sum = 0
-        
-        for each validator in self.validators.values():
-            current_sum += validator.stake
-            if random_value < current_sum:
-                # Update last active time
-                validator.last_active = DateTime.now().timestamp()
-                return validator.address
-        
-        # Fallback to first validator
-        return self.validators.keys()[0]
-    
-    action validate_transaction(tx: Transaction) -> boolean:
+
+        for each item in weighted_scores {
+            current_sum += item.weight
+            if random_value < current_sum {
+                // Update last active time
+                this.validators[item.address].last_active = datetime.now().timestamp()
+                return item.address
+            }
+        }
+
+        return this.select_validator_fallback()
+    }
+
+    action select_validator_fallback() -> string {
+        // Fallback to highest stake validator
+        let highest_stake = 0
+        let selected_validator = ""
+
+        for each address, validator in this.validators {
+            if validator.stake > highest_stake {
+                highest_stake = validator.stake
+                selected_validator = address
+            }
+        }
+
+        if selected_validator != "" {
+            this.validators[selected_validator].last_active = datetime.now().timestamp()
+            return selected_validator
+        }
+
+        throw "No validators available for selection"
+    }
+
+    action validate_transaction(tx: any) -> boolean {
         """
-        Validate a transaction
+        Validate a transaction with comprehensive checks
         """
-        let crypto = Crypto()
-        
-        # Basic validation
-        if tx.value < 0:
+        // Basic validation
+        if tx.value < 0 {
             return false
-        
-        if tx.from == tx.to:
+        }
+
+        if tx.from_addr == tx.to_addr {
             return false
-        
-        if tx.gas_limit < tx.gas_used:
+        }
+
+        if tx.gas_limit < tx.gas_used {
             return false
+        }
+
+        // Verify signature using transaction hash
+        let tx_content = tx.from_addr + tx.to_addr + string(tx.value) + 
+                        (tx.data ?? "") + string(tx.nonce)
+        let tx_hash = crypto.keccak256(tx_content)
         
-        # Verify signature
-        let tx_content = tx.from + tx.to + string(tx.value) + (tx.data ?? "") + string(tx.nonce)
-        let signature_valid = crypto.verify_signature(tx_content, tx.signature, tx.from)
-        
+        let signature_valid = crypto.verify_signature(tx_hash, tx.signature, tx.from_addr)
+
         return signature_valid
-    
-    action process_block_reward(validator: Address, block: Block) -> List<Transaction>:
+    }
+
+    action process_block_reward(validator: string, block: any) -> list {
         """
-        Process block rewards for validator
+        Process block rewards for validator with modern transaction format
         """
+        let reward_data = {
+            "type": "block_reward",
+            "block_index": block.index,
+            "validator": validator,
+            "amount": this.block_reward
+        }
+
         let reward_tx = Transaction(
-            hash: crypto.hash_data("reward_" + string(block.index) + validator),
-            from: "0x0000000000000000000000000000000000000000",  # System address
-            to: validator,
-            value: self.block_reward,
-            data: "block_reward",
+            hash: crypto.keccak256("reward_" + string(block.index) + validator),
+            from_addr: "0x0000000000000000000000000000000000000000",  // System address
+            to_addr: validator,
+            value: this.block_reward,
+            data: string(reward_data),  // JSON string for data
             gas_limit: 0,
             gas_used: 0,
             nonce: 0,
             signature: "system_reward",
             status: "confirmed"
         )
-        
+
         return [reward_tx]
-    
-    # AI placeholder - will be enhanced with Zenith AI
-    action ai_analyze_validator_performance(validator: Address) -> float:
+    }
+
+    // Enhanced AI analysis with async support
+    action async ai_analyze_validator_performance(validator: string) -> float {
         """
-        Placeholder for AI-driven validator performance analysis
+        AI-driven validator performance analysis with multiple factors
         Returns trust score between 0.0 and 1.0
         """
-        # For now, return basic performance
-        if self.validators.has(validator):
-            return self.validators[validator].performance
-        return 0.0
+        if not this.validators.has(validator) {
+            return 0.0
+        }
 
-# Test consensus
-print "⚖️ Testing Consensus Module..."
-let consensus = PoSConsensus()
-let test_validator = "ZIV_test_validator_123"
-consensus.register_validator(test_validator, 1000)
-let selected = consensus.select_validator()
-print "Selected validator: " + selected
+        let validator_data = this.validators[validator]
+        
+        // Factor 1: Stake amount (normalized)
+        let stake_factor = math.min(1.0, validator_data.stake / 10000.0)
+        
+        // Factor 2: Recent activity
+        let activity_factor = 1.0
+        if validator_data.last_active != null {
+            let time_diff = datetime.now().timestamp() - validator_data.last_active
+            if time_diff > 3600 { // 1 hour
+                activity_factor = math.max(0.1, 1.0 - (time_diff - 3600) / 86400.0) // Decay over 24 hours
+            }
+        }
+        
+        // Factor 3: Historical performance
+        let performance_factor = validator_data.performance
+        
+        // Combine factors with weights
+        let final_score = (stake_factor * 0.4) + (activity_factor * 0.3) + (performance_factor * 0.3)
+        
+        // Update the validator's AI trust score
+        validator_data.ai_trust_score = final_score
+        
+        return final_score
+    }
+
+    action get_validator_info(address: string) -> map? {
+        """
+        Get validator information
+        """
+        if this.validators.has(address) {
+            let validator = this.validators[address]
+            return {
+                "address": validator.address,
+                "stake": validator.stake,
+                "performance": validator.performance,
+                "ai_trust_score": validator.ai_trust_score,
+                "last_active": validator.last_active
+            }
+        }
+        return null
+    }
+
+    action get_consensus_stats() -> map {
+        """
+        Get consensus statistics
+        """
+        return {
+            "total_validators": len(this.validators),
+            "total_stake": this.total_stake,
+            "block_reward": this.block_reward,
+            "difficulty": this.difficulty
+        }
+    }
+}
+
+// Test consensus with modern async pattern
+action async test_consensus_module() {
+    print("⚖️ Testing Consensus Module...")
+    let consensus = PoSConsensus()
+    let test_validator = "ZIV_test_validator_123"
+    
+    if consensus.register_validator(test_validator, 1000) {
+        let selected = consensus.select_validator()
+        print("Selected validator: " + selected)
+        
+        let stats = consensus.get_consensus_stats()
+        print("Consensus stats: " + string(stats))
+        
+        let validator_info = consensus.get_validator_info(test_validator)
+        if validator_info != null {
+            print("Validator info: " + string(validator_info))
+        }
+    }
+}
+
+// Export for module use
+export action get_consensus_protocol() -> ConsensusProtocol {
+    return PoSConsensus()
+}
