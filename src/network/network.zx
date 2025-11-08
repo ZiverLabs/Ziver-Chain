@@ -1,30 +1,459 @@
-# Ziver Chain P2P Network Layer
-entity P2PNetwork:
-    peers: List<text>  # List of peer addresses
-    node_id: text
-    
-    action start_node(port: integer):
-        print "🔄 Starting P2P node on port " + string(port)
-        print "Node ID: " + self.node_id
-        # Placeholder for actual network implementation
-        print "📡 Listening for peers..."
-    
-    action connect_to_peer(address: text):
-        print "🔗 Connecting to peer: " + address
-        self.peers = push(self.peers, address)
-        print "✅ Connected to " + string(len(self.peers)) + " peers"
-    
-    action broadcast_block(block: Block):
-        print "📢 Broadcasting block " + string(block.index) + " to " + string(len(self.peers)) + " peers"
-        for each peer in self.peers:
-            print "  → Sending to: " + peer
+# src/network/network.zx
 
-# Test network
-let network = P2PNetwork(node_id: "node_001")
-network.start_node(8545)
-network.connect_to_peer("192.168.1.100:8545")
-network.connect_to_peer("192.168.1.101:8545")
+use "crypto" as crypto
+use "datetime" as datetime
 
-# Simulate block broadcast
-let test_block = createBlock(1, "Test Block", "0")
-network.broadcast_block(test_block)
+// Advanced P2P Network Layer with Multi-Chain Support
+protocol P2PNetworkProtocol {
+    action start_node(port: integer, network_type: string) -> boolean
+    action connect_to_peer(address: string, chain_type: string) -> boolean
+    action broadcast_block(block: any, chain_type: string) -> boolean
+    action broadcast_transaction(tx: any, chain_type: string) -> boolean
+    action discover_peers(network_type: string) -> list
+}
+
+contract P2PNetwork implements P2PNetworkProtocol {
+    persistent storage peers: map
+    persistent storage node_id: string
+    persistent storage port: integer?
+    persistent storage is_listening: boolean = false
+    persistent storage message_queue: list
+    persistent storage chain_connections: map
+    
+    contract Peer {
+        persistent storage address: string
+        persistent storage chain_type: string
+        persistent storage last_seen: integer
+        persistent storage connection_score: float = 1.0
+        persistent storage latency: integer = 0
+        persistent storage is_connected: boolean = false
+        
+        action init(address: string, chain_type: string) {
+            this.address = address
+            this.chain_type = chain_type
+            this.last_seen = datetime.now().timestamp()
+        }
+    }
+
+    action init(node_id: string) {
+        this.node_id = node_id
+        this.peers = {}
+        this.message_queue = []
+        this.chain_connections = {
+            "ZIVER": [],
+            "ETHEREUM": [],
+            "TON": [],
+            "BSC": [],
+            "POLYGON": []
+        }
+    }
+
+    action start_node(port: integer, network_type: string = "mainnet") -> boolean {
+        """
+        Start P2P node with enhanced network capabilities
+        """
+        this.port = port
+        this.is_listening = true
+
+        print("🔄 Starting P2P node on port " + string(port))
+        print("Node ID: " + this.node_id)
+        print("Network: " + network_type)
+        print("📡 Listening for peers...")
+
+        // Start background services
+        spawn this.start_message_processor()
+        spawn this.start_peer_discovery()
+        spawn this.start_health_monitor()
+
+        // Connect to bootstrap nodes
+        this.connect_to_bootstrap_nodes(network_type)
+
+        return true
+    }
+
+    action connect_to_peer(address: string, chain_type: string = "ZIVER") -> boolean {
+        """
+        Connect to peer with chain-specific handling
+        """
+        let peer_id = chain_type + "_" + address
+        
+        if this.peers.has(peer_id) {
+            print("⚠️ Already connected to peer: " + address)
+            return true
+        }
+
+        print("🔗 Connecting to " + chain_type + " peer: " + address)
+        
+        let peer = Peer(address: address, chain_type: chain_type)
+        peer.is_connected = true
+        peer.last_seen = datetime.now().timestamp()
+        
+        this.peers[peer_id] = peer
+        this.chain_connections[chain_type].push(peer_id)
+
+        print("✅ Connected to " + string(this.get_connected_peers_count()) + " peers across " + 
+              string(this.get_active_chains_count()) + " chains")
+        
+        return true
+    }
+
+    action broadcast_block(block: any, chain_type: string = "ZIVER") -> boolean {
+        """
+        Broadcast block to peers on specific chain
+        """
+        let target_peers = this.get_peers_by_chain(chain_type)
+        
+        print("📢 Broadcasting " + chain_type + " block #" + string(block.index) + 
+              " to " + string(target_peers.count()) + " peers")
+        
+        let success_count = 0
+        for each peer_id in target_peers {
+            let peer = this.peers[peer_id]
+            if this.send_block_to_peer(peer, block) {
+                success_count += 1
+            }
+        }
+
+        print("✅ Successfully broadcast to " + string(success_count) + "/" + 
+              string(target_peers.count()) + " peers")
+        
+        return success_count > 0
+    }
+
+    action broadcast_transaction(tx: any, chain_type: string = "ZIVER") -> boolean {
+        """
+        Broadcast transaction to peers on specific chain
+        """
+        let target_peers = this.get_peers_by_chain(chain_type)
+        
+        print("💸 Broadcasting " + chain_type + " transaction to " + 
+              string(target_peers.count()) + " peers")
+        
+        let success_count = 0
+        for each peer_id in target_peers {
+            let peer = this.peers[peer_id]
+            if this.send_transaction_to_peer(peer, tx) {
+                success_count += 1
+            }
+        }
+
+        // Also broadcast to bridge nodes for cross-chain transactions
+        if this.is_cross_chain_transaction(tx) {
+            spawn this.broadcast_to_bridge_nodes(tx)
+        }
+
+        return success_count > 0
+    }
+
+    action discover_peers(network_type: string = "mainnet") -> list {
+        """
+        Discover peers using enhanced discovery protocol
+        """
+        print("🔍 Discovering peers on " + network_type + " network...")
+        
+        let discovered_peers = []
+        
+        // DNS-based discovery
+        let dns_peers = this.discover_via_dns(network_type)
+        discovered_peers = discovered_peers.concat(dns_peers)
+        
+        // Peer exchange with existing peers
+        let exchanged_peers = this.exchange_peers_with_connected()
+        discovered_peers = discovered_peers.concat(exchanged_peers)
+        
+        // Bootstrap nodes for the network
+        let bootstrap_peers = this.get_bootstrap_nodes(network_type)
+        discovered_peers = discovered_peers.concat(bootstrap_peers)
+        
+        // Remove duplicates
+        discovered_peers = this.deduplicate_peers(discovered_peers)
+        
+        print("🎯 Discovered " + string(discovered_peers.count()) + " potential peers")
+        
+        return discovered_peers
+    }
+
+    // Enhanced Network Methods
+    action send_block_to_peer(peer: Peer, block: any) -> boolean {
+        """
+        Send block to specific peer with error handling
+        """
+        try {
+            // Simulate network send (would use actual networking)
+            print("  📦 Sending block #" + string(block.index) + " to " + peer.address)
+            
+            // Update peer metrics
+            peer.last_seen = datetime.now().timestamp()
+            peer.connection_score = math.min(1.0, peer.connection_score + 0.01)
+            
+            return true
+        } catch(error) {
+            print("❌ Failed to send block to " + peer.address + ": " + string(error))
+            peer.connection_score = math.max(0.0, peer.connection_score - 0.1)
+            return false
+        }
+    }
+
+    action send_transaction_to_peer(peer: Peer, tx: any) -> boolean {
+        """
+        Send transaction to specific peer
+        """
+        try {
+            print("  💸 Sending transaction to " + peer.address)
+            
+            // Update peer metrics
+            peer.last_seen = datetime.now().timestamp()
+            
+            return true
+        } catch(error) {
+            print("❌ Failed to send transaction to " + peer.address)
+            return false
+        }
+    }
+
+    action start_message_processor() {
+        """
+        Background process to handle incoming messages
+        """
+        print("🔄 Starting advanced message processor...")
+        
+        while this.is_listening {
+            // Process incoming messages
+            if not this.message_queue.is_empty() {
+                let message = this.message_queue.shift()
+                this.process_incoming_message(message)
+            }
+            
+            // Small delay to prevent busy waiting
+            sleep(0.1)
+        }
+    }
+
+    action start_peer_discovery() {
+        """
+        Continuous peer discovery in background
+        """
+        print("🔄 Starting continuous peer discovery...")
+        
+        while this.is_listening {
+            let new_peers = this.discover_peers()
+            for each peer_info in new_peers {
+                if not this.peers.has(peer_info.id) {
+                    this.connect_to_peer(peer_info.address, peer_info.chain_type)
+                }
+            }
+            
+            // Discover every 5 minutes
+            sleep(300)
+        }
+    }
+
+    action start_health_monitor() {
+        """
+        Monitor peer health and connection quality
+        """
+        print("🔄 Starting network health monitor...")
+        
+        while this.is_listening {
+            this.check_peer_health()
+            this.cleanup_dead_peers()
+            
+            // Check every minute
+            sleep(60)
+        }
+    }
+
+    action check_peer_health() {
+        """
+        Check health of all connected peers
+        """
+        let current_time = datetime.now().timestamp()
+        
+        for each peer_id, peer in this.peers {
+            let time_since_seen = current_time - peer.last_seen
+            
+            if time_since_seen > 300 { // 5 minutes
+                peer.connection_score -= 0.05
+                print("⚠️ Peer " + peer.address + " inactive for " + string(time_since_seen) + "s")
+            }
+            
+            if peer.connection_score < 0.3 {
+                print("🔴 Unhealthy peer: " + peer.address + " (score: " + string(peer.connection_score) + ")")
+            }
+        }
+    }
+
+    action cleanup_dead_peers() {
+        """
+        Remove dead or unhealthy peers
+        """
+        let dead_peers = []
+        
+        for each peer_id, peer in this.peers {
+            if peer.connection_score <= 0.1 {
+                dead_peers.push(peer_id)
+            }
+        }
+        
+        for each dead_peer in dead_peers {
+            print("🧹 Removing dead peer: " + this.peers[dead_peer].address)
+            delete this.peers[dead_peer]
+        }
+    }
+
+    // Helper Methods
+    action get_peers_by_chain(chain_type: string) -> list {
+        return this.chain_connections.get(chain_type, [])
+    }
+
+    action get_connected_peers_count() -> integer {
+        let count = 0
+        for each peer_id, peer in this.peers {
+            if peer.is_connected {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    action get_active_chains_count() -> integer {
+        let count = 0
+        for each chain_type, peers in this.chain_connections {
+            if not peers.is_empty() {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    action connect_to_bootstrap_nodes(network_type: string) {
+        """
+        Connect to bootstrap nodes for the network
+        """
+        let bootstrap_nodes = this.get_bootstrap_nodes(network_type)
+        
+        for each node in bootstrap_nodes {
+            spawn this.connect_to_peer(node.address, node.chain_type)
+        }
+    }
+
+    action get_bootstrap_nodes(network_type: string) -> list {
+        """
+        Get bootstrap nodes for the network type
+        """
+        match network_type {
+            case "mainnet":
+                return [
+                    {"address": "mainnet.ziver.io:30303", "chain_type": "ZIVER"},
+                    {"address": "bootnode1.ziver.io:30303", "chain_type": "ZIVER"},
+                    {"address": "bootnode2.ziver.io:30303", "chain_type": "ZIVER"}
+                ]
+            case "testnet":
+                return [
+                    {"address": "testnet.ziver.io:30304", "chain_type": "ZIVER"},
+                    {"address": "bootnode1.test.ziver.io:30304", "chain_type": "ZIVER"}
+                ]
+            default:
+                return []
+        }
+    }
+
+    action discover_via_dns(network_type: string) -> list {
+        // Would implement DNS-based peer discovery
+        return []
+    }
+
+    action exchange_peers_with_connected() -> list {
+        // Would implement peer exchange protocol
+        return []
+    }
+
+    action deduplicate_peers(peers: list) -> list {
+        let unique_peers = []
+        let seen = {}
+        
+        for each peer in peers {
+            let key = peer.address + "_" + peer.chain_type
+            if not seen.has(key) {
+                seen[key] = true
+                unique_peers.push(peer)
+            }
+        }
+        
+        return unique_peers
+    }
+
+    action process_incoming_message(message: map) {
+        """
+        Process incoming network messages
+        """
+        match message.type {
+            case "block":
+                this.handle_incoming_block(message.data)
+            case "transaction":
+                this.handle_incoming_transaction(message.data)
+            case "peer_list":
+                this.handle_peer_list(message.data)
+            case "ping":
+                this.handle_ping(message.data)
+            default:
+                print("❓ Unknown message type: " + message.type)
+        }
+    }
+
+    action handle_incoming_block(block_data: map) {
+        print("📥 Received block #" + string(block_data.index) + " from peer")
+        // Would validate and process the block
+    }
+
+    action handle_incoming_transaction(tx_data: map) {
+        print("📥 Received transaction from peer")
+        // Would validate and add to mempool
+    }
+
+    action is_cross_chain_transaction(tx: any) -> boolean {
+        // Check if transaction involves cross-chain operations
+        return tx.data != null && tx.data.contains("cross_chain")
+    }
+
+    action broadcast_to_bridge_nodes(tx: any) {
+        print("🌉 Broadcasting to bridge nodes for cross-chain transaction")
+        // Would send to bridge nodes for cross-chain processing
+    }
+
+    // Utility methods for async operations
+    action sleep(seconds: float) {
+        // Would implement async sleep
+    }
+}
+
+// Test Enhanced Network
+action async test_enhanced_network() {
+    print("🌐 Testing Enhanced P2P Network...")
+    
+    let network = P2PNetwork(node_id: "node_001")
+    
+    // Start node on mainnet
+    if network.start_node(8545, "mainnet") {
+        print("✅ Node started successfully")
+        
+        // Test peer discovery
+        let discovered_peers = network.discover_peers("mainnet")
+        print("Discovered peers: " + string(discovered_peers.count()))
+        
+        // Test multi-chain connections
+        await network.connect_to_peer("eth-node.example.com:30303", "ETHEREUM")
+        await network.connect_to_peer("ton-node.example.com:30000", "TON")
+        
+        // Test broadcasting
+        let test_block = {"index": 1, "hash": "test_hash_123"}
+        network.broadcast_block(test_block, "ZIVER")
+        
+        let test_tx = {"hash": "tx_test_456", "value": 100}
+        network.broadcast_transaction(test_tx, "ZIVER")
+    }
+}
+
+export action get_p2p_network(node_id: string) -> P2PNetworkProtocol {
+    return P2PNetwork(node_id: node_id)
+}
