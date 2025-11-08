@@ -1,44 +1,77 @@
 # src/core/block.zx
-use { Crypto } from "./crypto.zx"
+use "crypto" as crypto
+use "datetime" as datetime
 
-entity Block:
-    index: integer
-    timestamp: integer  
-    previous_hash: text
-    hash: text
-    merkle_root: text
-    transactions: List<Transaction>
-    validator: Address
-    signature: text
-    nonce: integer
-    difficulty: integer
-    version: text = "1.0"
+// Modern Zexus uses 'contract' instead of 'entity' for data structures
+contract Block {
+    persistent storage index: integer
+    persistent storage timestamp: integer  
+    persistent storage previous_hash: string
+    persistent storage hash: string
+    persistent storage merkle_root: string
+    persistent storage transactions: list
+    persistent storage validator: string
+    persistent storage signature: string
+    persistent storage nonce: integer
+    persistent storage difficulty: integer
+    persistent storage version: string = "1.0"
 
-entity Transaction:
-    hash: text
-    from: Address
-    to: Address
-    value: integer
-    data: text?
-    gas_limit: integer
-    gas_used: integer
-    nonce: integer
-    signature: text
-    status: text = "pending"  # pending, confirmed, failed
+    action init(index: integer, timestamp: integer, previous_hash: string, hash: string, 
+                merkle_root: string, transactions: list, validator: string, 
+                signature: string, nonce: integer, difficulty: integer) {
+        this.index = index
+        this.timestamp = timestamp
+        this.previous_hash = previous_hash
+        this.hash = hash
+        this.merkle_root = merkle_root
+        this.transactions = transactions
+        this.validator = validator
+        this.signature = signature
+        this.nonce = nonce
+        this.difficulty = difficulty
+    }
+}
 
-action create_genesis_block() -> Block:
-    let crypto = Crypto()
-    let timestamp = DateTime.now().timestamp()
+contract Transaction {
+    persistent storage hash: string
+    persistent storage from_addr: string
+    persistent storage to_addr: string
+    persistent storage value: integer
+    persistent storage data: string?
+    persistent storage gas_limit: integer
+    persistent storage gas_used: integer
+    persistent storage nonce: integer
+    persistent storage signature: string
+    persistent storage status: string = "pending"
+
+    action init(hash: string, from_addr: string, to_addr: string, value: integer, 
+                data: string?, gas_limit: integer, gas_used: integer, nonce: integer, 
+                signature: string, status: string) {
+        this.hash = hash
+        this.from_addr = from_addr
+        this.to_addr = to_addr
+        this.value = value
+        this.data = data
+        this.gas_limit = gas_limit
+        this.gas_used = gas_used
+        this.nonce = nonce
+        this.signature = signature
+        this.status = status
+    }
+}
+
+action create_genesis_block() -> Block {
+    let timestamp = datetime.now().timestamp()
     let genesis_data = "Ziver Chain Genesis Block - The Self-Evolving Blockchain"
-    
-    # Create empty transactions list
+
+    // Create empty transactions list
     let empty_tx_list = []
-    let merkle_root = crypto.calculate_merkle_root(empty_tx_list)
-    
-    # Calculate genesis hash
+    let merkle_root = crypto.keccak256(genesis_data) // Using built-in crypto
+
+    // Calculate genesis hash with proper string conversion
     let content = "0" + string(timestamp) + "0" + merkle_root + "0" + "genesis"
-    let genesis_hash = crypto.hash_data(content)
-    
+    let genesis_hash = crypto.keccak256(content)
+
     return Block(
         index: 0,
         timestamp: timestamp,
@@ -51,21 +84,26 @@ action create_genesis_block() -> Block:
         nonce: 0,
         difficulty: 1
     )
+}
 
-action create_block(previous_block: Block, transactions: List<Transaction>, validator: Address, private_key: text) -> Block:
-    let crypto = Crypto()
-    let timestamp = DateTime.now().timestamp()
-    
-    # Calculate merkle root from transactions
-    let merkle_root = crypto.calculate_merkle_root(transactions)
-    
-    # Create block content for hashing
-    let content = string(previous_block.index + 1) + string(timestamp) + previous_block.hash + merkle_root + validator + string(previous_block.difficulty)
-    let block_hash = crypto.hash_data(content)
-    
-    # Sign the block
-    let signature = crypto.sign_message(block_hash, private_key)
-    
+action create_block(previous_block: Block, transactions: list, validator: string, private_key: string) -> Block {
+    let timestamp = datetime.now().timestamp()
+
+    // Calculate merkle root from transactions
+    let tx_hashes = []
+    for each tx in transactions {
+        tx_hashes.push(tx.hash)
+    }
+    let merkle_root = crypto.calculate_merkle_root(tx_hashes)
+
+    // Create block content for hashing
+    let content = string(previous_block.index + 1) + string(timestamp) + previous_block.hash + 
+                  merkle_root + validator + string(previous_block.difficulty)
+    let block_hash = crypto.keccak256(content)
+
+    // Sign the block - using modern crypto API
+    let signature = crypto.secp256k1_sign(block_hash, private_key)
+
     return Block(
         index: previous_block.index + 1,
         timestamp: timestamp,
@@ -78,46 +116,68 @@ action create_block(previous_block: Block, transactions: List<Transaction>, vali
         nonce: 0,
         difficulty: previous_block.difficulty
     )
+}
 
-action validate_block(block: Block, previous_block: Block) -> boolean:
-    let crypto = Crypto()
-    
-    # Check block index continuity
-    if block.index != previous_block.index + 1:
-        print "Block index mismatch"
+action validate_block(block: Block, previous_block: Block) -> boolean {
+    // Check block index continuity
+    if block.index != previous_block.index + 1 {
+        print("Block index mismatch")
         return false
-    
-    # Check previous hash
-    if block.previous_hash != previous_block.hash:
-        print "Previous hash mismatch"
+    }
+
+    // Check previous hash
+    if block.previous_hash != previous_block.hash {
+        print("Previous hash mismatch")
         return false
-    
-    # Verify block hash
-    let content = string(block.index) + string(block.timestamp) + block.previous_hash + block.merkle_root + block.validator + string(block.difficulty)
-    let calculated_hash = crypto.hash_data(content)
-    
-    if calculated_hash != block.hash:
-        print "Block hash invalid"
+    }
+
+    // Verify block hash
+    let content = string(block.index) + string(block.timestamp) + block.previous_hash + 
+                  block.merkle_root + block.validator + string(block.difficulty)
+    let calculated_hash = crypto.keccak256(content)
+
+    if calculated_hash != block.hash {
+        print("Block hash invalid")
         return false
-    
-    # Verify signature
+    }
+
+    // Verify signature using modern crypto
     let signature_valid = crypto.verify_signature(block.hash, block.signature, block.validator)
-    if not signature_valid:
-        print "Block signature invalid"
+    if not signature_valid {
+        print("Block signature invalid")
         return false
-    
-    # Verify merkle root
-    let calculated_merkle = crypto.calculate_merkle_root(block.transactions)
-    if calculated_merkle != block.merkle_root:
-        print "Merkle root invalid"
-        return false
-    
-    return true
+    }
 
-# Test the block system
-print "🧱 Testing Block System..."
-let genesis = create_genesis_block()
-print "Genesis Block Created:"
-print "  Hash: " + genesis.hash.slice(0, 16) + "..."
-print "  Index: " + string(genesis.index)
-print "  Valid: " + string(validate_block(genesis, genesis))  # Genesis validates itself
+    // Verify merkle root
+    let tx_hashes = []
+    for each tx in block.transactions {
+        tx_hashes.push(tx.hash)
+    }
+    let calculated_merkle = crypto.calculate_merkle_root(tx_hashes)
+    if calculated_merkle != block.merkle_root {
+        print("Merkle root invalid")
+        return false
+    }
+
+    return true
+}
+
+// Test the block system with modern async pattern
+action async test_block_system() {
+    print("🧱 Testing Block System...")
+    let genesis = create_genesis_block()
+    print("Genesis Block Created:")
+    print("  Hash: " + genesis.hash.slice(0, 16) + "...")
+    print("  Index: " + string(genesis.index))
+    print("  Valid: " + string(validate_block(genesis, genesis)))  // Genesis validates itself
+}
+
+// Export the functions for module use
+export action get_block_functions() -> map {
+    return {
+        "create_genesis_block": create_genesis_block,
+        "create_block": create_block,
+        "validate_block": validate_block,
+        "test_block_system": test_block_system
+    }
+}
