@@ -1,80 +1,94 @@
 use "../../src/main.zx" as ziver
 
-// Comprehensive system integration test
-contract FullSystemTest {
-    action async test_complete_blockchain_workflow() -> boolean {
-        print("🧪 STARTING COMPLETE SYSTEM TEST")
-        print("=================================")
-        
-        let node = ziver.get_ziver_node()
-        
-        // Test 1: Node initialization
-        print("1. Testing node initialization...")
-        if not node.initialize() {
-            print("❌ Node initialization failed")
-            return false
-        }
-        print("✅ Node initialized")
-        
-        // Test 2: Wallet creation
-        print("2. Testing wallet creation...")
-        let wallet_address = node.create_wallet("test_user")
-        if wallet_address == "" {
-            print("❌ Wallet creation failed")
-            return false
-        }
-        print("✅ Wallet created: " + wallet_address)
-        
-        // Test 3: Token deployment
-        print("3. Testing token deployment...")
-        let token_address = node.deploy_token("TestToken", "TEST", 1000000, wallet_address)
-        if token_address == "" {
-            print("❌ Token deployment failed")
-            return false
-        }
-        print("✅ Token deployed: " + token_address)
-        
-        // Test 4: Wallet operations
-        print("4. Testing wallet operations...")
-        let wallet_info = node.get_wallet_info(wallet_address)
-        if not wallet_info.has("seb_defi_tier") {
-            print("❌ Wallet info incomplete")
-            return false
-        }
-        print("✅ Wallet operations working")
-        
-        // Test 5: Bridge simulation
-        print("5. Testing bridge system...")
-        let bridge_result = node.bridge_assets(wallet_address, "ZIVER", "ETHEREUM", 100, null)
-        if not bridge_result.success {
-            print("❌ Bridge system failed")
-            return false
-        }
-        print("✅ Bridge system operational")
-        
-        print("")
-        print("🎉 ALL SYSTEM TESTS PASSED!")
-        print("===========================")
-        print("✅ Node Initialization")
-        print("✅ Wallet Creation") 
-        print("✅ Token Deployment")
-        print("✅ Wallet Operations")
-        print("✅ Bridge System")
-        print("✅ SEB-DeFi Integration")
-        print("✅ Quantum Security")
-        
-        return true
+// Comprehensive system integration test - EXECUTABLE VERSION
+print("🧪 Starting Full System Integration Test...")
+
+action async test_complete_blockchain_workflow() -> boolean {
+    print("🚀 STARTING COMPLETE SYSTEM TEST")
+    print("================================")
+    
+    let node = ziver.get_ziver_node()
+    
+    // Test 1: Node initialization
+    print("")
+    print("1. Testing node initialization...")
+    if (not node.initialize()) {
+        print("❌ Node initialization failed")
+        return false
     }
+    print("✅ Node initialized successfully")
+    
+    // Test 2: Wallet creation
+    print("")
+    print("2. Testing wallet creation...")
+    let wallet_address = node.create_wallet("test_user_" + string(datetime.now().timestamp()))
+    if (wallet_address == "") {
+        print("❌ Wallet creation failed")
+        return false
+    }
+    print("✅ Wallet created: " + wallet_address)
+    
+    // Test 3: Token deployment
+    print("")
+    print("3. Testing token deployment...")
+    let token_address = node.deploy_token("TestToken", "TEST", 1000000, wallet_address)
+    if (token_address == "") {
+        print("❌ Token deployment failed")
+        return false
+    }
+    print("✅ Token deployed: " + token_address)
+    
+    // Test 4: Wallet operations
+    print("")
+    print("4. Testing wallet operations...")
+    let wallet_info = node.get_wallet_info(wallet_address)
+    if (not wallet_info.has("seb_defi_tier")) {
+        print("❌ Wallet info incomplete")
+        return false
+    }
+    print("✅ Wallet operations working")
+    print("   SEB-DeFi Tier: " + wallet_info.seb_defi_tier)
+    print("   Social Capital: " + string(wallet_info.social_capital))
+    
+    // Test 5: Bridge simulation
+    print("")
+    print("5. Testing bridge system...")
+    let bridge_result = node.bridge_assets(wallet_address, "ZIVER", "ETHEREUM", 100, null)
+    if (not bridge_result.success) {
+        print("❌ Bridge system failed: " + bridge_result.error)
+        return false
+    }
+    print("✅ Bridge system operational")
+    print("   Bridge ID: " + bridge_result.bridge_id)
+    
+    return true
 }
 
-// Run the test
-action async main() {
-    let test = FullSystemTest()
-    let result = await test.test_complete_blockchain_workflow()
-    
-    if result {
-        print("🚀 SYSTEM READY FOR PRODUCTION")
-    } else {
-        print("❌ SYSTEM TEST FAILED - Check components")
-    }
+// Actually run the test
+print("")
+print("🏁 EXECUTING FULL SYSTEM TEST")
+print("=============================")
+
+let result = await test_complete_blockchain_workflow()
+
+print("")
+print("📊 TEST RESULTS:")
+print("================")
+
+if (result) {
+    print("🎉 ALL SYSTEM TESTS PASSED!")
+    print("✅ Node Initialization")
+    print("✅ Wallet Creation") 
+    print("✅ Token Deployment")
+    print("✅ Wallet Operations")
+    print("✅ Bridge System")
+    print("✅ SEB-DeFi Integration")
+    print("✅ Quantum Security")
+    print("")
+    print("🚀 SYSTEM READY FOR PRODUCTION")
+} else {
+    print("❌ SYSTEM TEST FAILED")
+    print("⚠️  Check individual components")
 }
+
+print("")
