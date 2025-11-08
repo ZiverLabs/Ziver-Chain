@@ -1,41 +1,70 @@
 use "../../src/core/crypto.zx" as crypto
 
-// Test quantum-resistant cryptography
-contract QuantumCryptoTest {
-    action async test_quantum_key_generation() -> boolean {
-        print("🔐 Testing Quantum Cryptography...")
-        
-        let qcrypto = crypto.get_quantum_crypto()
-        
-        // Test key generation
-        let keypair = qcrypto.generate_quantum_keypair()
-        if keypair.public_key == "" {
-            return false
-        }
-        print("✅ Quantum keypair generated")
-        
-        // Test signing
-        let message = "Test message for quantum signing"
-        let signature = qcrypto.quantum_sign(message, keypair.private_key)
-        if signature == "" {
-            return false
-        }
-        print("✅ Quantum signing working")
-        
-        // Test verification
-        let verified = qcrypto.quantum_verify(message, signature, keypair.public_key)
-        if not verified {
-            return false
-        }
-        print("✅ Quantum verification working")
-        
-        // Test address derivation
-        let address = qcrypto.derive_address(keypair.public_key, "ZIVER")
-        if not address.starts_with("ZIV_") {
-            return false
-        }
-        print("✅ Address derivation working")
-        
-        return true
+// Test quantum-resistant cryptography - EXECUTABLE VERSION
+print("🧪 Starting Quantum Crypto Test...")
+
+action async test_quantum_crypto() -> boolean {
+    print("🔐 Testing Quantum Cryptography...")
+    
+    let qcrypto = crypto.get_quantum_crypto()
+    
+    // Test key generation
+    print("1. Testing key generation...")
+    let keypair = qcrypto.generate_quantum_keypair()
+    if (keypair.public_key == "") {
+        print("❌ Key generation failed")
+        return false
     }
+    print("✅ Quantum keypair generated")
+    print("   Address: " + keypair.address)
+    
+    // Test signing
+    print("2. Testing quantum signing...")
+    let message = "Test message for quantum signing"
+    let signature = qcrypto.quantum_sign(message, keypair.private_key)
+    if (signature == "") {
+        print("❌ Quantum signing failed")
+        return false
+    }
+    print("✅ Quantum signing working")
+    print("   Signature length: " + string(signature.length()))
+    
+    // Test verification
+    print("3. Testing quantum verification...")
+    let verified = qcrypto.quantum_verify(message, signature, keypair.public_key)
+    if (not verified) {
+        print("❌ Quantum verification failed")
+        return false
+    }
+    print("✅ Quantum verification working")
+    
+    // Test address derivation
+    print("4. Testing address derivation...")
+    let address = qcrypto.derive_address(keypair.public_key, "ZIVER")
+    if (not address.starts_with("ZIV_")) {
+        print("❌ Address derivation failed")
+        return false
+    }
+    print("✅ Address derivation working")
+    print("   Derived address: " + address)
+    
+    return true
 }
+
+// Actually run the test
+print("")
+print("🚀 EXECUTING QUANTUM CRYPTO TEST")
+print("================================")
+
+let result = await test_quantum_crypto()
+
+print("")
+if (result) {
+    print("🎉 QUANTUM CRYPTO TEST PASSED!")
+    print("✅ All quantum-resistant features working")
+} else {
+    print("❌ QUANTUM CRYPTO TEST FAILED")
+    print("⚠️  Check crypto implementation")
+}
+
+print("")
