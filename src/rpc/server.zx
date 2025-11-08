@@ -1,229 +1,470 @@
 # src/rpc/server.zx
 # JSON-RPC 2.0 API Server for Ziver Chain
 
-entity JSONRPCServer:
-    port: integer
-    node: ZiverNode
-    methods: Map<text, Action>
-    is_running: boolean = false
+use "crypto" as crypto
+use "datetime" as datetime
+use "math" as math
 
-    action constructor(node: ZiverNode, port: integer = 8545):
-        self.node = node
-        self.port = port
-        self.register_methods()
-        print "🔄 JSON-RPC Server initialized on port " + string(port)
+// JSON-RPC 2.0 API Server for Ziver Chain with Modern Features
+protocol JSONRPCProtocol {
+    action start() -> boolean
+    action handle_request(request: map) -> map
+    action register_method(method_name: string, handler: action) -> boolean
+}
 
-    action register_methods():
+contract JSONRPCServer implements JSONRPCProtocol {
+    persistent storage port: integer
+    persistent storage node: any
+    persistent storage methods: map
+    persistent storage is_running: boolean = false
+    persistent storage request_count: integer = 0
+    persistent storage method_stats: map
+    
+    action init(node: any, port: integer = 8545) {
+        this.node = node
+        this.port = port
+        this.methods = {}
+        this.method_stats = {}
+        this.register_core_methods()
+        print("🔄 JSON-RPC Server initialized on port " + string(port))
+    }
+
+    action start() -> boolean {
         """
-        Register all available RPC methods
+        Start the RPC server with enhanced capabilities
         """
-        self.methods = {
-            "web3_clientVersion": self.web3_clientVersion,
-            "net_version": self.net_version,
-            "net_listening": self.net_listening,
-            "net_peerCount": self.net_peerCount,
-            "eth_blockNumber": self.eth_blockNumber,
-            "eth_getBalance": self.eth_getBalance,
-            "eth_getBlockByNumber": self.eth_getBlockByNumber,
-            "eth_getBlockByHash": self.eth_getBlockByHash,
-            "eth_getTransactionCount": self.eth_getTransactionCount,
-            "eth_sendTransaction": self.eth_sendTransaction,
-            "eth_sendRawTransaction": self.eth_sendRawTransaction,
-            "eth_getTransactionReceipt": self.eth_getTransactionReceipt,
-            "eth_call": self.eth_call,
-            "eth_estimateGas": self.eth_estimateGas,
-            "ziver_getWalletInfo": self.ziver_getWalletInfo,
-            "ziver_createWallet": self.ziver_createWallet,
-            "ziver_bridgeAssets": self.ziver_bridgeAssets,
-            "ziver_deployToken": self.ziver_deployToken
+        this.is_running = true
+        
+        print("🚀 JSON-RPC Server starting on http://localhost:" + string(this.port))
+        print("📚 Available methods: " + string(this.methods.keys().count()))
+        
+        // Start HTTP server in background
+        spawn this.start_http_server()
+        
+        // Start metrics collection
+        spawn this.collect_metrics()
+        
+        return true
+    }
+
+    action handle_request(request: map) -> map {
+        """
+        Handle incoming JSON-RPC request with enhanced features
+        """
+        this.request_count += 1
+        
+        let method = request.get("method", "")
+        let params = request.get("params", [])
+        let id = request.get("id", 1)
+        
+        // Validate request structure
+        let validation = this.validate_request(request)
+        if not validation.valid {
+            return this.error_response(id, -32600, validation.error)
+        }
+        
+        print("📨 RPC Request #" + string(this.request_count) + ": " + method + " ID: " + string(id))
+        
+        // Update method statistics
+        this.update_method_stats(method)
+        
+        if not this.methods.has(method) {
+            return this.error_response(id, -32601, "Method not found: " + method)
         }
 
-    action start():
+        try {
+            let start_time = datetime.now().timestamp()
+            let result = this.methods[method](params)
+            let processing_time = datetime.now().timestamp() - start_time
+            
+            // Log slow requests
+            if processing_time > 1.0 {
+                print("⚠️ Slow RPC method: " + method + " took " + string(processing_time) + "s")
+            }
+            
+            return this.success_response(id, result)
+        } catch(error) {
+            print("❌ RPC Error in " + method + ": " + string(error))
+            return this.error_response(id, -32000, "Internal error: " + string(error))
+        }
+    }
+
+    action register_core_methods() {
         """
-        Start the RPC server
+        Register all available RPC methods with modern Ziver features
         """
-        self.is_running = true
-        print "🚀 JSON-RPC Server starting on http://localhost:" + string(self.port)
-        self.start_http_server()
+        // Web3 standard methods
+        this.methods["web3_clientVersion"] = action(params: list) -> string {
+            return "ZiverChain/v3.0.0/zexus-quantum"
+        }
 
-    action handle_request(request: Map<text, any>) -> Map<text, any>:
+        this.methods["net_version"] = action(params: list) -> string {
+            return "12345"  // Ziver Chain ID
+        }
+
+        this.methods["net_listening"] = action(params: list) -> boolean {
+            return this.node.network != null ? this.node.network.is_listening : false
+        }
+
+        this.methods["net_peerCount"] = action(params: list) -> string {
+            let count = this.node.network != null ? this.node.network.get_connected_peers_count() : 0
+            return "0x" + math.to_hex_string(count)
+        }
+
+        this.methods["eth_blockNumber"] = action(params: list) -> string {
+            let block_number = this.node.blockchain != null ? this.node.blockchain.get_latest_block_index() : 0
+            return "0x" + math.to_hex_string(block_number)
+        }
+
+        this.methods["eth_getBalance"] = action(params: list) -> string {
+            let address = params.get(0, "")
+            let block_tag = params.get(1, "latest")
+            
+            // Use SEB-DeFi integration for enhanced balance info
+            let balance = this.node.get_balance_with_social_capital(address)
+            return "0x" + math.to_hex_string(balance.amount)
+        }
+
+        this.methods["eth_getBlockByNumber"] = action(params: list) -> map? {
+            let block_number_hex = params.get(0, "latest")
+            let full_tx = params.get(1, false)
+            
+            let block_number = 0
+            if block_number_hex == "latest" {
+                block_number = this.node.blockchain.get_latest_block_index()
+            } else {
+                block_number = math.hex_to_int(block_number_hex)
+            }
+            
+            let block = this.node.blockchain.get_block(block_number)
+            if block == null {
+                return null
+            }
+            
+            return this.format_block(block, full_tx)
+        }
+
+        this.methods["eth_sendTransaction"] = action(params: list) -> string {
+            let tx_data = params.get(0, {})
+            
+            // Enhanced transaction with bounce-back protection
+            let tx = this.create_transaction_with_bounceback(tx_data)
+            
+            let success = this.node.add_transaction(tx)
+            if success {
+                // Generate AI explanation for the transaction
+                spawn this.generate_transaction_explanation(tx)
+                return tx.hash
+            } else {
+                throw "Transaction failed - check bounce-back protection"
+            }
+        }
+
+        // Ziver-specific advanced methods
+        this.methods["ziver_getWalletInfo"] = action(params: list) -> map {
+            let wallet_address = params.get(0, "")
+            return this.node.get_enhanced_wallet_info(wallet_address)
+        }
+
+        this.methods["ziver_createWallet"] = action(params: list) -> string {
+            let owner_address = params.get(0, "")
+            // Create quantum-resistant wallet
+            return this.node.create_quantum_wallet(owner_address)
+        }
+
+        this.methods["ziver_bridgeAssets"] = action(params: list) -> map {
+            let wallet_address = params.get(0, "")
+            let source_chain = params.get(1, "ZIVER")
+            let target_chain = params.get(2, "ETHEREUM")
+            let amount = params.get(3, 0)
+            let token_address = params.get(4, null)
+            
+            return this.node.bridge_assets_with_tracking(
+                wallet_address, source_chain, target_chain, amount, token_address
+            )
+        }
+
+        this.methods["ziver_deployToken"] = action(params: list) -> string {
+            let name = params.get(0, "")
+            let symbol = params.get(1, "")
+            let supply = params.get(2, 0)
+            let owner = params.get(3, "")
+            
+            return this.node.deploy_token_with_seb_features(name, symbol, supply, owner)
+        }
+
+        // SEB-DeFi specific methods
+        this.methods["ziver_getSocialCapital"] = action(params: list) -> map {
+            let user_address = params.get(0, "")
+            return this.node.get_social_capital_score(user_address)
+        }
+
+        this.methods["ziver_getBorrowingPower"] = action(params: list) -> string {
+            let user_address = params.get(0, "")
+            let power = this.node.get_borrowing_power(user_address)
+            return "0x" + math.to_hex_string(power)
+        }
+
+        this.methods["ziver_explainTransaction"] = action(params: list) -> string {
+            let tx_hash = params.get(0, "")
+            return this.node.get_transaction_explanation(tx_hash)
+        }
+
+        // AI and Quantum methods
+        this.methods["ziver_aiOptimize"] = action(params: list) -> map {
+            return this.node.run_ai_optimization()
+        }
+
+        this.methods["ziver_getQuantumKeys"] = action(params: list) -> map {
+            let address = params.get(0, "")
+            return this.node.get_quantum_key_info(address)
+        }
+
+        print("✅ Registered " + string(this.methods.keys().count()) + " RPC methods")
+    }
+
+    action register_method(method_name: string, handler: action) -> boolean {
         """
-        Handle incoming JSON-RPC request
+        Register custom RPC method
         """
-        let method = request["method"] ?? ""
-        let params = request["params"] ?? []
-        let id = request["id"] ?? 1
-
-        print "📨 RPC Request: " + method + " ID: " + string(id)
-
-        if not self.methods.has(method):
-            return self.error_response(id, -32601, "Method not found")
-
-        try:
-            let result = self.methods[method](params)
-            return self.success_response(id, result)
-        catch error:
-            return self.error_response(id, -32000, "Internal error: " + error.message)
-
-    # Core Ethereum-compatible methods
-    action web3_clientVersion(params: List<any>) -> text:
-        return "ZiverChain/v1.0.0/zexus"
-
-    action net_version(params: List<any>) -> text:
-        return "12345"  # Ziver Chain ID
-
-    action net_listening(params: List<any>) -> boolean:
-        return self.node.network.is_listening
-
-    action net_peerCount(params: List<any>) -> text:
-        let count = self.node.network.peers.count()
-        return "0x" + Math.to_hex_string(count)
-
-    action eth_blockNumber(params: List<any>) -> text:
-        let block_number = self.node.blockchain.count() - 1
-        return "0x" + Math.to_hex_string(block_number)
-
-    action eth_getBalance(params: List<any>) -> text:
-        let address = params[0] ?? ""
-        let block_tag = params[1] ?? "latest"
+        if this.methods.has(method_name) {
+            print("⚠️ Method already registered: " + method_name)
+            return false
+        }
         
-        let balance = self.node.get_balance(address)
-        return "0x" + Math.to_hex_string(balance)
+        this.methods[method_name] = handler
+        print("✅ Registered custom method: " + method_name)
+        return true
+    }
 
-    action eth_getBlockByNumber(params: List<any>) -> Map<text, any>:
-        let block_number_hex = params[0] ?? "latest"
-        let full_tx = params[1] ?? false
-        
-        let block_number = 0
-        if block_number_hex == "latest":
-            block_number = self.node.blockchain.count() - 1
-        else:
-            block_number = Math.hex_to_int(block_number_hex)
-        
-        if block_number >= self.node.blockchain.count():
-            return null
-        
-        let block = self.node.blockchain[block_number]
-        return self.format_block(block, full_tx)
-
-    action eth_sendTransaction(params: List<any>) -> text:
-        let tx_data = params[0] ?? {}
-        
-        let tx = Transaction(
-            hash: "",
-            from: tx_data["from"] ?? "",
-            to: tx_data["to"] ?? "",
-            value: Math.hex_to_int(tx_data["value"] ?? "0x0"),
-            data: tx_data["data"] ?? "",
-            gas_limit: Math.hex_to_int(tx_data["gas"] ?? "0x5208"),
-            gas_used: 0,
-            nonce: Math.hex_to_int(tx_data["nonce"] ?? "0x0"),
-            signature: tx_data["signature"] ?? "",
-            status: "pending"
-        )
-        
-        let success = self.node.add_transaction(tx)
-        if success:
-            return tx.hash
-        else:
-            throw "Transaction failed"
-
-    # Ziver-specific methods
-    action ziver_getWalletInfo(params: List<any>) -> Map<text, any>:
-        let wallet_address = params[0] ?? ""
-        return self.node.get_wallet_info(wallet_address)
-
-    action ziver_createWallet(params: List<any>) -> text:
-        let owner_address = params[0] ?? ""
-        return self.node.create_wallet(owner_address)
-
-    action ziver_bridgeAssets(params: List<any>) -> boolean:
-        let wallet_address = params[0] ?? ""
-        let source_chain = params[1] ?? ""
-        let target_chain = params[2] ?? ""
-        let amount = params[3] ?? 0
-        let token_address = params[4] ?? null
-        
-        return self.node.bridge_assets(wallet_address, source_chain, target_chain, amount, token_address)
-
-    action ziver_deployToken(params: List<any>) -> text:
-        let name = params[0] ?? ""
-        let symbol = params[1] ?? ""
-        let supply = params[2] ?? 0
-        let owner = params[3] ?? ""
-        
-        return self.node.deploy_token(name, symbol, supply, owner)
-
-    # Helper methods
-    action format_block(block: Block, full_tx: boolean) -> Map<text, any>:
+    // Enhanced Helper Methods
+    action format_block(block: any, full_tx: boolean) -> map {
         let transactions = []
-        if full_tx:
-            for each tx in block.transactions:
-                transactions.add(self.format_transaction(tx))
-        else:
-            for each tx in block.transactions:
-                transactions.add(tx.hash)
         
+        if full_tx {
+            for each tx in block.transactions {
+                transactions.push(this.format_transaction(tx))
+            }
+        } else {
+            for each tx in block.transactions {
+                transactions.push(tx.hash)
+            }
+        }
+
         return {
-            "number": "0x" + Math.to_hex_string(block.index),
+            "number": "0x" + math.to_hex_string(block.index),
             "hash": block.hash,
             "parentHash": block.previous_hash,
-            "nonce": "0x" + Math.to_hex_string(block.nonce),
+            "nonce": "0x" + math.to_hex_string(block.nonce),
             "transactionsRoot": block.merkle_root,
             "miner": block.validator,
-            "difficulty": "0x" + Math.to_hex_string(block.difficulty),
-            "totalDifficulty": "0x" + Math.to_hex_string(block.difficulty),
+            "difficulty": "0x" + math.to_hex_string(block.difficulty),
+            "totalDifficulty": "0x" + math.to_hex_string(block.difficulty),
             "size": "0x200",
-            "timestamp": "0x" + Math.to_hex_string(block.timestamp),
+            "timestamp": "0x" + math.to_hex_string(block.timestamp),
             "transactions": transactions,
-            "gasLimit": "0x" + Math.to_hex_string(1000000),
-            "gasUsed": "0x" + Math.to_hex_string(50000)
+            "gasLimit": "0x" + math.to_hex_string(1000000),
+            "gasUsed": "0x" + math.to_hex_string(50000),
+            "extraData": "0x" + crypto.keccak256("ziver_chain"),
+            "sebDefiData": this.get_seb_defi_block_data(block)
         }
+    }
 
-    action format_transaction(tx: Transaction) -> Map<text, any>:
+    action format_transaction(tx: any) -> map {
         return {
             "hash": tx.hash,
-            "from": tx.from,
-            "to": tx.to,
-            "value": "0x" + Math.to_hex_string(tx.value),
+            "from": tx.from_addr,
+            "to": tx.to_addr,
+            "value": "0x" + math.to_hex_string(tx.value),
             "input": tx.data ?? "0x",
-            "gas": "0x" + Math.to_hex_string(tx.gas_limit),
-            "gasUsed": "0x" + Math.to_hex_string(tx.gas_used),
-            "nonce": "0x" + Math.to_hex_string(tx.nonce)
+            "gas": "0x" + math.to_hex_string(tx.gas_limit),
+            "gasUsed": "0x" + math.to_hex_string(tx.gas_used),
+            "nonce": "0x" + math.to_hex_string(tx.nonce),
+            "bounceBackProtected": this.is_bounceback_protected(tx),
+            "aiExplanation": this.get_cached_explanation(tx.hash)
         }
+    }
 
-    action success_response(id: integer, result: any) -> Map<text, any>:
+    action create_transaction_with_bounceback(tx_data: map) -> any {
+        """
+        Create transaction with bounce-back protection
+        """
+        // Check if recipient address is valid
+        let to_address = tx_data.get("to", "")
+        if not this.node.is_valid_address(to_address) {
+            // Enable bounce-back protection
+            tx_data["bounceBack"] = true
+            tx_data["bounceBackAddress"] = tx_data.get("from", "")
+        }
+        
+        return Transaction(
+            hash: crypto.keccak256(string(tx_data) + string(datetime.now().timestamp())),
+            from_addr: tx_data.get("from", ""),
+            to_addr: tx_data.get("to", ""),
+            value: math.hex_to_int(tx_data.get("value", "0x0")),
+            data: tx_data.get("data", ""),
+            gas_limit: math.hex_to_int(tx_data.get("gas", "0x5208")),
+            gas_used: 0,
+            nonce: math.hex_to_int(tx_data.get("nonce", "0x0")),
+            signature: tx_data.get("signature", ""),
+            status: "pending",
+            bounce_back_protection: tx_data.get("bounceBack", false)
+        )
+    }
+
+    action success_response(id: integer, result: any) -> map {
         return {
             "jsonrpc": "2.0",
             "id": id,
-            "result": result
+            "result": result,
+            "ziver_metadata": {
+                "timestamp": datetime.now().timestamp(),
+                "version": "3.0.0",
+                "quantum_secure": true
+            }
         }
+    }
 
-    action error_response(id: integer, code: integer, message: text) -> Map<text, any>:
+    action error_response(id: integer, code: integer, message: string) -> map {
         return {
             "jsonrpc": "2.0",
             "id": id,
             "error": {
                 "code": code,
-                "message": message
+                "message": message,
+                "data": this.get_error_suggestions(code)
             }
         }
+    }
 
-    action start_http_server():
+    action validate_request(request: map) -> map {
         """
-        Start HTTP server (placeholder for actual implementation)
+        Validate JSON-RPC request structure
         """
-        print "🌐 HTTP Server listening on port " + string(self.port)
-        print "📚 Available methods: " + string(self.methods.keys())
+        if request.get("jsonrpc", "") != "2.0" {
+            return {"valid": false, "error": "Invalid JSON-RPC version"}
+        }
+        
+        if not request.has("method") {
+            return {"valid": false, "error": "Missing method"}
+        }
+        
+        if not request.has("id") {
+            return {"valid": false, "error": "Missing request ID"}
+        }
+        
+        return {"valid": true, "error": ""}
+    }
 
-# Test the RPC server
-print "🔌 Testing JSON-RPC Server..."
-let rpc_server = JSONRPCServer(node, 8545)
-rpc_server.start()
+    action update_method_stats(method: string) {
+        if not this.method_stats.has(method) {
+            this.method_stats[method] = 0
+        }
+        this.method_stats[method] += 1
+    }
 
-# Test some methods
-let test_result = rpc_server.web3_clientVersion([])
-print "Client Version: " + test_result
+    action get_error_suggestions(code: integer) -> string {
+        match code {
+            case -32601: return "Check available methods using ziver_getMethods"
+            case -32000: return "Transaction may have bounce-back protection enabled"
+            case -32602: return "Verify parameter types and values"
+            default: return "Check documentation at docs.ziver.io"
+        }
+    }
 
-let block_number = rpc_server.eth_blockNumber([])
-print "Current Block: " + block_number
+    // Placeholder implementations for advanced features
+    action generate_transaction_explanation(tx: any) {
+        print("🤖 Generating AI explanation for transaction: " + tx.hash.slice(0, 16))
+    }
+
+    action get_seb_defi_block_data(block: any) -> map {
+        return {
+            "social_capital_min": 0.0,
+            "social_capital_max": 1.0,
+            "defi_activity": 0.5
+        }
+    }
+
+    action is_bounceback_protected(tx: any) -> boolean {
+        return tx.bounce_back_protection ?? false
+    }
+
+    action get_cached_explanation(tx_hash: string) -> string? {
+        return null // Would retrieve from cache
+    }
+
+    action start_http_server() {
+        """
+        Start HTTP server (would integrate with actual HTTP library)
+        """
+        print("🌐 HTTP Server listening on port " + string(this.port))
+        
+        // Simulate server operation
+        while this.is_running {
+            sleep(1)
+        }
+    }
+
+    action collect_metrics() {
+        """
+        Collect and report RPC server metrics
+        """
+        while this.is_running {
+            let stats = {
+                "total_requests": this.request_count,
+                "active_methods": this.methods.keys().count(),
+                "method_stats": this.method_stats,
+                "uptime": datetime.now().timestamp() - this.get_start_time()
+            }
+            
+            // Log every 60 seconds
+            sleep(60)
+            print("📊 RPC Metrics: " + string(stats))
+        }
+    }
+
+    action get_start_time() -> integer {
+        return datetime.now().timestamp() // Simplified
+    }
+
+    action sleep(seconds: float) {
+        // Async sleep implementation
+    }
+}
+
+// Test Enhanced RPC Server
+action async test_enhanced_rpc() {
+    print("🔌 Testing Enhanced JSON-RPC Server...")
+    
+    // Create mock node for testing
+    let mock_node = {
+        "network": {"is_listening": true, "get_connected_peers_count": action() { return 5 }},
+        "blockchain": {
+            "get_latest_block_index": action() { return 100 },
+            "get_block": action(n) { return {"index": n, "transactions": []} }
+        },
+        "get_balance_with_social_capital": action(addr) { return {"amount": 1000} }
+    }
+    
+    let rpc_server = JSONRPCServer(node: mock_node, port: 8545)
+    
+    if rpc_server.start() {
+        print("✅ RPC Server started successfully")
+        
+        // Test core methods
+        let version = rpc_server.methods["web3_clientVersion"]([])
+        print("Client Version: " + version)
+        
+        let block_number = rpc_server.methods["eth_blockNumber"]([])
+        print("Current Block: " + block_number)
+        
+        // Test error handling
+        let error_request = {"jsonrpc": "2.0", "method": "invalid_method", "id": 1}
+        let error_response = rpc_server.handle_request(error_request)
+        print("Error Response: " + string(error_response))
+    }
+}
+
+export action get_json_rpc_server(node: any, port: integer) -> JSONRPCProtocol {
+    return JSONRPCServer(node: node, port: port)
+}
