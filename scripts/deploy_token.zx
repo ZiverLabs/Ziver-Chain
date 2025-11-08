@@ -1,0 +1,31 @@
+use "../src/main.zx" as ziver
+
+// Deploy a ZRC-20 token
+action async main() {
+    let args = get_command_line_args()
+    let name = args.get("name", "Test Token")
+    let symbol = args.get("symbol", "TEST")
+    let supply = integer(args.get("supply", "1000000"))
+    let owner = args.get("owner", "ZIV_owner_123")
+    
+    let node = ziver.get_ziver_node()
+    await node.initialize()
+    
+    print("🪙 Deploying ZRC-20 Token...")
+    let token_address = node.deploy_token(name, symbol, supply, owner)
+    
+    print("")
+    print("✅ TOKEN DEPLOYED SUCCESSFULLY")
+    print("==============================")
+    print("Name: " + name + " (" + symbol + ")")
+    print("Total Supply: " + string(supply))
+    print("Token Address: " + token_address)
+    print("Owner: " + owner)
+    print("")
+    print("🔗 Use this address for transfers and trading")
+}
+
+action get_command_line_args() -> map {
+    // Parse command line arguments
+    return {} // Implementation would parse process.argv
+}
