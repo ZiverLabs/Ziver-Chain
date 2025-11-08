@@ -1,0 +1,46 @@
+use "../../src/main.zx" as ziver
+
+// Performance and load testing
+contract LoadTest {
+    action async test_transaction_throughput() -> map {
+        print("📈 Testing Transaction Throughput...")
+        
+        let node = ziver.get_ziver_node()
+        await node.initialize()
+        
+        let wallet = node.create_wallet("load_test_user")
+        let start_time = datetime.now().timestamp()
+        let transaction_count = 100
+        let successful_txs = 0
+        
+        // Send multiple transactions
+        for each i in range(0, transaction_count) {
+            let tx = {
+                "from": wallet,
+                "to": "ZIV_test_receiver",
+                "value": 1,
+                "data": "load_test"
+            }
+            
+            if node.consensus.validate_transaction(tx) {
+                successful_txs += 1
+            }
+        }
+        
+        let end_time = datetime.now().timestamp()
+        let total_time = end_time - start_time
+        let tps = successful_txs / total_time
+        
+        print("✅ Load Test Results:")
+        print("   Transactions: " + string(successful_txs) + "/" + string(transaction_count))
+        print("   Time: " + string(total_time) + " seconds")
+        print("   TPS: " + string(tps))
+        
+        return {
+            "transactions": successful_txs,
+            "total_time": total_time,
+            "tps": tps,
+            "status": tps > 10 ? "PASS" : "FAIL"  // Target: 10+ TPS
+        }
+    }
+}
