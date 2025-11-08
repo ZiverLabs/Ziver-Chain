@@ -1,0 +1,30 @@
+use "../src/main.zx" as ziver
+
+// Create a quantum-resistant wallet
+action async main() {
+    let node = ziver.get_ziver_node()
+    await node.initialize()
+    
+    let wallet_address = node.create_wallet("user_" + string(datetime.now().timestamp()))
+    
+    print("")
+    print("👛 ZIVER WALLET CREATED")
+    print("========================")
+    print("Address: " + wallet_address)
+    print("")
+    print("🔐 Features:")
+    print("  ✅ Quantum-resistant security")
+    print("  ✅ Multi-chain support (ZIVER, ETH, BSC, TON)")
+    print("  ✅ SEB-DeFi social capital tracking")
+    print("  ✅ Bounce-back transaction protection")
+    print("")
+    print("💡 Save this address securely!")
+    print("")
+    
+    // Show wallet info
+    let info = node.get_wallet_info(wallet_address)
+    print("📊 Wallet Info:")
+    print("  Social Capital: " + string(info.social_capital))
+    print("  SEB-DeFi Tier: " + info.seb_defi_tier)
+    print("  Borrowing Power: " + string(info.borrowing_power))
+}
