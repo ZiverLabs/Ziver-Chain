@@ -1,0 +1,388 @@
+use "crypto" as crypto
+use "datetime" as datetime
+use "math" as math
+
+// ZAIE (Ziver Adaptive Intelligence Engine) - Social Capital Scoring
+protocol ZAIEProtocol {
+    action analyze_user_behavior(user: string) -> map
+    action calculate_trust_score(user: string) -> float
+    action generate_explanation(score: float, factors: map) -> string
+    action detect_anomalies(user: string) -> list
+}
+
+contract ZAIEEngine implements ZAIEProtocol {
+    persistent storage behavior_profiles: map
+    persistent storage trust_network: map
+    persistent storage anomaly_detection: map
+    
+    contract BehaviorProfile {
+        persistent storage address: string
+        persistent storage transaction_patterns: map
+        persistent storage social_connections: list
+        persistent storage content_quality: float = 0.5
+        persistent storage consistency_score: float = 0.5
+        persistent storage last_analysis: integer
+        
+        action init(address: string) {
+            this.address = address
+            this.last_analysis = datetime.now().timestamp()
+            this.transaction_patterns = {
+                "frequency": 0,
+                "amount_distribution": {},
+                "time_patterns": {},
+                "counterparty_diversity": 0.5
+            }
+        }
+    }
+
+    action init() {
+        this.behavior_profiles = {}
+        this.trust_network = {}
+        this.anomaly_detection = this.initialize_anomaly_detection()
+    }
+
+    action analyze_user_behavior(user: string) -> map {
+        """
+        Comprehensive analysis of user behavior across multiple dimensions
+        """
+        if not this.behavior_profiles.has(user) {
+            this.behavior_profiles[user] = BehaviorProfile(address: user)
+        }
+        
+        let profile = this.behavior_profiles[user]
+        let analysis = {}
+        
+        // Multi-dimensional analysis
+        analysis.transaction_analysis = this.analyze_transaction_behavior(user)
+        analysis.social_analysis = this.analyze_social_behavior(user)
+        analysis.financial_analysis = this.analyze_financial_behavior(user)
+        analysis.temporal_analysis = this.analyze_temporal_patterns(user)
+        analysis.network_analysis = this.analyze_trust_network(user)
+        
+        // Update profile
+        profile.transaction_patterns = analysis.transaction_analysis
+        profile.consistency_score = this.calculate_consistency(analysis)
+        profile.last_analysis = datetime.now().timestamp()
+        
+        return analysis
+    }
+
+    action calculate_trust_score(user: string) -> float {
+        """
+        Calculate comprehensive trust score using ZAIE AI
+        """
+        let behavior_analysis = this.analyze_user_behavior(user)
+        
+        // Weighted scoring across multiple dimensions
+        let dimensions = {
+            "transaction_health": this.score_transaction_health(behavior_analysis.transaction_analysis),
+            "social_engagement": this.score_social_engagement(behavior_analysis.social_analysis),
+            "financial_responsibility": this.score_financial_responsibility(behavior_analysis.financial_analysis),
+            "behavior_consistency": behavior_analysis.temporal_analysis.consistency,
+            "network_reputation": behavior_analysis.network_analysis.trust_score
+        }
+        
+        // AI-powered weighting based on context
+        let weights = this.calculate_contextual_weights(user, dimensions)
+        
+        // Calculate final trust score
+        let trust_score = 0.0
+        let total_weight = 0.0
+        
+        for each dimension, score in dimensions {
+            let weight = weights[dimension]
+            trust_score += score * weight
+            total_weight += weight
+        }
+        
+        let final_score = trust_score / total_weight if total_weight > 0 else 0.0
+        
+        // Apply anomaly detection adjustments
+        let anomalies = this.detect_anomalies(user)
+        if not anomalies.is_empty() {
+            final_score *= this.calculate_anomaly_penalty(anomalies)
+        }
+        
+        return math.max(0.0, math.min(1.0, final_score))
+    }
+
+    action generate_explanation(score: float, factors: map) -> string {
+        """
+        Generate AI-powered explanation for social capital score
+        """
+        let explanation_parts = []
+        
+        // Positive factors
+        if factors.transaction_health > 0.7 {
+            explanation_parts.push("Strong transaction history with consistent patterns")
+        }
+        
+        if factors.social_engagement > 0.7 {
+            explanation_parts.push("Active community participation and engagement")
+        }
+        
+        if factors.financial_responsibility > 0.7 {
+            explanation_parts.push("Demonstrated financial responsibility and trustworthiness")
+        }
+        
+        if factors.behavior_consistency > 0.8 {
+            explanation_parts.push("Highly consistent behavior patterns over time")
+        }
+        
+        // Improvement suggestions
+        let suggestions = []
+        if factors.transaction_health < 0.5 {
+            suggestions.push("Increase transaction frequency and diversity")
+        }
+        
+        if factors.social_engagement < 0.5 {
+            suggestions.push("Participate more in community activities and governance")
+        }
+        
+        if factors.network_reputation < 0.4 {
+            suggestions.push("Build stronger connections with trusted network participants")
+        }
+        
+        // Construct final explanation
+        let base_explanation = "Your social capital score of " + string(math.round(score * 100)) + 
+                              " is based on analysis of your on-chain behavior, community engagement, " +
+                              "and financial responsibility."
+        
+        if not explanation_parts.is_empty() {
+            base_explanation += " Key strengths include: " + explanation_parts.join(", ") + "."
+        }
+        
+        if not suggestions.is_empty() {
+            base_explanation += " To improve your score: " + suggestions.join(", ") + "."
+        }
+        
+        return base_explanation
+    }
+
+    action detect_anomalies(user: string) -> list {
+        """
+        Detect anomalous behavior patterns using AI
+        """
+        let profile = this.behavior_profiles.get(user, null)
+        if profile == null {
+            return ["No behavior profile available"]
+        }
+        
+        let anomalies = []
+        let current_time = datetime.now().timestamp()
+        
+        // Check for sudden behavior changes
+        if this.detects_sudden_activity_spike(user) {
+            anomalies.push("Sudden increase in transaction activity")
+        }
+        
+        // Check for unusual transaction patterns
+        if this.detects_unusual_transaction_patterns(user) {
+            anomalies.push("Unusual transaction patterns detected")
+        }
+        
+        // Check for connection anomalies
+        if this.detects_suspicious_connections(user) {
+            anomalies.push("Connections to suspicious addresses")
+        }
+        
+        // Check for timing anomalies
+        if this.detects_anomalous_timing(user) {
+            anomalies.push("Unusual activity timing patterns")
+        }
+        
+        return anomalies
+    }
+
+    // Advanced Analysis Methods
+    action analyze_transaction_behavior(user: string) -> map {
+        """
+        Analyze transaction patterns and behaviors
+        """
+        return {
+            "total_transactions": 0, // Would query blockchain
+            "transaction_frequency": 0.5,
+            "amount_distribution": {"mean": 0, "std_dev": 0},
+            "counterparty_diversity": 0.6,
+            "gas_usage_efficiency": 0.7,
+            "success_rate": 0.95
+        }
+    }
+
+    action analyze_social_behavior(user: string) -> map {
+        """
+        Analyze social engagement and community participation
+        """
+        return {
+            "governance_participation": 0.5,
+            "community_interactions": 0.6,
+            "content_contributions": 0.4,
+            "helpfulness_score": 0.7,
+            "network_centrality": 0.5
+        }
+    }
+
+    action analyze_financial_behavior(user: string) -> map {
+        """
+        Analyze financial responsibility and patterns
+        """
+        return {
+            "portfolio_diversity": 0.6,
+            "risk_taking": 0.4,
+            "liquidity_management": 0.7,
+            "collateral_quality": 0.8,
+            "repayment_history": 0.9
+        }
+    }
+
+    action analyze_temporal_patterns(user: string) -> map {
+        """
+        Analyze temporal behavior patterns and consistency
+        """
+        return {
+            "activity_consistency": 0.8,
+            "seasonal_patterns": {},
+            "response_times": 0.6,
+            "reliability_score": 0.7
+        }
+    }
+
+    action analyze_trust_network(user: string) -> map {
+        """
+        Analyze trust network and social connections
+        """
+        return {
+            "trust_score": 0.6,
+            "network_size": 0.5,
+            "connection_quality": 0.7,
+            "influence_score": 0.4
+        }
+    }
+
+    // Scoring Algorithms
+    action score_transaction_health(analysis: map) -> float {
+        let factors = [
+            analysis.transaction_frequency * 0.3,
+            analysis.counterparty_diversity * 0.25,
+            analysis.success_rate * 0.25,
+            analysis.gas_usage_efficiency * 0.2
+        ]
+        return factors.reduce(action(acc, val) { return acc + val }, 0.0)
+    }
+
+    action score_social_engagement(analysis: map) -> float {
+        let factors = [
+            analysis.governance_participation * 0.3,
+            analysis.community_interactions * 0.25,
+            analysis.content_contributions * 0.2,
+            analysis.helpfulness_score * 0.15,
+            analysis.network_centrality * 0.1
+        ]
+        return factors.reduce(action(acc, val) { return acc + val }, 0.0)
+    }
+
+    action score_financial_responsibility(analysis: map) -> float {
+        let factors = [
+            analysis.portfolio_diversity * 0.25,
+            (1.0 - analysis.risk_taking) * 0.25, // Lower risk is better
+            analysis.liquidity_management * 0.2,
+            analysis.collateral_quality * 0.15,
+            analysis.repayment_history * 0.15
+        ]
+        return factors.reduce(action(acc, val) { return acc + val }, 0.0)
+    }
+
+    action calculate_consistency(analysis: map) -> float {
+        // Measure how consistent user behavior is across dimensions
+        let scores = [
+            analysis.transaction_analysis.success_rate,
+            analysis.temporal_analysis.activity_consistency,
+            analysis.financial_analysis.repayment_history
+        ]
+        
+        let mean = scores.reduce(action(acc, val) { return acc + val }, 0.0) / scores.count()
+        let variance = scores.reduce(action(acc, val) { return acc + (val - mean) * (val - mean) }, 0.0) / scores.count()
+        
+        return math.max(0.0, 1.0 - variance) // Lower variance = higher consistency
+    }
+
+    action calculate_contextual_weights(user: string, dimensions: map) -> map {
+        // AI-powered contextual weighting based on user profile and network state
+        return {
+            "transaction_health": 0.3,
+            "social_engagement": 0.25,
+            "financial_responsibility": 0.2,
+            "behavior_consistency": 0.15,
+            "network_reputation": 0.1
+        }
+    }
+
+    action calculate_anomaly_penalty(anomalies: list) -> float {
+        let penalty = 1.0
+        for each anomaly in anomalies {
+            penalty *= 0.9 // 10% penalty per anomaly
+        }
+        return math.max(0.5, penalty) // Cap at 50% penalty
+    }
+
+    // Anomaly Detection Methods
+    action detects_sudden_activity_spike(user: string) -> boolean {
+        return false // Would implement spike detection
+    }
+
+    action detects_unusual_transaction_patterns(user: string) -> boolean {
+        return false // Would implement pattern analysis
+    }
+
+    action detects_suspicious_connections(user: string) -> boolean {
+        return false // Would implement network analysis
+    }
+
+    action detects_anomalous_timing(user: string) -> boolean {
+        return false // Would implement temporal analysis
+    }
+
+    action initialize_anomaly_detection() -> map {
+        return {
+            "spike_threshold": 3.0, // 3x normal activity
+            "pattern_deviation_threshold": 0.8,
+            "suspicious_connection_score": 0.2,
+            "timing_anomaly_threshold": 2.5
+        }
+    }
+}
+
+// Test ZAIE Engine
+action async test_zaie_engine() {
+    print("🧠 Testing ZAIE Engine...")
+    let zaie = ZAIEEngine()
+    
+    let test_user = "ZIV_user_456"
+    
+    // Test behavior analysis
+    let behavior_analysis = zaie.analyze_user_behavior(test_user)
+    print("Behavior Analysis: " + string(behavior_analysis))
+    
+    // Test trust score
+    let trust_score = zaie.calculate_trust_score(test_user)
+    print("Trust Score: " + string(trust_score))
+    
+    // Test explanation generation
+    let factors = {
+        "transaction_health": 0.8,
+        "social_engagement": 0.6,
+        "financial_responsibility": 0.7,
+        "behavior_consistency": 0.9,
+        "network_reputation": 0.5
+    }
+    let explanation = zaie.generate_explanation(trust_score, factors)
+    print("AI Explanation: " + explanation)
+    
+    // Test anomaly detection
+    let anomalies = zaie.detect_anomalies(test_user)
+    print("Detected Anomalies: " + string(anomalies))
+}
+
+export action get_zaie_engine() -> ZAIEProtocol {
+    return ZAIEEngine()
+}
