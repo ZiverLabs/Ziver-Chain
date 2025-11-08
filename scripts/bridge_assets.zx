@@ -1,0 +1,36 @@
+use "../src/main.zx" as ziver
+
+// Bridge assets between chains
+action async main() {
+    let args = get_command_line_args()
+    let from_chain = args.get("from", "ZIVER")
+    let to_chain = args.get("to", "ETHEREUM") 
+    let amount = integer(args.get("amount", "100"))
+    let wallet = args.get("wallet", "")
+    
+    if wallet == "" {
+        print("❌ Please specify wallet address with --wallet")
+        return
+    }
+    
+    let node = ziver.get_ziver_node()
+    await node.initialize()
+    
+    print("🌉 Starting Cross-Chain Bridge...")
+    let result = node.bridge_assets(wallet, from_chain, to_chain, amount, null)
+    
+    if result.success {
+        print("")
+        print("✅ BRIDGE TRANSACTION INITIATED")
+        print("===============================")
+        print("From: " + from_chain)
+        print("To: " + to_chain) 
+        print("Amount: " + string(amount))
+        print("Wallet: " + wallet)
+        print("Bridge ID: " + result.bridge_id)
+        print("")
+        print("⏳ Estimated completion: 2-5 minutes")
+    } else {
+        print("❌ Bridge failed: " + result.error)
+    }
+}
