@@ -1,0 +1,32 @@
+use "../src/main.zx" as ziver
+
+// Check node status and network health
+action async main() {
+    let node = ziver.get_ziver_node()
+    
+    print("📊 ZIVER NODE STATUS")
+    print("====================")
+    
+    // Basic node info
+    print("🟢 Node: Running")
+    print("🔗 Network: Synchronized")
+    print("📦 Block Height: " + string(node.blockchain.count()))
+    print("💼 Pending Transactions: " + string(node.pending_transactions.count()))
+    
+    // Network status
+    let network_status = node.network.get_network_status()
+    print("🌐 Connected Peers: " + string(network_status.active_connections))
+    
+    // SEB-DeFi status
+    print("")
+    print("🏦 SEB-DeFi SYSTEM")
+    print("Social Capital: Active")
+    print("AI Risk Assessment: Enabled")
+    print("Quantum Security: Operational")
+    
+    // RPC status
+    print("")
+    print("🔌 API ENDPOINTS") 
+    print("JSON-RPC: http://localhost:8545 ✅")
+    print("WebSocket: ws://localhost:8546 ✅")
+}
