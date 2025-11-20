@@ -1,14 +1,17 @@
-# src/main.zx - FIXED VERSION
+# src/main.zx - FINAL INTEGRATED VERSION
 use { JSONRPCServer, JSONRPCProtocol } from "./rpc/server.zx"
 use { WebSocketRPCServer, WebSocketRPCProtocol } from "./rpc/websocket.zx"
-use { ContractRuntime } from "./runtime/contract_runtime.zx"
-use { StateManager } from "./runtime/state_manager.zx"
+use { ContractRuntime, ContractRuntimeProtocol } from "./runtime/contract_runtime.zx"
+use { StateManager, StateManagerProtocol } from "./runtime/state_manager.zx"
 use { P2PNetwork, P2PNetworkProtocol } from "./network/network.zx"
 use { ZiverVirtualMachine, VirtualMachine } from "./core/zvm.zx"
 use { PoSConsensus, ConsensusProtocol } from "./core/consensus.zx"
 use { QuantumCrypto, QuantumResistantCrypto } from "./core/crypto.zx"
 use { create_genesis_block, create_block, Block, Transaction } from "./core/block.zx"
-use "./stubs.zx" as stubs
+use { SocialCapitalEngine, SCSSystem } from "./core/social_capital.zx"
+use { CrossChainBridge } from "./contracts/bridge.zx"
+use { ZRC20Token } from "./contracts/token_standard.zx"
+use { ZiverWallet } from "./contracts/wallet.zx"
 
 entity ZiverNode {
     rpc_server: JSONRPCServer
@@ -19,31 +22,33 @@ entity ZiverNode {
     consensus: PoSConsensus
     network: P2PNetwork
     zvm: ZiverVirtualMachine
-    bridge_manager: any
-    blockchain: any
+    bridge_manager: CrossChainBridge
+    social_capital_engine: SocialCapitalEngine
+    blockchain: list
     pending_transactions: list
-    token_registry: any
-    wallet_contracts: any
+    token_registry: map
+    wallet_contracts: map
 }
 
-action ZiverNode.init() {
+action ZiverNode.init() -> boolean {
     """
     Initialize complete blockchain node
     """
     print("🚀 Initializing Complete Ziver Node...")
 
     // Initialize core components
-    let crypto = QuantumCrypto()
+    let crypto = QuantumCrypto{}
     self.node_wallet = crypto.generate_keypair()
 
-    self.consensus = PoSConsensus()
-    self.network = P2PNetwork(node_id: "ziver_node_" + self.node_wallet.address.slice(0, 8))
-    self.zvm = ZiverVirtualMachine()
-    self.bridge_manager = CrossChainBridge()
+    self.consensus = PoSConsensus{}
+    self.network = P2PNetwork{node_id: "ziver_node_" + self.node_wallet.address.slice(0, 8)}
+    self.zvm = ZiverVirtualMachine{}
+    self.bridge_manager = CrossChainBridge{}
+    self.social_capital_engine = SocialCapitalEngine{}
 
     // Initialize new runtime components
-    self.contract_runtime = ContractRuntime()
-    self.state_manager = StateManager()
+    self.contract_runtime = ContractRuntime{}
+    self.state_manager = StateManager{}
 
     // Initialize collections
     self.blockchain = []
@@ -62,8 +67,8 @@ action ZiverNode.init() {
     self.consensus.register_validator(self.node_wallet.address, 1000)
 
     // Initialize RPC servers
-    self.rpc_server = JSONRPCServer(self, 8545)
-    self.ws_server = WebSocketRPCServer(self.rpc_server, 8546)
+    self.rpc_server = JSONRPCServer{node: self, port: 8545}
+    self.ws_server = WebSocketRPCServer{rpc_server: self.rpc_server, port: 8546}
 
     print("✅ Complete node initialized with RPC, Runtime, and State management")
     return true
@@ -244,5 +249,15 @@ export {
     get_ziver_node,
     ZiverNode,
     JSONRPCServer,
-    WebSocketRPCServer
+    WebSocketRPCServer,
+    ContractRuntime,
+    StateManager,
+    P2PNetwork,
+    ZiverVirtualMachine,
+    PoSConsensus,
+    QuantumCrypto,
+    SocialCapitalEngine,
+    CrossChainBridge,
+    ZRC20Token,
+    ZiverWallet
 }
