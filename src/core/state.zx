@@ -1,6 +1,7 @@
-# File: src/core/state.zx
+# src/core/state.zx
 use "datetime" as datetime
 use "math" as math
+use "crypto" as crypto
 
 // Self-Evolving State Management with AI Optimization
 protocol SelfEvolvingProtocol {
@@ -16,38 +17,29 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
     persistent storage pending_adjustments: list
     persistent storage network_metrics: map
     persistent storage patch_registry: map
-    
-    contract ParameterAdjustment {
-        persistent storage parameter: string
-        persistent storage old_value: any
-        persistent storage new_value: any
-        persistent storage reason: string
-        persistent storage proposed_by: string
-        persistent storage timestamp: integer
-        persistent storage ai_confidence: float = 0.0
-        
-        action init(parameter: string, new_value: any, reason: string, proposed_by: string) {
-            this.parameter = parameter
-            this.new_value = new_value
-            this.reason = reason
-            this.proposed_by = proposed_by
-            this.timestamp = datetime.now().timestamp()
-        }
+
+    entity ParameterAdjustment {
+        parameter: string
+        old_value: any
+        new_value: any
+        reason: string
+        proposed_by: string
+        timestamp: integer
+        ai_confidence: float = 0.0
     }
 
     action init() {
-        // Initialize with default blockchain parameters
         this.parameters = {
             "block_time_target": 2.0,
             "block_gas_limit": 8000000,
-            "max_block_size": 1048576, // 1MB
+            "max_block_size": 1048576,
             "difficulty_adjustment_window": 100,
             "validator_min_stake": 1000,
             "transaction_fee_base": 100,
             "consensus_timeout": 30,
             "network_propagation_delay": 2
         }
-        
+
         this.adjustment_history = []
         this.pending_adjustments = []
         this.network_metrics = {}
@@ -55,70 +47,53 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
     }
 
     action propose_parameter_adjustment(parameter: string, new_value: any, reason: string) -> boolean {
-        """
-        Propose parameter adjustment with AI validation
-        """
         if not this.parameters.has(parameter) {
             print("Unknown parameter: " + parameter)
             return false
         }
 
-        let adjustment = ParameterAdjustment(
+        let adjustment = ParameterAdjustment{
             parameter: parameter,
             new_value: new_value,
             reason: reason,
-            proposed_by: "system" // Would be context.sender in production
-        )
+            proposed_by: "system",
+            timestamp: datetime.now().timestamp()
+        }
 
-        // AI validation of proposed adjustment
         let validation = this.ai_validate_adjustment(adjustment)
         if validation.valid {
             adjustment.ai_confidence = validation.confidence
             this.pending_adjustments.push(adjustment)
             print("Adjustment proposed: " + parameter + " -> " + string(new_value))
-            
-            // Auto-apply high-confidence AI adjustments
+
             if validation.confidence > 0.8 {
                 return this.apply_adjustment(adjustment)
             }
             return true
         }
-        
+
         print("AI rejected adjustment: " + validation.reason)
         return false
     }
 
     action apply_adjustment(adjustment: ParameterAdjustment) -> boolean {
-        """
-        Apply parameter adjustment with safety checks
-        """
-        // Store old value
         adjustment.old_value = this.parameters[adjustment.parameter]
-        
-        // Apply new value
         this.parameters[adjustment.parameter] = adjustment.new_value
         this.adjustment_history.push(adjustment)
-        
-        // Remove from pending
+
         this.pending_adjustments = this.pending_adjustments.filter(action(a) { 
             return a.parameter != adjustment.parameter 
         })
-        
+
         print("✅ Applied adjustment: " + adjustment.parameter + " = " + string(adjustment.new_value))
-        
-        // Emit event for network propagation
         this.emit_parameter_change(adjustment)
         return true
     }
 
     action apply_ai_optimization() -> map {
-        """
-        AI-driven automatic parameter optimization
-        """
         let health = this.get_network_health()
         let optimizations = []
-        
-        // AI analyzes network health and suggests optimizations
+
         if health.throughput < health.target_throughput * 0.8 {
             let success = this.propose_parameter_adjustment(
                 "block_gas_limit", 
@@ -127,7 +102,7 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
             )
             if success { optimizations.push("block_gas_limit") }
         }
-        
+
         if health.latency > health.target_latency * 1.2 {
             let success = this.propose_parameter_adjustment(
                 "consensus_timeout",
@@ -136,11 +111,10 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
             )
             if success { optimizations.push("consensus_timeout") }
         }
-        
-        // Adjust difficulty based on block time
+
         let avg_block_time = health.average_block_time
         let target_block_time = this.parameters["block_time_target"]
-        
+
         if avg_block_time > target_block_time * 1.1 {
             let success = this.propose_parameter_adjustment(
                 "difficulty_adjustment_window",
@@ -149,7 +123,7 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
             )
             if success { optimizations.push("difficulty") }
         }
-        
+
         return {
             "applied_optimizations": optimizations,
             "network_health": health,
@@ -158,14 +132,10 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
     }
 
     action get_network_health() -> map {
-        """
-        Analyze network health metrics for AI optimization
-        """
-        // In production, this would query real network data
         return {
-            "throughput": 950, // tps
+            "throughput": 950,
             "target_throughput": 1000,
-            "latency": 2.5, // seconds
+            "latency": 2.5,
             "target_latency": 2.0,
             "average_block_time": 2.2,
             "validator_participation": 0.89,
@@ -176,38 +146,30 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
     }
 
     action hot_patch_system(patch_code: string, signature: string) -> boolean {
-        """
-        Apply hot patches without downtime
-        """
-        // Verify patch signature
         if not this.verify_patch_signature(patch_code, signature) {
             print("❌ Invalid patch signature")
             return false
         }
-        
-        // Validate patch safety
+
         let validation = this.validate_patch_safety(patch_code)
         if not validation.safe {
             print("❌ Patch validation failed: " + validation.reason)
             return false
         }
-        
-        // Apply patch with rollback capability
+
         let patch_id = crypto.keccak256(patch_code + string(datetime.now().timestamp()))
         this.patch_registry[patch_id] = {
             "code": patch_code,
             "applied_at": datetime.now().timestamp(),
             "rollback_data": this.create_snapshot()
         }
-        
-        // Execute patch in isolated environment
+
         let success = this.execute_patch(patch_code)
-        
+
         if success {
             print("✅ Hot patch applied successfully: " + patch_id.slice(0, 16))
             return true
         } else {
-            // Rollback on failure
             this.rollback_patch(patch_id)
             print("❌ Patch failed, rolled back")
             return false
@@ -216,13 +178,9 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
 
     // AI Validation and Helper Methods
     action ai_validate_adjustment(adjustment: ParameterAdjustment) -> map {
-        """
-        AI-powered validation of parameter adjustments
-        """
-        // Simulate AI analysis (would integrate with ZAIE engine)
         let risk_factors = this.assess_adjustment_risk(adjustment)
         let confidence = math.max(0.1, 1.0 - risk_factors.total_risk)
-        
+
         return {
             "valid": confidence > 0.6,
             "confidence": confidence,
@@ -232,16 +190,12 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
     }
 
     action assess_adjustment_risk(adjustment: ParameterAdjustment) -> map {
-        """
-        Assess risks of parameter adjustment
-        """
-        // Comprehensive risk analysis
         let stability_risk = this.calculate_stability_risk(adjustment)
         let security_risk = this.calculate_security_risk(adjustment)
         let performance_risk = this.calculate_performance_risk(adjustment)
-        
+
         let total_risk = (stability_risk + security_risk + performance_risk) / 3.0
-        
+
         return {
             "stability_risk": stability_risk,
             "security_risk": security_risk,
@@ -251,9 +205,9 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
         }
     }
 
-    // Placeholder implementations for patch system
+    // Placeholder implementations
     action verify_patch_signature(patch_code: string, signature: string) -> boolean {
-        return true // Would verify with validator multisig
+        return true
     }
 
     action validate_patch_safety(patch_code: string) -> map {
@@ -261,7 +215,7 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
     }
 
     action execute_patch(patch_code: string) -> boolean {
-        return true // Would execute in sandbox
+        return true
     }
 
     action create_snapshot() -> map {
@@ -273,10 +227,22 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
     }
 
     action emit_parameter_change(adjustment: ParameterAdjustment) {
-        // Event emission for reactive systems
         print("📊 Parameter changed: " + adjustment.parameter + 
               " from " + string(adjustment.old_value) + 
               " to " + string(adjustment.new_value))
+    }
+
+    // Placeholder risk calculation methods
+    action calculate_stability_risk(adjustment: ParameterAdjustment) -> float {
+        return 0.2
+    }
+
+    action calculate_security_risk(adjustment: ParameterAdjustment) -> float {
+        return 0.1
+    }
+
+    action calculate_performance_risk(adjustment: ParameterAdjustment) -> float {
+        return 0.3
     }
 }
 
@@ -284,19 +250,18 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
 action async test_self_evolving_state() {
     print("🔄 Testing Self-Evolving State...")
     let state = SelfEvolvingState()
-    
-    // Test parameter adjustment
+
     state.propose_parameter_adjustment("block_gas_limit", 8500000, "Increase for higher throughput")
-    
-    // Test AI optimization
+
     let optimizations = state.apply_ai_optimization()
     print("AI Optimizations: " + string(optimizations))
-    
-    // Test network health
+
     let health = state.get_network_health()
     print("Network Health: " + string(health))
 }
 
-export action get_self_evolving_state() -> SelfEvolvingProtocol {
-    return SelfEvolvingState()
+export {
+    SelfEvolvingState,
+    SelfEvolvingProtocol,
+    test_self_evolving_state
 }
