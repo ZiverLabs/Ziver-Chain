@@ -1,203 +1,252 @@
 # src/contracts/wallet.zx
 # Ziver Multi-Chain Wallet Smart Contract
 
-use { Crypto } from "../core/crypto.zx"
+contract ZiverWallet {
+    persistent storage owner: string
+    persistent storage balances: map
+    persistent storage tokens: map
+    persistent storage supported_chains: list
+    persistent storage guardians: list
+    persistent storage recovery_threshold: integer = 2
 
-entity ZiverWallet:
-    owner: Address
-    balances: Map<text, integer>  # chain -> balance
-    tokens: Map<text, Map<text, integer>>  # chain -> token_address -> balance
-    supported_chains: List<text> = ["ZIVER", "ETHEREUM", "BSC", "TON"]
-    guardians: List<Address>
-    recovery_threshold: integer = 2
-    
-    action constructor(initial_owner: Address):
+    action init(initial_owner: string) {
         """
         Initialize wallet with owner
         """
-        self.owner = initial_owner
-        self.balances["ZIVER"] = 0
-        self.balances["ETHEREUM"] = 0  
-        self.balances["BSC"] = 0
-        self.balances["TON"] = 0
-        
-        print "👛 Wallet created for: " + initial_owner
-    
-    action deposit(chain: text, amount: integer) -> boolean:
+        this.owner = initial_owner
+        this.balances = {
+            "ZIVER": 0,
+            "ETHEREUM": 0,  
+            "BSC": 0,
+            "TON": 0
+        }
+        this.tokens = {}
+        this.supported_chains = ["ZIVER", "ETHEREUM", "BSC", "TON"]
+        this.guardians = []
+
+        print("👛 Wallet created for: " + initial_owner)
+    }
+
+    action deposit(chain: string, amount: integer) -> boolean {
         """
         Deposit native currency to wallet
         """
-        if not self.supported_chains.contains(chain):
-            print "❌ Unsupported chain: " + chain
+        if not this.supported_chains.contains(chain) {
+            print("❌ Unsupported chain: " + chain)
             return false
-        
-        if amount <= 0:
-            print "❌ Invalid amount"
+        }
+
+        if amount <= 0 {
+            print("❌ Invalid amount")
             return false
-        
-        self.balances[chain] = (self.balances[chain] ?? 0) + amount
-        print "💰 Deposited " + string(amount) + " to " + chain + " chain"
-        
+        }
+
+        this.balances[chain] = this.balances.get(chain, 0) + amount
+        print("💰 Deposited " + string(amount) + " to " + chain + " chain")
+
         return true
-    
-    action withdraw(chain: text, amount: integer, to: Address) -> boolean:
+    }
+
+    action withdraw(chain: string, amount: integer, to: string) -> boolean {
         """
         Withdraw native currency from wallet
         """
-        if not self.supported_chains.contains(chain):
-            print "❌ Unsupported chain: " + chain
+        if not this.supported_chains.contains(chain) {
+            print("❌ Unsupported chain: " + chain)
             return false
-        
-        let current_balance = self.balances[chain] ?? 0
-        if current_balance < amount:
-            print "❌ Insufficient balance on " + chain + " chain"
+        }
+
+        let current_balance = this.balances.get(chain, 0)
+        if current_balance < amount {
+            print("❌ Insufficient balance on " + chain + " chain")
             return false
-        
-        # Verify sender is owner (in real implementation, check signature)
-        if context.caller != self.owner:
-            print "❌ Only owner can withdraw"
+        }
+
+        // Verify sender is owner (in real implementation, check signature)
+        let caller = "context.caller"  // Would be actual caller in production
+        if caller != this.owner {
+            print("❌ Only owner can withdraw")
             return false
-        
-        self.balances[chain] = current_balance - amount
-        print "💸 Withdrew " + string(amount) + " from " + chain + " chain to " + to
-        
+        }
+
+        this.balances[chain] = current_balance - amount
+        print("💸 Withdrew " + string(amount) + " from " + chain + " chain to " + to)
+
         return true
-    
-    action store_token(chain: text, token_address: text, amount: integer) -> boolean:
+    }
+
+    action store_token(chain: string, token_address: string, amount: integer) -> boolean {
         """
         Store token from any supported chain
         """
-        if not self.supported_chains.contains(chain):
-            print "❌ Unsupported chain: " + chain
+        if not this.supported_chains.contains(chain) {
+            print("❌ Unsupported chain: " + chain)
             return false
-        
-        if not self.tokens.has(chain):
-            self.tokens[chain] = {}
-        
-        let current_amount = self.tokens[chain][token_address] ?? 0
-        self.tokens[chain][token_address] = current_amount + amount
-        
-        print "🪙 Stored token " + token_address + " on " + chain + " chain: " + string(amount)
+        }
+
+        if not this.tokens.has(chain) {
+            this.tokens[chain] = {}
+        }
+
+        let chain_tokens = this.tokens[chain]
+        let current_amount = chain_tokens.get(token_address, 0)
+        chain_tokens[token_address] = current_amount + amount
+
+        print("🪙 Stored token " + token_address + " on " + chain + " chain: " + string(amount))
         return true
-    
-    action get_token_balance(chain: text, token_address: text) -> integer:
+    }
+
+    action get_token_balance(chain: string, token_address: string) -> integer {
         """
         Get token balance for specific chain
         """
-        if not self.tokens.has(chain):
+        if not this.tokens.has(chain) {
             return 0
-        
-        return self.tokens[chain][token_address] ?? 0
-    
-    action get_balance(chain: text) -> integer:
+        }
+
+        let chain_tokens = this.tokens[chain]
+        return chain_tokens.get(token_address, 0)
+    }
+
+    action get_balance(chain: string) -> integer {
         """
         Get native currency balance for specific chain
         """
-        return self.balances[chain] ?? 0
-    
-    action get_total_portfolio_value() -> Map<text, integer>:
+        return this.balances.get(chain, 0)
+    }
+
+    action get_total_portfolio_value() -> map {
         """
         Get total portfolio value across all chains
         """
         let portfolio = {}
-        
-        for each chain in self.supported_chains:
-            let native_balance = self.balances[chain] ?? 0
+
+        for each chain in this.supported_chains {
+            let native_balance = this.balances.get(chain, 0)
             let token_balance = 0
-            
-            if self.tokens.has(chain):
-                for each token_amount in self.tokens[chain].values():
+
+            if this.tokens.has(chain) {
+                let chain_tokens = this.tokens[chain]
+                for each token_address, token_amount in chain_tokens {
                     token_balance += token_amount
-            
+                }
+            }
+
             portfolio[chain] = native_balance + token_balance
-        
+        }
+
         return portfolio
-    
-    action add_guardian(guardian: Address):
+    }
+
+    action add_guardian(guardian: string) {
         """
         Add recovery guardian
         """
-        if context.caller != self.owner:
-            print "❌ Only owner can add guardians"
+        let caller = "context.caller"  // Would be actual caller in production
+        if caller != this.owner {
+            print("❌ Only owner can add guardians")
             return
-        
-        if not self.guardians.contains(guardian):
-            self.guardians.add(guardian)
-            print "🛡️ Guardian added: " + guardian
-    
-    action recover_wallet(new_owner: Address, guardian_signatures: List<text>) -> boolean:
+        }
+
+        if not this.guardians.contains(guardian) {
+            this.guardians.push(guardian)
+            print("🛡️ Guardian added: " + guardian)
+        }
+    }
+
+    action recover_wallet(new_owner: string, guardian_signatures: list) -> boolean {
         """
         Recover wallet with guardian approval
         """
-        if guardian_signatures.count() < self.recovery_threshold:
-            print "❌ Insufficient guardian signatures"
+        if guardian_signatures.count() < this.recovery_threshold {
+            print("❌ Insufficient guardian signatures")
             return false
-        
-        # Verify guardian signatures (simplified)
+        }
+
+        // Verify guardian signatures (simplified)
         let valid_signatures = 0
-        for each signature in guardian_signatures:
-            # In real implementation, verify each signature
+        for each signature in guardian_signatures {
+            // In real implementation, verify each signature
             valid_signatures += 1
-        
-        if valid_signatures >= self.recovery_threshold:
-            self.owner = new_owner
-            print "🔓 Wallet recovered by new owner: " + new_owner
+        }
+
+        if valid_signatures >= this.recovery_threshold {
+            this.owner = new_owner
+            print("🔓 Wallet recovered by new owner: " + new_owner)
             return true
-        
+        }
+
         return false
-    
-    action bridge_assets(source_chain: text, target_chain: text, amount: integer, token_address: text?) -> boolean:
+    }
+
+    action bridge_assets(source_chain: string, target_chain: string, amount: integer, token_address: string?) -> boolean {
         """
         Bridge assets between chains
         """
-        if not self.supported_chains.contains(source_chain) or not self.supported_chains.contains(target_chain):
-            print "❌ Unsupported chain"
+        if not this.supported_chains.contains(source_chain) or not this.supported_chains.contains(target_chain) {
+            print("❌ Unsupported chain")
             return false
-        
-        if token_address:
-            # Bridge token
-            let current_balance = self.get_token_balance(source_chain, token_address)
-            if current_balance < amount:
-                print "❌ Insufficient token balance"
+        }
+
+        if token_address != null {
+            // Bridge token
+            let current_balance = this.get_token_balance(source_chain, token_address)
+            if current_balance < amount {
+                print("❌ Insufficient token balance")
                 return false
-            
-            # Lock tokens on source chain
-            self.tokens[source_chain][token_address] = current_balance - amount
-            
-            # Mint on target chain (would call bridge contract)
-            self.store_token(target_chain, token_address, amount)
-            
-            print "🌉 Bridged token " + token_address + ": " + source_chain + " → " + target_chain
-        else:
-            # Bridge native currency
-            let current_balance = self.balances[source_chain] ?? 0
-            if current_balance < amount:
-                print "❌ Insufficient native balance"
+            }
+
+            // Lock tokens on source chain
+            let source_tokens = this.tokens.get(source_chain, {})
+            source_tokens[token_address] = current_balance - amount
+            this.tokens[source_chain] = source_tokens
+
+            // Mint on target chain (would call bridge contract)
+            this.store_token(target_chain, token_address, amount)
+
+            print("🌉 Bridged token " + token_address + ": " + source_chain + " → " + target_chain)
+        } else {
+            // Bridge native currency
+            let current_balance = this.balances.get(source_chain, 0)
+            if current_balance < amount {
+                print("❌ Insufficient native balance")
                 return false
-            
-            self.balances[source_chain] = current_balance - amount
-            self.balances[target_chain] = (self.balances[target_chain] ?? 0) + amount
-            
-            print "🌉 Bridged native currency: " + source_chain + " → " + target_chain
-        
+            }
+
+            this.balances[source_chain] = current_balance - amount
+            this.balances[target_chain] = this.balances.get(target_chain, 0) + amount
+
+            print("🌉 Bridged native currency: " + source_chain + " → " + target_chain)
+        }
+
         return true
+    }
+}
 
-# Test the wallet
-print "👛 Testing Multi-Chain Wallet..."
-let wallet = ZiverWallet("ZIV_user_123")
+// Test the wallet
+action test_multi_chain_wallet() {
+    print("👛 Testing Multi-Chain Wallet...")
+    let wallet = ZiverWallet{}
+    wallet.init("ZIV_user_123")
 
-# Test deposits
-wallet.deposit("ZIVER", 1000)
-wallet.deposit("ETHEREUM", 500)
+    // Test deposits
+    wallet.deposit("ZIVER", 1000)
+    wallet.deposit("ETHEREUM", 500)
 
-# Test token storage
-wallet.store_token("ETHEREUM", "0xUSDT", 1500)
-wallet.store_token("BSC", "0xBUSD", 2000)
+    // Test token storage
+    wallet.store_token("ETHEREUM", "0xUSDT", 1500)
+    wallet.store_token("BSC", "0xBUSD", 2000)
 
-# Check balances
-print "ZIVER Balance: " + string(wallet.get_balance("ZIVER"))
-print "ETH USDT Balance: " + string(wallet.get_token_balance("ETHEREUM", "0xUSDT"))
+    // Check balances
+    print("ZIVER Balance: " + string(wallet.get_balance("ZIVER")))
+    print("ETH USDT Balance: " + string(wallet.get_token_balance("ETHEREUM", "0xUSDT")))
 
-# Test portfolio
-let portfolio = wallet.get_total_portfolio_value()
-print "📊 Total Portfolio: " + string(portfolio)
+    // Test portfolio
+    let portfolio = wallet.get_total_portfolio_value()
+    print("📊 Total Portfolio: " + string(portfolio))
+}
+
+export {
+    ZiverWallet,
+    test_multi_chain_wallet
+}
