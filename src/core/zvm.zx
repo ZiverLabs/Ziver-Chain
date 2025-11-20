@@ -17,40 +17,24 @@ contract ZiverVirtualMachine implements VirtualMachine {
     persistent storage gas_price: integer = 1
     persistent storage global_state: map
     persistent storage execution_history: list
-    
-    contract Contract {
-        persistent storage address: string
-        persistent storage code: string
-        persistent storage storage: map
-        persistent storage owner: string
-        persistent storage balance: integer = 0
-        persistent storage created_at: integer
-        persistent storage gas_used: integer = 0
-        persistent storage execution_count: integer = 0
-        
-        action init(address: string, code: string, owner: string, balance: integer) {
-            this.address = address
-            this.code = code
-            this.owner = owner
-            this.balance = balance
-            this.created_at = datetime.now().timestamp()
-            this.storage = {}
-        }
+
+    entity Contract {
+        address: string
+        code: string
+        storage: map
+        owner: string
+        balance: integer = 0
+        created_at: integer
+        gas_used: integer = 0
+        execution_count: integer = 0
     }
 
-    contract ExecutionResult {
-        persistent storage return_value: any
-        persistent storage storage_changes: map
-        persistent storage gas_used: integer
-        persistent storage events_emitted: list
-        persistent storage success: boolean = true
-        
-        action init(return_value: any, storage_changes: map, gas_used: integer) {
-            this.return_value = return_value
-            this.storage_changes = storage_changes
-            this.gas_used = gas_used
-            this.events_emitted = []
-        }
+    entity ExecutionResult {
+        return_value: any
+        storage_changes: map
+        gas_used: integer
+        events_emitted: list
+        success: boolean = true
     }
 
     action init() {
@@ -60,63 +44,51 @@ contract ZiverVirtualMachine implements VirtualMachine {
     }
 
     action deploy_contract(code: string, owner: string, initial_balance: integer = 0) -> string {
-        """
-        Deploy a Zexus smart contract with enhanced security
-        """
-        // Validate contract code
         let validation = this.validate_contract_code(code)
         if not validation.valid {
             throw "Contract validation failed: " + validation.reason
         }
 
-        // Generate quantum-resistant contract address
         let nonce = datetime.now().timestamp()
         let address_input = owner + code + string(nonce)
         let contract_hash = crypto.keccak256(address_input)
         let contract_address = "CONTRACT_ZIV_" + contract_hash.slice(0, 40)
 
-        // Create contract instance
-        let contract = Contract(
+        let contract = Contract{
             address: contract_address,
             code: code,
             owner: owner,
-            balance: initial_balance
-        )
+            balance: initial_balance,
+            created_at: datetime.now().timestamp(),
+            storage: {}
+        }
 
         this.contracts[contract_address] = contract
-        
-        // Initialize contract storage
         this.initialize_contract_storage(contract)
-        
+
         print("📄 Contract deployed at: " + contract_address)
         print("  Owner: " + owner)
         print("  Balance: " + string(initial_balance))
-        
+
         return contract_address
     }
 
     action execute_contract(contract_address: string, function: string, args: list, caller: string, value: integer = 0) -> any {
-        """
-        Execute a contract function with comprehensive safety checks
-        """
         if not this.contracts.has(contract_address) {
             throw "Contract not found: " + contract_address
         }
 
         let contract = this.contracts[contract_address]
-        
-        // Pre-execution checks
         let gas_estimate = this.estimate_gas(contract_address, function, args)
+        
         if value < gas_estimate {
             throw "Insufficient gas: " + string(gas_estimate) + " required, " + string(value) + " provided"
         }
 
-        // Check contract balance for value transfers
         if value > 0 && contract.balance < value {
             throw "Insufficient contract balance"
         }
 
-        // Create execution context
         let context = {
             "caller": caller,
             "value": value,
@@ -125,35 +97,28 @@ contract ZiverVirtualMachine implements VirtualMachine {
             "block_number": this.get_current_block_number()
         }
 
-        // Execute contract with sandbox
         let result = this.execute_in_sandbox(contract, function, args, context)
-        
-        // Apply state changes if successful
+
         if result.success {
             this.apply_storage_changes(contract, result.storage_changes)
             contract.gas_used += result.gas_used
             contract.execution_count += 1
-            
-            // Process value transfer
+
             if value > 0 {
                 contract.balance += value
             }
         }
 
-        // Record execution
         this.record_execution(contract_address, function, caller, result)
-        
+
         print("⚡ Contract executed: " + contract_address + "." + function)
         print("  Gas used: " + string(result.gas_used))
         print("  Success: " + string(result.success))
-        
+
         return result.return_value
     }
 
     action get_contract_state(contract_address: string) -> map? {
-        """
-        Get complete contract state and metadata
-        """
         if not this.contracts.has(contract_address) {
             return null
         }
@@ -172,37 +137,29 @@ contract ZiverVirtualMachine implements VirtualMachine {
     }
 
     action estimate_gas(contract_address: string, function: string, args: list) -> integer {
-        """
-        Estimate gas cost for contract execution
-        """
         let base_cost = 21000
         let function_cost = this.analyze_function_complexity(function)
         let arg_cost = args.count() * 100
         let storage_cost = this.estimate_storage_cost(contract_address, function)
-        
+
         return base_cost + function_cost + arg_cost + storage_cost
     }
 
     // Internal implementation methods
     action validate_contract_code(code: string) -> map {
-        """
-        Validate contract code for security and correctness
-        """
-        // Basic security checks
         let blacklisted_patterns = ["infinite_loop", "system_call", "file_access"]
         let issues = []
-        
+
         for each pattern in blacklisted_patterns {
             if code.contains(pattern) {
                 issues.push("Blacklisted pattern: " + pattern)
             }
         }
-        
-        // Code size limit
-        if code.length() > 100000 { // 100KB limit
+
+        if code.length() > 100000 {
             issues.push("Contract code too large")
         }
-        
+
         return {
             "valid": issues.is_empty(),
             "reason": issues.is_empty() ? "Valid" : string(issues),
@@ -211,9 +168,6 @@ contract ZiverVirtualMachine implements VirtualMachine {
     }
 
     action initialize_contract_storage(contract: Contract) {
-        """
-        Initialize contract storage with default values
-        """
         contract.storage = {
             "_owner": contract.owner,
             "_created": contract.created_at,
@@ -223,48 +177,37 @@ contract ZiverVirtualMachine implements VirtualMachine {
     }
 
     action execute_in_sandbox(contract: Contract, function: string, args: list, context: map) -> ExecutionResult {
-        """
-        Execute contract code in isolated sandbox
-        """
-        // Sandbox execution prevents malicious contracts from affecting system
         let start_time = datetime.now().timestamp()
-        
+
         try {
-            // Integrate with Zexus interpreter/compiler
             let result = this.invoke_zexus_interpreter(contract.code, function, args, contract.storage, context)
-            
+
             let execution_time = datetime.now().timestamp() - start_time
             let gas_used = this.calculate_actual_gas(execution_time, result.complexity)
-            
-            return ExecutionResult(
+
+            return ExecutionResult{
                 return_value: result.return_value,
                 storage_changes: result.storage_changes,
                 gas_used: gas_used
-            )
+            }
         } catch(error) {
             print("❌ Contract execution failed: " + string(error))
-            return ExecutionResult(
+            return ExecutionResult{
                 return_value: null,
                 storage_changes: {},
                 gas_used: 0,
                 success: false
-            )
+            }
         }
     }
 
     action apply_storage_changes(contract: Contract, changes: map) {
-        """
-        Apply storage changes to contract state
-        """
         for each key, value in changes {
             contract.storage[key] = value
         }
     }
 
     action record_execution(contract_address: string, function: string, caller: string, result: ExecutionResult) {
-        """
-        Record contract execution for analytics and debugging
-        """
         let record = {
             "contract_address": contract_address,
             "function": function,
@@ -274,18 +217,16 @@ contract ZiverVirtualMachine implements VirtualMachine {
             "success": result.success,
             "return_value": result.return_value
         }
-        
+
         this.execution_history.push(record)
-        
-        // Keep only last 1000 executions
+
         if this.execution_history.count() > 1000 {
             this.execution_history = this.execution_history.slice(this.execution_history.count() - 1000)
         }
     }
 
-    // Placeholder implementations for Zexus integration
+    // Placeholder implementations
     action invoke_zexus_interpreter(code: string, function: string, args: list, storage: map, context: map) -> map {
-        // This would integrate with the actual Zexus interpreter
         return {
             "return_value": args.is_empty() ? null : args[0],
             "storage_changes": {"last_executed": datetime.now().timestamp()},
@@ -306,7 +247,7 @@ contract ZiverVirtualMachine implements VirtualMachine {
     }
 
     action get_current_block_number() -> integer {
-        return 1 // Would query actual blockchain
+        return 1
     }
 }
 
@@ -314,35 +255,37 @@ contract ZiverVirtualMachine implements VirtualMachine {
 action async test_zvm() {
     print("🖥️ Testing Ziver Virtual Machine...")
     let zvm = ZiverVirtualMachine()
-    
+
     let test_contract_code = """
 contract SimpleStorage:
     persistent storage value: integer
     persistent storage owner: string
-    
+
     action init(owner: string):
         this.owner = owner
         this.value = 0
-    
+
     action set(new_value: integer):
         require(msg.sender == this.owner, "Only owner can set")
         this.value = new_value
         emit ValueChanged(this.owner, new_value)
-    
+
     action get() -> integer:
         return this.value
 """
-    
+
     let owner_address = "ZIV_owner_123"
     let contract_address = zvm.deploy_contract(test_contract_code, owner_address, 1000)
     print("Contract deployed: " + contract_address)
-    
+
     let state = zvm.get_contract_state(contract_address)
     if state != null {
         print("Contract state: " + string(state))
     }
 }
 
-export action get_virtual_machine() -> VirtualMachine {
-    return ZiverVirtualMachine()
+export {
+    ZiverVirtualMachine,
+    VirtualMachine,
+    test_zvm
 }
