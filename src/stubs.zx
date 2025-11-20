@@ -1,0 +1,68 @@
+# src/stubs.zx - Temporary stubs for missing dependencies
+
+# Crypto stubs
+entity Crypto:
+    action generate_keypair() -> map:
+        return {
+            "address": "0xNodeAddress123",
+            "private_key": "private_key_123"
+        }
+
+# Consensus stubs  
+entity PoSConsensus:
+    action register_validator(address: string, stake: integer) -> boolean:
+        print("✅ Registered validator: " + address)
+        return true
+    
+    action validate_transaction(tx: any) -> boolean:
+        return true
+    
+    action process_block_reward(address: string, block: any) -> list:
+        return []
+
+# Network stubs
+entity P2PNetwork:
+    action start_node(port: integer) -> boolean:
+        print("🌐 Starting P2P node on port: " + string(port))
+        return true
+    
+    action discover_peers() -> boolean:
+        print("🔍 Discovering peers...")
+        return true
+    
+    action broadcast_block(block: any) -> boolean:
+        return true
+
+# VM stubs
+entity ZiverVirtualMachine:
+    action execute() -> boolean:
+        return true
+
+# Bridge stubs  
+entity CrossChainBridge:
+    action initialize() -> boolean:
+        return true
+
+# Blockchain stubs
+action create_genesis_block() -> map:
+    return {
+        "index": 0,
+        "transactions": [],
+        "timestamp": 1234567890
+    }
+
+action create_block(previous_block: any, transactions: list, validator: string, private_key: string) -> map:
+    return {
+        "index": previous_block.index + 1,
+        "transactions": transactions,
+        "validator": validator
+    }
+
+# Export stubs
+export Crypto
+export PoSConsensus
+export P2PNetwork
+export ZiverVirtualMachine
+export CrossChainBridge
+export create_genesis_block
+export create_block

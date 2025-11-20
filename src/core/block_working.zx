@@ -1,0 +1,41 @@
+# Ziver Chain Blocks - WORKING VERSION
+
+print "⛏️ Initializing Block Module..."
+
+# Simple block creation
+action create_block(index, data, previous_hash):
+    let block = {
+        "index": index,
+        "timestamp": 1234567890,
+        "data": data,
+        "previous_hash": previous_hash,
+        "hash": "block_hash_" + string(index),
+        "nonce": 0
+    }
+    return block
+
+# Simple blockchain
+action create_blockchain():
+    let genesis = create_block(0, "Genesis Block", "0")
+    return [genesis]
+
+action add_block(blockchain, data):
+    let last_block = blockchain[len(blockchain) - 1]
+    let new_block = create_block(last_block.index + 1, data, last_block.hash)
+    
+    # Add to blockchain
+    blockchain.push(new_block)
+    return blockchain
+
+# Test
+print "Testing blockchain..."
+let chain = create_blockchain()
+print "Genesis block created"
+
+chain = add_block(chain, "First transaction")
+chain = add_block(chain, "Second transaction")
+
+print "Blockchain height: " + string(len(chain))
+print "Latest block data: " + chain[len(chain) - 1].data
+
+print "✅ Block module working!"

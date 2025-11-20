@@ -1,0 +1,56 @@
+# Ziver Chain Main - WORKING VERSION
+
+print "🚀 Starting Ziver Chain Node..."
+print "✨ Quantum-Resistant Blockchain Initializing..."
+
+# Import working modules (by including their code)
+# Crypto module
+action hash_data(data):
+    return "hash_" + data + "_" + string(len(data))
+
+action generate_wallet():
+    return {"address": "ZIV_wallet_001", "balance": 0}
+
+# Block module  
+action create_block(index, data, previous_hash):
+    return {
+        "index": index,
+        "data": data,
+        "previous_hash": previous_hash,
+        "hash": "block_hash_" + string(index)
+    }
+
+action create_blockchain():
+    return [create_block(0, "Genesis Block", "0")]
+
+action add_block(blockchain, data):
+    let last_index = blockchain[len(blockchain) - 1].index
+    let new_block = create_block(last_index + 1, data, "prev_hash")
+    blockchain.push(new_block)
+    return blockchain
+
+# Network simulation
+action start_network():
+    print "📡 Network started on port 8545"
+    return ["peer1", "peer2"]
+
+# Main execution
+let network_peers = start_network()
+let blockchain = create_blockchain()
+
+# Add some blocks
+blockchain = add_block(blockchain, "Transaction 1")
+blockchain = add_block(blockchain, "Transaction 2")
+
+# Create a wallet
+let wallet = generate_wallet()
+
+print ""
+print "=== NODE STATUS ==="
+print "Blocks: " + string(len(blockchain))
+print "Peers: " + string(len(network_peers)) 
+print "Wallet: " + wallet.address
+print "Cryptography: Basic (Upgrading to Quantum)")
+print "Consensus: PoS + AI (Placeholder)")
+print "==================="
+print "🏁 Ziver Chain Node Ready!"

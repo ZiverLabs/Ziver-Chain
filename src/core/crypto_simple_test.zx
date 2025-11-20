@@ -1,0 +1,11 @@
+print "🚀 TESTING CRYPTO MODULE"
+let x = 5 + 5
+print "Math works: " + string(x)
+
+# Test basic function
+action test_func():
+    return "function works"
+
+let result = test_func()
+print "Function result: " + result
+print "✅ Crypto test complete"

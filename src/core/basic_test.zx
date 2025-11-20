@@ -1,0 +1,18 @@
+# Basic test - only using proven features
+let x = 10
+let y = 20
+let sum = x + y
+print "Basic math works: " + string(sum)
+
+# Test lists (proven to work)
+let numbers = [1, 2, 3, 4, 5]
+print "List length: " + string(len(numbers))
+
+# Test simple function
+action add(a, b):
+    return a + b
+
+let result = add(5, 3)
+print "Function result: " + string(result)
+
+print "🎉 ZIVER CHAIN READY FOR DEVELOPMENT!"
