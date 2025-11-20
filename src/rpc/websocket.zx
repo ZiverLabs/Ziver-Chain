@@ -20,22 +20,15 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
     persistent storage subscriptions: map
     persistent storage message_queue: list
     persistent storage is_running: boolean = false
-    
-    contract WebSocketConnection {
-        persistent storage id: string
-        persistent storage connected_at: integer
-        persistent storage last_active: integer
-        persistent storage subscription_count: integer = 0
-        persistent storage message_count: integer = 0
-        persistent storage remote_address: string
-        persistent storage user_agent: string?
-        
-        action init(id: string, remote_address: string) {
-            this.id = id
-            this.remote_address = remote_address
-            this.connected_at = datetime.now().timestamp()
-            this.last_active = datetime.now().timestamp()
-        }
+
+    entity WebSocketConnection {
+        id: string
+        connected_at: integer
+        last_active: integer
+        subscription_count: integer = 0
+        message_count: integer = 0
+        remote_address: string
+        user_agent: string?
     }
 
     action init(rpc_server: any, port: integer = 8546) {
@@ -55,36 +48,32 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
     }
 
     action start() -> boolean {
-        """
-        Start WebSocket server with enhanced capabilities
-        """
         this.is_running = true
-        
+
         print("🔌 WebSocket RPC starting on ws://localhost:" + string(this.port))
         print("📡 Available subscriptions: " + string(this.subscriptions.keys().join(", ")))
-        
+
         // Start background processors
         spawn this.start_websocket_server()
         spawn this.process_message_queue()
         spawn this.cleanup_inactive_connections()
-        
+
         return true
     }
 
     action handle_connection(connection_id: string, remote_address: string, user_agent: string?) {
-        """
-        Handle new WebSocket connection with enhanced tracking
-        """
-        let connection = WebSocketConnection(
+        let connection = WebSocketConnection{
             id: connection_id,
             remote_address: remote_address,
-            user_agent: user_agent
-        )
-        
+            user_agent: user_agent,
+            connected_at: datetime.now().timestamp(),
+            last_active: datetime.now().timestamp()
+        }
+
         this.connections[connection_id] = connection
-        
+
         print("🔗 WebSocket connected: " + connection_id + " from " + remote_address)
-        
+
         // Send welcome message with available features
         let welcome_msg = {
             "jsonrpc": "2.0",
@@ -97,25 +86,22 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                 "ai_enhanced": true
             }
         }
-        
+
         this.send_to_connection(connection_id, welcome_msg)
     }
 
     action handle_message(connection_id: string, message: map) {
-        """
-        Handle WebSocket message with enhanced processing
-        """
         if not this.connections.has(connection_id) {
             print("❌ Unknown connection: " + connection_id)
             return
         }
-        
+
         // Update connection activity
         this.connections[connection_id].last_active = datetime.now().timestamp()
         this.connections[connection_id].message_count += 1
-        
+
         let method = message.get("method", "")
-        
+
         // Handle subscription methods
         if method == "eth_subscribe" {
             this.handle_subscription(connection_id, message)
@@ -134,18 +120,15 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
     }
 
     action handle_subscription(connection_id: string, message: map) {
-        """
-        Handle Ethereum-compatible subscription request
-        """
         let subscription_type = message.get("params", [""])[0]
         let subscription_id = "sub_" + crypto.keccak256(connection_id + subscription_type).slice(0, 16)
-        
+
         if this.subscriptions.has(subscription_type) {
             this.subscriptions[subscription_type][connection_id] = subscription_id
-            
+
             // Update connection stats
             this.connections[connection_id].subscription_count += 1
-            
+
             let response = {
                 "jsonrpc": "2.0",
                 "id": message.get("id", 1),
@@ -155,7 +138,7 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                     "created_at": datetime.now().timestamp()
                 }
             }
-            
+
             this.send_to_connection(connection_id, response)
             print("📡 Subscription created: " + subscription_type + " for " + connection_id)
         } else {
@@ -165,26 +148,23 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
     }
 
     action handle_ziver_subscription(connection_id: string, message: map) {
-        """
-        Handle Ziver-specific subscription types
-        """
         let subscription_type = message.get("params", [""])[0]
         let filters = message.get("params", [{}])[1] ?? {}
-        
+
         let ziver_subscriptions = [
             "socialCapitalUpdates", "defiEvents", "aiAlerts", "quantumSecurity", 
             "bounceBackNotifications", "crossChainUpdates"
         ]
-        
+
         if ziver_subscriptions.contains(subscription_type) {
             let subscription_id = "ziv_" + crypto.keccak256(connection_id + subscription_type).slice(0, 16)
-            
+
             this.subscriptions[subscription_type][connection_id] = {
                 "id": subscription_id,
                 "filters": filters,
                 "created_at": datetime.now().timestamp()
             }
-            
+
             let response = {
                 "jsonrpc": "2.0",
                 "id": message.get("id", 1),
@@ -195,7 +175,7 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                     "real_time_updates": true
                 }
             }
-            
+
             this.send_to_connection(connection_id, response)
             print("🎯 Ziver subscription: " + subscription_type + " for " + connection_id)
         } else {
@@ -205,14 +185,11 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
     }
 
     action broadcast_new_block(block: any) -> boolean {
-        """
-        Broadcast new block to subscribers with enhanced data
-        """
         let subscribers = this.subscriptions["newHeads"]
         if subscribers.is_empty() {
             return false
         }
-        
+
         let notification = {
             "jsonrpc": "2.0",
             "method": "eth_subscription",
@@ -221,24 +198,21 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                 "result": this.format_block_for_websocket(block)
             }
         }
-        
+
         let success_count = 0
         for each connection_id, sub_id in subscribers {
             if this.send_to_connection(connection_id, notification) {
                 success_count += 1
             }
         }
-        
+
         print("📢 Broadcast block #" + string(block.index) + " to " + string(success_count) + " subscribers")
         return success_count > 0
     }
 
     action broadcast_new_transaction(tx: any) -> boolean {
-        """
-        Broadcast new transaction to subscribers with bounce-back info
-        """
         let subscribers = this.subscriptions["newPendingTransactions"]
-        
+
         let notification = {
             "jsonrpc": "2.0",
             "method": "eth_subscription",
@@ -252,24 +226,21 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                 }
             }
         }
-        
+
         let success_count = 0
         for each connection_id, sub_id in subscribers {
             if this.send_to_connection(connection_id, notification) {
                 success_count += 1
             }
         }
-        
+
         // Also broadcast to Ziver-specific subscribers
         this.broadcast_to_ziver_subscribers("defiEvents", tx)
-        
+
         return success_count > 0
     }
 
     action broadcast_social_capital_update(user: string, new_score: float) {
-        """
-        Broadcast social capital score updates
-        """
         let notification = {
             "jsonrpc": "2.0",
             "method": "ziver_subscription",
@@ -284,14 +255,11 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                 }
             }
         }
-        
+
         this.broadcast_to_ziver_subscribers("socialCapitalUpdates", notification)
     }
 
     action broadcast_ai_alert(alert_type: string, data: map) {
-        """
-        Broadcast AI-generated alerts and insights
-        """
         let notification = {
             "jsonrpc": "2.0",
             "method": "ziver_subscription",
@@ -307,14 +275,14 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                 }
             }
         }
-        
+
         this.broadcast_to_ziver_subscribers("aiAlerts", notification)
     }
 
     // Enhanced Helper Methods
     action broadcast_to_ziver_subscribers(subscription_type: string, data: any) {
         let subscribers = this.subscriptions.get(subscription_type, {})
-        
+
         for each connection_id, subscription_data in subscribers {
             // Apply filters if specified
             if this.passes_filters(subscription_data.filters, data) {
@@ -325,7 +293,7 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
 
     action format_block_for_websocket(block: any) -> map {
         let formatted = this.rpc_server.format_block(block, false)
-        
+
         // Add Ziver-specific enhancements
         formatted["ziver_enhanced"] = {
             "seb_defi_activity": this.calculate_defi_activity(block),
@@ -333,25 +301,22 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
             "quantum_signature_verified": true,
             "social_capital_distribution": this.get_social_capital_stats(block)
         }
-        
+
         return formatted
     }
 
     action send_to_connection(connection_id: string, message: map) -> boolean {
-        """
-        Send message to specific connection with error handling
-        """
         if not this.connections.has(connection_id) {
             return false
         }
-        
+
         try {
             // Simulate WebSocket send (would use actual WebSocket library)
             print("📤 WS → " + connection_id.slice(0, 8) + ": " + string(message.get("method", "unknown")))
-            
+
             this.connections[connection_id].last_active = datetime.now().timestamp()
             return true
-            
+
         } catch(error) {
             print("❌ Failed to send to " + connection_id + ": " + string(error))
             return false
@@ -367,78 +332,66 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                 "message": message
             }
         }
-        
+
         this.send_to_connection(connection_id, error_response)
     }
 
-    action process_message_queue() {
-        """
-        Process queued RPC messages for load management
-        """
+    action async process_message_queue() {
         while this.is_running {
             if not this.message_queue.is_empty() {
                 let item = this.message_queue.shift()
                 let response = this.rpc_server.handle_request(item.message)
                 this.send_to_connection(item.connection_id, response)
             }
-            sleep(0.01) // Small delay to prevent busy waiting
+            await sleep(0.01) // Small delay to prevent busy waiting
         }
     }
 
-    action cleanup_inactive_connections() {
-        """
-        Clean up inactive connections periodically
-        """
+    action async cleanup_inactive_connections() {
         while this.is_running {
             let current_time = datetime.now().timestamp()
             let inactive_connections = []
-            
+
             for each connection_id, connection in this.connections {
                 if current_time - connection.last_active > 300 { // 5 minutes
                     inactive_connections.push(connection_id)
                 }
             }
-            
+
             for each connection_id in inactive_connections {
                 this.handle_connection_close(connection_id, "inactive")
             }
-            
-            sleep(60) // Check every minute
+
+            await sleep(60) // Check every minute
         }
     }
 
     action handle_connection_close(connection_id: string, reason: string) {
-        """
-        Handle connection closure and cleanup
-        """
         print("🔌 WebSocket disconnected: " + connection_id + " (" + reason + ")")
-        
+
         // Remove from all subscriptions
         for each subscription_type, subscribers in this.subscriptions {
             if subscribers.has(connection_id) {
-                delete subscribers[connection_id]
+                subscribers.delete(connection_id)
             }
         }
-        
+
         // Remove connection
         if this.connections.has(connection_id) {
-            delete this.connections[connection_id]
+            this.connections.delete(connection_id)
         }
     }
 
     action get_connection_stats() -> map {
-        """
-        Get comprehensive connection statistics
-        """
         let total_connections = len(this.connections)
         let total_subscriptions = 0
         let active_subscriptions = {}
-        
+
         for each subscription_type, subscribers in this.subscriptions {
             active_subscriptions[subscription_type] = len(subscribers)
             total_subscriptions += len(subscribers)
         }
-        
+
         return {
             "total_connections": total_connections,
             "total_subscriptions": total_subscriptions,
@@ -487,17 +440,23 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
 
     action handle_unsubscription(connection_id: string, message: map) {
         // Implementation for unsubscription
+        let subscription_id = message.get("params", [""])[0]
+        print("📡 Unsubscribing: " + subscription_id)
     }
 
-    action start_websocket_server() {
+    action async start_websocket_server() {
         // Would start actual WebSocket server
+        print("🌐 WebSocket Server listening on port " + string(this.port))
+        while this.is_running {
+            await sleep(1)
+        }
     }
 
     action get_start_time() -> integer {
         return datetime.now().timestamp()
     }
 
-    action sleep(seconds: float) {
+    action async sleep(seconds: float) {
         // Async sleep implementation
     }
 }
@@ -505,17 +464,17 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
 // Test Enhanced WebSocket RPC
 action async test_enhanced_websocket() {
     print("🔌 Testing Enhanced WebSocket RPC...")
-    
+
     let mock_rpc = {"format_block": action(block, full) { return block }}
     let ws_server = WebSocketRPCServer(rpc_server: mock_rpc, port: 8546)
-    
+
     if ws_server.start() {
         print("✅ WebSocket server started")
-        
+
         // Test connection handling
         let test_connection = "conn_test_123"
         ws_server.handle_connection(test_connection, "192.168.1.100", "ZiverApp/1.0")
-        
+
         // Test subscription
         let sub_message = {
             "jsonrpc": "2.0",
@@ -524,13 +483,15 @@ action async test_enhanced_websocket() {
             "id": 1
         }
         ws_server.handle_message(test_connection, sub_message)
-        
+
         // Test stats
         let stats = ws_server.get_connection_stats()
         print("WebSocket Stats: " + string(stats))
     }
 }
 
-export action get_websocket_rpc(rpc_server: any, port: integer) -> WebSocketRPCProtocol {
-    return WebSocketRPCServer(rpc_server: rpc_server, port: port)
+export {
+    WebSocketRPCServer,
+    WebSocketRPCProtocol,
+    test_enhanced_websocket
 }
