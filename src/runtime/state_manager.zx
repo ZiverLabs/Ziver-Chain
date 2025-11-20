@@ -22,106 +22,52 @@ contract StateManager implements StateManagerProtocol {
     persistent storage seb_defi_tracker: any
     persistent storage ai_state_analyzer: any
     persistent storage quantum_state_verifier: any
-    
-    contract ChainState {
-        persistent storage block_number: integer = 0
-        persistent storage block_hash: string = "0x0"
-        persistent storage total_difficulty: integer = 0
-        persistent storage balances: map = {}
-        persistent storage nonces: map = {}
-        persistent storage contract_storage: map = {}
-        persistent storage contract_code: map = {}
-        persistent storage social_capital_scores: map = {}
-        persistent storage seb_defi_metrics: map = {}
-        persistent storage state_root: string = "0x0"
-        
-        action init() {
-            this.balances = {}
-            this.nonces = {}
-            this.contract_storage = {}
-            this.contract_code = {}
-            this.social_capital_scores = {}
-            this.seb_defi_metrics = {}
-        }
 
-        action copy() -> ChainState {
-            """
-            Create a deep copy of the state with enhanced data
-            """
-            let new_state = ChainState()
-            new_state.block_number = this.block_number
-            new_state.block_hash = this.block_hash
-            new_state.total_difficulty = this.total_difficulty
-            new_state.state_root = this.state_root
-            
-            // Deep copy maps
-            new_state.balances = this.deep_copy_map(this.balances)
-            new_state.nonces = this.deep_copy_map(this.nonces)
-            new_state.contract_storage = this.deep_copy_map(this.contract_storage)
-            new_state.contract_code = this.deep_copy_map(this.contract_code)
-            new_state.social_capital_scores = this.deep_copy_map(this.social_capital_scores)
-            new_state.seb_defi_metrics = this.deep_copy_map(this.seb_defi_metrics)
-            
-            return new_state
-        }
-
-        action deep_copy_map(original: map) -> map {
-            let copy = {}
-            for each key, value in original {
-                copy[key] = value
-            }
-            return copy
-        }
+    entity ChainState {
+        block_number: integer = 0
+        block_hash: string = "0x0"
+        total_difficulty: integer = 0
+        balances: map = {}
+        nonces: map = {}
+        contract_storage: map = {}
+        contract_code: map = {}
+        social_capital_scores: map = {}
+        seb_defi_metrics: map = {}
+        state_root: string = "0x0"
     }
 
-    contract StateTransition {
-        persistent storage transaction_hash: string
-        persistent storage from_addr: string
-        persistent storage to_addr: string
-        persistent storage value: integer
-        persistent storage data: string?
-        persistent storage timestamp: integer
-        persistent storage social_capital_impact: float = 0.0
-        persistent storage seb_defi_tier_change: string?
-        persistent storage ai_risk_assessment: map = {}
-        
-        action init(transaction_hash: string, from_addr: string, to_addr: string, value: integer, data: string?) {
-            this.transaction_hash = transaction_hash
-            this.from_addr = from_addr
-            this.to_addr = to_addr
-            this.value = value
-            this.data = data
-            this.timestamp = datetime.now().timestamp()
-        }
+    entity StateTransition {
+        transaction_hash: string
+        from_addr: string
+        to_addr: string
+        value: integer
+        data: string?
+        timestamp: integer
+        social_capital_impact: float = 0.0
+        seb_defi_tier_change: string?
+        ai_risk_assessment: map = {}
     }
 
-    contract AccountState {
-        persistent storage address: string
-        persistent storage balance: integer
-        persistent storage nonce: integer
-        persistent storage storage_root: string
-        persistent storage code_hash: string
-        persistent storage social_capital: float = 0.0
-        persistent storage seb_defi_tier: string = "BRONZE"
-        persistent storage borrowing_power: integer = 0
-        persistent storage last_activity: integer
-        
-        action init(address: string, balance: integer, nonce: integer) {
-            this.address = address
-            this.balance = balance
-            this.nonce = nonce
-            this.last_activity = datetime.now().timestamp()
-        }
+    entity AccountState {
+        address: string
+        balance: integer
+        nonce: integer
+        storage_root: string
+        code_hash: string
+        social_capital: float = 0.0
+        seb_defi_tier: string = "BRONZE"
+        borrowing_power: integer = 0
+        last_activity: integer
     }
 
     action init() {
-        this.current_state = ChainState()
+        this.current_state = ChainState{}
         this.state_history = {}
         this.state_transitions = []
-        this.seb_defi_tracker = SEBDeFiTracker()
-        this.ai_state_analyzer = AIStateAnalyzer()
-        this.quantum_state_verifier = QuantumStateVerifier()
-        
+        this.seb_defi_tracker = SEBDeFiTracker{}
+        this.ai_state_analyzer = AIStateAnalyzer{}
+        this.quantum_state_verifier = QuantumStateVerifier{}
+
         print("🔄 Advanced State Manager initialized")
         print("✅ SEB-DeFi Tracking: Active")
         print("✅ AI State Analysis: Enabled")
@@ -129,13 +75,10 @@ contract StateManager implements StateManagerProtocol {
     }
 
     action apply_block(block: any) -> boolean {
-        """
-        Apply block to current state with enhanced features
-        """
         print("📝 Applying block #" + string(block.index) + " to advanced state")
 
         // Save current state for potential rollback with enhanced data
-        this.state_history[block.index - 1] = this.current_state.copy()
+        this.state_history[block.index - 1] = this.copy_chain_state(this.current_state)
 
         // Verify state integrity with quantum-resistant hashing
         let state_integrity = this.quantum_state_verifier.verify_state_integrity(this.current_state)
@@ -169,28 +112,23 @@ contract StateManager implements StateManagerProtocol {
         print("✅ Block #" + string(block.index) + " applied successfully")
         print("   State Root: " + this.current_state.state_root.slice(0, 16) + "...")
         print("   SEB-DeFi Activity: " + string(this.get_defi_activity_level()))
-        
+
         return true
     }
 
     action apply_transaction(tx: any) -> boolean {
-        """
-        Apply transaction to state with basic validation
-        """
         return this.apply_transaction_with_seb(tx)
     }
 
     action apply_transaction_with_seb(tx: any) -> boolean {
-        """
-        Apply transaction with SEB-DeFi integration and AI analysis
-        """
-        let transition = StateTransition(
+        let transition = StateTransition{
             transaction_hash: tx.hash,
             from_addr: tx.from_addr,
             to_addr: tx.to_addr,
             value: tx.value,
-            data: tx.data
-        )
+            data: tx.data,
+            timestamp: datetime.now().timestamp()
+        }
 
         // Enhanced balance checks with social capital considerations
         let from_balance = this.current_state.balances.get(tx.from_addr, 0)
@@ -230,18 +168,15 @@ contract StateManager implements StateManagerProtocol {
     }
 
     action rollback_to_block(block_number: integer) -> boolean {
-        """
-        Rollback state to specific block with enhanced recovery
-        """
         if this.state_history.has(block_number) {
-            this.current_state = this.state_history[block_number]
-            
+            this.current_state = this.copy_chain_state(this.state_history[block_number])
+
             // Recover SEB-DeFi state
             this.recover_seb_defi_state(block_number)
-            
+
             // AI analysis of rollback impact
             this.ai_state_analyzer.analyze_rollback_impact(block_number)
-            
+
             print("↩️ Rolled back to block #" + string(block_number) + " with state recovery")
             return true
         } else {
@@ -251,14 +186,12 @@ contract StateManager implements StateManagerProtocol {
     }
 
     action get_account_state(address: string) -> map {
-        """
-        Get comprehensive account state with SEB-DeFi data
-        """
-        let basic_state = AccountState(
+        let basic_state = AccountState{
             address: address,
             balance: this.current_state.balances.get(address, 0),
-            nonce: this.current_state.nonces.get(address, 0)
-        )
+            nonce: this.current_state.nonces.get(address, 0),
+            last_activity: datetime.now().timestamp()
+        }
 
         // Add SEB-DeFi information
         let seb_data = this.seb_defi_tracker.get_account_data(address)
@@ -280,19 +213,13 @@ contract StateManager implements StateManagerProtocol {
     }
 
     action get_state_root() -> string {
-        """
-        Calculate enhanced state root with SEB-DeFi data
-        """
         return this.current_state.state_root
     }
 
     action calculate_social_capital_impact(address: string, transaction: any) -> map {
-        """
-        Calculate social capital impact of a transaction
-        """
         let base_score = this.current_state.social_capital_scores.get(address, 0.0)
         let impact = this.seb_defi_tracker.calculate_impact(address, transaction, base_score)
-        
+
         return {
             "score_change": impact.delta,
             "new_score": math.max(0.0, math.min(1.0, base_score + impact.delta)),
@@ -303,27 +230,47 @@ contract StateManager implements StateManagerProtocol {
     }
 
     // Enhanced Helper Methods
+    action copy_chain_state(state: ChainState) -> ChainState {
+        let new_state = ChainState{}
+        new_state.block_number = state.block_number
+        new_state.block_hash = state.block_hash
+        new_state.total_difficulty = state.total_difficulty
+        new_state.state_root = state.state_root
+
+        // Deep copy maps
+        new_state.balances = this.deep_copy_map(state.balances)
+        new_state.nonces = this.deep_copy_map(state.nonces)
+        new_state.contract_storage = this.deep_copy_map(state.contract_storage)
+        new_state.contract_code = this.deep_copy_map(state.contract_code)
+        new_state.social_capital_scores = this.deep_copy_map(state.social_capital_scores)
+        new_state.seb_defi_metrics = this.deep_copy_map(state.seb_defi_metrics)
+
+        return new_state
+    }
+
+    action deep_copy_map(original: map) -> map {
+        let copy = {}
+        for each key, value in original {
+            copy[key] = value
+        }
+        return copy
+    }
+
     action calculate_enhanced_state_root() -> string {
-        """
-        Calculate state root including SEB-DeFi metrics
-        """
         let state_data = string(this.current_state.block_number) + 
                         this.current_state.block_hash + 
                         string(this.current_state.total_difficulty) +
                         string(this.calculate_social_capital_hash()) +
                         string(this.calculate_defi_metrics_hash())
-        
+
         return crypto.keccak256(state_data)
     }
 
     action update_social_capital_scores(from_addr: string, to_addr: string, impact: map) {
-        """
-        Update social capital scores for involved addresses
-        """
         if impact.score_change != 0 {
             let current_from_score = this.current_state.social_capital_scores.get(from_addr, 0.0)
             this.current_state.social_capital_scores[from_addr] = current_from_score + impact.score_change
-            
+
             // Also update receiver if it's a meaningful transaction
             if impact.score_change > 0.1 {
                 let current_to_score = this.current_state.social_capital_scores.get(to_addr, 0.0)
@@ -333,19 +280,16 @@ contract StateManager implements StateManagerProtocol {
     }
 
     action update_seb_defi_metrics(block: any) {
-        """
-        Update SEB-DeFi metrics based on block transactions
-        """
         let defi_activity = 0
         let total_value = 0
-        
+
         for each tx in block.transactions {
             if this.is_defi_related(tx) {
                 defi_activity += 1
                 total_value += tx.value
             }
         }
-        
+
         this.current_state.seb_defi_metrics[block.index] = {
             "defi_transaction_count": defi_activity,
             "total_value_moved": total_value,
@@ -355,12 +299,9 @@ contract StateManager implements StateManagerProtocol {
     }
 
     action recover_seb_defi_state(block_number: integer) {
-        """
-        Recover SEB-DeFi state after rollback
-        """
         // Rebuild SEB-DeFi metrics from history
         this.seb_defi_tracker.recover_from_block(block_number)
-        
+
         // Recalculate social capital scores
         this.recalculate_social_capital_scores(block_number)
     }
@@ -377,9 +318,9 @@ contract StateManager implements StateManagerProtocol {
     }
 
     action is_defi_related(tx: any) -> boolean {
-        return tx.data != null && (
-            tx.data.contains("transfer") || 
-            tx.data.contains("stake") || 
+        return tx.data != null and (
+            tx.data.contains("transfer") or 
+            tx.data.contains("stake") or 
             tx.data.contains("lend")
         )
     }
@@ -387,27 +328,27 @@ contract StateManager implements StateManagerProtocol {
     action calculate_average_social_capital(block: any) -> float {
         let total = 0.0
         let count = 0
-        
+
         for each tx in block.transactions {
             let score = this.current_state.social_capital_scores.get(tx.from_addr, 0.0)
             total += score
             count += 1
         }
-        
+
         return count > 0 ? total / count : 0.0
     }
 
     action get_defi_activity_level() -> string {
         let recent_blocks = 10
         let defi_count = 0
-        
+
         for each i in range(0, recent_blocks) {
             let block_num = this.current_state.block_number - i
             if this.current_state.seb_defi_metrics.has(block_num) {
                 defi_count += this.current_state.seb_defi_metrics[block_num].defi_transaction_count
             }
         }
-        
+
         if defi_count > 50: return "HIGH"
         if defi_count > 20: return "MEDIUM"
         return "LOW"
@@ -432,7 +373,7 @@ contract StateManager implements StateManagerProtocol {
 }
 
 // Supporting Contracts
-contract SEBDeFiTracker {
+entity SEBDeFiTracker {
     action calculate_impact(address: string, transaction: any, current_score: float) -> map {
         return {
             "delta": 0.05,
@@ -441,7 +382,7 @@ contract SEBDeFiTracker {
             "explanation": "Standard transaction impact"
         }
     }
-    
+
     action get_account_data(address: string) -> map {
         return {
             "tier": "SILVER",
@@ -449,19 +390,35 @@ contract SEBDeFiTracker {
             "activity_score": 0.7
         }
     }
+
+    action record_transaction(tx: any, impact: map) {
+        print("📊 Recorded SEB-DeFi transaction: " + tx.hash.slice(0, 16))
+    }
+
+    action recover_from_block(block_number: integer) {
+        print("🔄 Recovering SEB-DeFi state from block #" + string(block_number))
+    }
 }
 
-contract AIStateAnalyzer {
+entity AIStateAnalyzer {
     action analyze_block_impact(block: any, state: any) {
         print("🤖 AI analyzing block impact...")
     }
-    
+
     action analyze_transaction_impact(tx: any, transition: any) {
         // AI analysis implementation
     }
+
+    action analyze_rollback_impact(block_number: integer) {
+        print("🤖 AI analyzing rollback impact...")
+    }
+
+    action get_trust_score(address: string) -> float {
+        return 0.8
+    }
 }
 
-contract QuantumStateVerifier {
+entity QuantumStateVerifier {
     action verify_state_integrity(state: any) -> map {
         return {"valid": true, "reason": ""}
     }
@@ -470,13 +427,13 @@ contract QuantumStateVerifier {
 // Test Advanced State Manager
 action async test_advanced_state_manager() {
     print("🗄️ Testing Advanced State Manager...")
-    
-    let state_manager = StateManager()
-    
+
+    let state_manager = StateManager{}
+
     // Set initial balance with social capital
     state_manager.current_state.balances["ZIV_sender"] = 1000
     state_manager.current_state.social_capital_scores["ZIV_sender"] = 0.6
-    
+
     let test_tx = {
         "hash": "test_tx_hash",
         "from_addr": "ZIV_sender",
@@ -488,16 +445,18 @@ action async test_advanced_state_manager() {
 
     print("Initial balance sender: " + string(state_manager.get_account_state("ZIV_sender").balance))
     state_manager.apply_transaction(test_tx)
-    
+
     let sender_state = state_manager.get_account_state("ZIV_sender")
     let receiver_state = state_manager.get_account_state("ZIV_receiver")
-    
+
     print("After tx balance sender: " + string(sender_state.balance))
     print("After tx balance receiver: " + string(receiver_state.balance))
     print("Sender social capital: " + string(sender_state.social_capital))
     print("Receiver social capital: " + string(receiver_state.social_capital))
 }
 
-export action get_state_manager() -> StateManagerProtocol {
-    return StateManager()
+export {
+    StateManager,
+    StateManagerProtocol,
+    test_advanced_state_manager
 }
