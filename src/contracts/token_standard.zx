@@ -1,165 +1,199 @@
 # src/contracts/token_standard.zx
 # ZRC-20 Token Standard (Ziver's equivalent of ERC-20)
 
-entity ZRC20Token:
-    name: text
-    symbol: text
-    decimals: integer = 18
-    total_supply: integer
-    balances: Map<Address, integer>
-    allowances: Map<Address, Map<Address, integer>>
-    owner: Address
-    
-    # Events (would be emitted in real implementation)
-    action Transfer(from: Address, to: Address, value: integer):
-        print "🔄 Transfer: " + from + " → " + to + " (" + string(value) + ")"
-    
-    action Approval(owner: Address, spender: Address, value: integer):
-        print "✅ Approval: " + owner + " allows " + spender + " to spend " + string(value)
-    
-    action constructor(token_name: text, token_symbol: text, initial_supply: integer, token_owner: Address):
+contract ZRC20Token {
+    persistent storage name: string
+    persistent storage symbol: string
+    persistent storage decimals: integer = 18
+    persistent storage total_supply: integer
+    persistent storage balances: map
+    persistent storage allowances: map
+    persistent storage owner: string
+
+    action init(token_name: string, token_symbol: string, initial_supply: integer, token_owner: string) {
         """
         Initialize token
         """
-        self.name = token_name
-        self.symbol = token_symbol
-        self.total_supply = initial_supply
-        self.owner = token_owner
-        self.balances[token_owner] = initial_supply
-        
-        print "🪙 Token created: " + token_name + " (" + token_symbol + ")"
-        print "  Total Supply: " + string(initial_supply)
-        print "  Owner: " + token_owner
-        
-        # Emit transfer for initial supply
-        self.Transfer("0x0", token_owner, initial_supply)
-    
-    action transfer(to: Address, value: integer) -> boolean:
+        this.name = token_name
+        this.symbol = token_symbol
+        this.total_supply = initial_supply
+        this.owner = token_owner
+        this.balances[token_owner] = initial_supply
+        this.allowances = {}
+
+        print("🪙 Token created: " + token_name + " (" + token_symbol + ")")
+        print("  Total Supply: " + string(initial_supply))
+        print("  Owner: " + token_owner)
+
+        // Emit transfer for initial supply
+        this.Transfer("0x0", token_owner, initial_supply)
+    }
+
+    action transfer(to: string, value: integer) -> boolean {
         """
         Transfer tokens to another address
         """
-        let from = context.caller
-        let from_balance = self.balances[from] ?? 0
-        
-        if from_balance < value:
-            print "❌ Insufficient balance"
+        let from = "context.caller"  // Would be actual caller in production
+        let from_balance = this.balances.get(from, 0)
+
+        if from_balance < value {
+            print("❌ Insufficient balance")
             return false
-        
-        if value <= 0:
-            print "❌ Invalid amount"
+        }
+
+        if value <= 0 {
+            print("❌ Invalid amount")
             return false
-        
-        # Update balances
-        self.balances[from] = from_balance - value
-        self.balances[to] = (self.balances[to] ?? 0) + value
-        
-        # Emit event
-        self.Transfer(from, to, value)
-        
+        }
+
+        // Update balances
+        this.balances[from] = from_balance - value
+        this.balances[to] = this.balances.get(to, 0) + value
+
+        // Emit event
+        this.Transfer(from, to, value)
+
         return true
-    
-    action transfer_from(from: Address, to: Address, value: integer) -> boolean:
+    }
+
+    action transfer_from(from: string, to: string, value: integer) -> boolean {
         """
         Transfer tokens on behalf of another address
         """
-        let spender = context.caller
-        let from_balance = self.balances[from] ?? 0
-        let allowance = self.allowances[from][spender] ?? 0
-        
-        if from_balance < value:
-            print "❌ Insufficient balance"
+        let spender = "context.caller"  // Would be actual caller in production
+        let from_balance = this.balances.get(from, 0)
+        let allowance_map = this.allowances.get(from, {})
+        let allowance = allowance_map.get(spender, 0)
+
+        if from_balance < value {
+            print("❌ Insufficient balance")
             return false
-        
-        if allowance < value:
-            print "❌ Insufficient allowance"
+        }
+
+        if allowance < value {
+            print("❌ Insufficient allowance")
             return false
+        }
+
+        // Update balances and allowance
+        this.balances[from] = from_balance - value
+        this.balances[to] = this.balances.get(to, 0) + value
         
-        # Update balances and allowance
-        self.balances[from] = from_balance - value
-        self.balances[to] = (self.balances[to] ?? 0) + value
-        self.allowances[from][spender] = allowance - value
-        
-        # Emit event
-        self.Transfer(from, to, value)
-        
+        allowance_map[spender] = allowance - value
+        this.allowances[from] = allowance_map
+
+        // Emit event
+        this.Transfer(from, to, value)
+
         return true
-    
-    action approve(spender: Address, value: integer) -> boolean:
+    }
+
+    action approve(spender: string, value: integer) -> boolean {
         """
         Approve spender to transfer tokens
         """
-        let owner = context.caller
-        
-        if not self.allowances.has(owner):
-            self.allowances[owner] = {}
-        
-        self.allowances[owner][spender] = value
-        
-        # Emit event
-        self.Approval(owner, spender, value)
-        
+        let owner = "context.caller"  // Would be actual caller in production
+
+        if not this.allowances.has(owner) {
+            this.allowances[owner] = {}
+        }
+
+        let owner_allowances = this.allowances[owner]
+        owner_allowances[spender] = value
+
+        // Emit event
+        this.Approval(owner, spender, value)
+
         return true
-    
-    action balance_of(owner: Address) -> integer:
+    }
+
+    action balance_of(owner: string) -> integer {
         """
         Get token balance of address
         """
-        return self.balances[owner] ?? 0
-    
-    action allowance(owner: Address, spender: Address) -> integer:
+        return this.balances.get(owner, 0)
+    }
+
+    action allowance(owner: string, spender: string) -> integer {
         """
         Get remaining allowance
         """
-        if not self.allowances.has(owner):
+        if not this.allowances.has(owner) {
             return 0
-        
-        return self.allowances[owner][spender] ?? 0
-    
-    action mint(to: Address, value: integer) -> boolean:
+        }
+
+        let owner_allowances = this.allowances[owner]
+        return owner_allowances.get(spender, 0)
+    }
+
+    action mint(to: string, value: integer) -> boolean {
         """
         Mint new tokens (only owner)
         """
-        if context.caller != self.owner:
-            print "❌ Only owner can mint"
+        let caller = "context.caller"  // Would be actual caller in production
+        if caller != this.owner {
+            print("❌ Only owner can mint")
             return false
-        
-        self.total_supply += value
-        self.balances[to] = (self.balances[to] ?? 0) + value
-        
-        # Emit transfer from zero address (minting)
-        self.Transfer("0x0", to, value)
-        
-        print "🆕 Minted " + string(value) + " tokens to " + to
+        }
+
+        this.total_supply += value
+        this.balances[to] = this.balances.get(to, 0) + value
+
+        // Emit transfer from zero address (minting)
+        this.Transfer("0x0", to, value)
+
+        print("🆕 Minted " + string(value) + " tokens to " + to)
         return true
-    
-    action burn(value: integer) -> boolean:
+    }
+
+    action burn(value: integer) -> boolean {
         """
         Burn tokens
         """
-        let from = context.caller
-        let from_balance = self.balances[from] ?? 0
-        
-        if from_balance < value:
-            print "❌ Insufficient balance to burn"
+        let from = "context.caller"  // Would be actual caller in production
+        let from_balance = this.balances.get(from, 0)
+
+        if from_balance < value {
+            print("❌ Insufficient balance to burn")
             return false
-        
-        self.total_supply -= value
-        self.balances[from] = from_balance - value
-        
-        # Emit transfer to zero address (burning)
-        self.Transfer(from, "0x0", value)
-        
-        print "🔥 Burned " + string(value) + " tokens from " + from
+        }
+
+        this.total_supply -= value
+        this.balances[from] = from_balance - value
+
+        // Emit transfer to zero address (burning)
+        this.Transfer(from, "0x0", value)
+
+        print("🔥 Burned " + string(value) + " tokens from " + from)
         return true
+    }
 
-# Test the token standard
-print "🪙 Testing ZRC-20 Token Standard..."
-let my_token = ZRC20Token("Ziver Test Token", "ZTT", 1000000, "ZIV_owner_123")
+    // Events (would be emitted in real implementation)
+    action Transfer(from: string, to: string, value: integer) {
+        print("🔄 Transfer: " + from + " → " + to + " (" + string(value) + ")")
+    }
 
-# Test transfers
-my_token.transfer("ZIV_user_456", 500)
-my_token.approve("ZIV_spender_789", 300)
+    action Approval(owner: string, spender: string, value: integer) {
+        print("✅ Approval: " + owner + " allows " + spender + " to spend " + string(value))
+    }
+}
 
-# Check balances
-print "Owner balance: " + string(my_token.balance_of("ZIV_owner_123"))
-print "User balance: " + string(my_token.balance_of("ZIV_user_456"))
+// Test the token standard
+action test_zrc20_token_standard() {
+    print("🪙 Testing ZRC-20 Token Standard...")
+    let my_token = ZRC20Token{}
+    my_token.init("Ziver Test Token", "ZTT", 1000000, "ZIV_owner_123")
+
+    // Test transfers
+    my_token.transfer("ZIV_user_456", 500)
+    my_token.approve("ZIV_spender_789", 300)
+
+    // Check balances
+    print("Owner balance: " + string(my_token.balance_of("ZIV_owner_123")))
+    print("User balance: " + string(my_token.balance_of("ZIV_user_456")))
+}
+
+export {
+    ZRC20Token,
+    test_zrc20_token_standard
+}
