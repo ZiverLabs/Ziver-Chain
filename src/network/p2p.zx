@@ -1,4 +1,4 @@
-# src/network/p2p.zx (UPDATED - Integrated with your code)
+# src/network/p2p.zx
 use "crypto" as crypto
 use "datetime" as datetime
 
@@ -15,18 +15,13 @@ contract P2PCommunicationLayer implements P2PCommunication {
     persistent storage message_buffer: list
     persistent storage security_context: map
     persistent storage protocol_version: string = "2.0"
-    
-    contract SecureConnection {
-        persistent storage peer_address: string
-        persistent storage session_key: string?
-        persistent storage established_at: integer
-        persistent storage message_count: integer = 0
-        persistent storage is_secure: boolean = false
-        
-        action init(peer_address: string) {
-            this.peer_address = peer_address
-            this.established_at = datetime.now().timestamp()
-        }
+
+    entity SecureConnection {
+        peer_address: string
+        session_key: string?
+        established_at: integer
+        message_count: integer = 0
+        is_secure: boolean = false
     }
 
     action init() {
@@ -36,20 +31,17 @@ contract P2PCommunicationLayer implements P2PCommunication {
     }
 
     action send_message(peer: string, message: map) -> boolean {
-        """
-        Send encrypted message to peer with reliability guarantees
-        """
         if not this.connections.has(peer) {
             print("❌ No connection to peer: " + peer)
             return false
         }
 
         let connection = this.connections[peer]
-        
+
         // Encrypt message if secure channel established
         let encrypted_message = connection.is_secure ? 
             this.encrypt_message(message, connection.session_key) : message
-        
+
         // Add message metadata
         let full_message = {
             "payload": encrypted_message,
@@ -58,17 +50,15 @@ contract P2PCommunicationLayer implements P2PCommunication {
             "protocol_version": this.protocol_version,
             "sender": this.get_node_id()
         }
-        
+
         try {
-            // Simulate network send
             print("📤 Sending message to " + peer + " (ID: " + full_message.message_id.slice(0, 8) + ")")
-            
+
             // Update connection stats
             connection.message_count += 1
-            
-            // Would actually send over network here
+
             return this.network_send(peer, full_message)
-            
+
         } catch(error) {
             print("❌ Failed to send message to " + peer + ": " + string(error))
             return false
@@ -76,51 +66,48 @@ contract P2PCommunicationLayer implements P2PCommunication {
     }
 
     action receive_messages() -> list {
-        """
-        Receive and process incoming messages
-        """
         let processed_messages = []
-        
+
         // Process buffered messages
         while not this.message_buffer.is_empty() {
             let raw_message = this.message_buffer.shift()
             let processed = this.process_incoming_message(raw_message)
-            
+
             if processed.success {
                 processed_messages.push(processed.message)
             }
         }
-        
+
         return processed_messages
     }
 
     action establish_secure_channel(peer: string) -> boolean {
-        """
-        Establish encrypted communication channel with peer
-        """
-        if this.connections.has(peer) && this.connections[peer].is_secure {
+        if this.connections.has(peer) and this.connections[peer].is_secure {
             print("✅ Secure channel already established with " + peer)
             return true
         }
-        
+
         print("🔐 Establishing secure channel with " + peer)
-        
+
         try {
-            // Perform key exchange (would use actual crypto)
+            // Perform key exchange
             let session_key = this.perform_key_exchange(peer)
-            
+
             if not this.connections.has(peer) {
-                this.connections[peer] = SecureConnection(peer_address: peer)
+                this.connections[peer] = SecureConnection{
+                    peer_address: peer,
+                    established_at: datetime.now().timestamp()
+                }
             }
-            
+
             let connection = this.connections[peer]
             connection.session_key = session_key
             connection.is_secure = true
             connection.established_at = datetime.now().timestamp()
-            
+
             print("✅ Secure channel established with " + peer)
             return true
-            
+
         } catch(error) {
             print("❌ Failed to establish secure channel with " + peer + ": " + string(error))
             return false
@@ -128,13 +115,10 @@ contract P2PCommunicationLayer implements P2PCommunication {
     }
 
     action get_network_status() -> map {
-        """
-        Get comprehensive network status and metrics
-        """
         let total_messages = 0
         let secure_connections = 0
         let active_connections = 0
-        
+
         for each peer, connection in this.connections {
             total_messages += connection.message_count
             if connection.is_secure {
@@ -144,7 +128,7 @@ contract P2PCommunicationLayer implements P2PCommunication {
                 active_connections += 1
             }
         }
-        
+
         return {
             "total_connections": len(this.connections),
             "active_connections": active_connections,
@@ -159,30 +143,27 @@ contract P2PCommunicationLayer implements P2PCommunication {
 
     // Enhanced Communication Methods
     action process_incoming_message(raw_message: map) -> map {
-        """
-        Process and validate incoming message
-        """
         // Validate message structure
         if not this.validate_message_structure(raw_message) {
             return {"success": false, "error": "Invalid message structure"}
         }
-        
+
         // Check protocol version compatibility
         if raw_message.protocol_version != this.protocol_version {
             return {"success": false, "error": "Protocol version mismatch"}
         }
-        
+
         // Decrypt if secure channel exists
         let decrypted_payload = raw_message.payload
         let peer = raw_message.sender
-        
-        if this.connections.has(peer) && this.connections[peer].is_secure {
+
+        if this.connections.has(peer) and this.connections[peer].is_secure {
             decrypted_payload = this.decrypt_message(
                 raw_message.payload, 
                 this.connections[peer].session_key
             )
         }
-        
+
         return {
             "success": true,
             "message": decrypted_payload,
@@ -195,165 +176,161 @@ contract P2PCommunicationLayer implements P2PCommunication {
     }
 
     action perform_key_exchange(peer: string) -> string {
-        """
-        Perform cryptographic key exchange with peer
-        """
-        // Simulate key exchange (would use actual ECDH or similar)
+        // Simulate key exchange (would use actual ECDH)
         let shared_secret = crypto.keccak256(
             this.get_node_id() + peer + string(datetime.now().timestamp())
         )
-        
+
         return shared_secret
     }
 
     action encrypt_message(message: map, key: string) -> map {
-        """
-        Encrypt message payload
-        """
         // Simulate encryption (would use actual AES encryption)
         return {
             "encrypted": true,
             "ciphertext": string(message) + "_encrypted_with_" + key.slice(0, 8),
-            "iv": "simulated_iv", // Would generate random IV
-            "auth_tag": "simulated_tag" // For AEAD schemes
+            "iv": "simulated_iv",
+            "auth_tag": "simulated_tag"
         }
     }
 
     action decrypt_message(encrypted_message: map, key: string) -> map {
-        """
-        Decrypt message payload
-        """
         // Simulate decryption
         if encrypted_message.encrypted {
-            // Would actually decrypt using the key
             return {"decrypted": true, "content": "Decrypted message content"}
         }
-        
+
         return encrypted_message
     }
 
     action validate_message_structure(message: map) -> boolean {
-        """
-        Validate message structure and required fields
-        """
         let required_fields = ["payload", "timestamp", "message_id", "protocol_version", "sender"]
-        
+
         for each field in required_fields {
             if not message.has(field) {
                 return false
             }
         }
-        
-        // Check timestamp is reasonable (not in future, not too old)
+
+        // Check timestamp is reasonable
         let message_time = message.timestamp
         let current_time = datetime.now().timestamp()
-        
-        if message_time > current_time + 60 { // 1 minute in future
+
+        if message_time > current_time + 60 {
             return false
         }
-        
-        if message_time < current_time - 3600 { // 1 hour old
+
+        if message_time < current_time - 3600 {
             return false
         }
-        
+
         return true
     }
 
     action network_send(peer: string, message: map) -> boolean {
-        """
-        Low-level network send (would integrate with actual networking)
-        """
         // Simulate network latency and potential failure
-        let success_rate = 0.95 // 95% success rate for simulation
-        
+        let success_rate = 0.95
+
         if math.random() < success_rate {
-            // Success - message would be sent over actual network
             return true
         } else {
-            // Simulate network failure
             throw "Network send failed"
         }
     }
 
     action initialize_security() -> map {
-        """
-        Initialize security context and parameters
-        """
         return {
             "encryption_algorithm": "AES-256-GCM",
             "key_exchange": "ECDH",
             "hash_algorithm": "Keccak256",
-            "max_message_size": 1048576, // 1MB
-            "handshake_timeout": 30 // seconds
+            "max_message_size": 1048576,
+            "handshake_timeout": 30
         }
     }
 
     action calculate_network_health() -> float {
-        """
-        Calculate overall network health score
-        """
         let status = this.get_network_status()
         let health_score = 1.0
-        
+
         // Penalize for few connections
         if status.total_connections < 5 {
             health_score *= 0.8
         }
-        
+
         // Penalize for low secure connection ratio
         let secure_ratio = status.secure_connections / math.max(1, status.total_connections)
         if secure_ratio < 0.5 {
             health_score *= 0.9
         }
-        
+
         return health_score
     }
 
     action get_uptime() -> integer {
-        """
-        Get system uptime (simplified)
-        """
         return datetime.now().timestamp() - this.get_startup_time()
     }
 
     action get_startup_time() -> integer {
-        // Would track actual startup time
-        return datetime.now().timestamp() - 3600 // Simulate 1 hour uptime
+        return datetime.now().timestamp() - 3600
     }
 
     action get_node_id() -> string {
         return "node_" + crypto.keccak256("unique_node_id").slice(0, 16)
+    }
+
+    // Simulate incoming messages for testing
+    action simulate_incoming_message(peer: string, message: map) {
+        let full_message = {
+            "payload": message,
+            "timestamp": datetime.now().timestamp(),
+            "message_id": crypto.keccak256(string(message) + string(datetime.now().timestamp())),
+            "protocol_version": this.protocol_version,
+            "sender": peer
+        }
+        this.message_buffer.push(full_message)
     }
 }
 
 // Test P2P Communication
 action async test_p2p_communication() {
     print("📡 Testing P2P Communication Layer...")
-    
+
     let p2p = P2PCommunicationLayer()
-    
+
     // Test secure channel establishment
     let test_peer = "peer_123@example.com:30303"
     if p2p.establish_secure_channel(test_peer) {
         print("✅ Secure channel established")
-        
+
         // Test message sending
         let test_message = {
             "type": "greeting",
             "content": "Hello from Ziver Network!",
             "timestamp": datetime.now().timestamp()
         }
-        
+
         if p2p.send_message(test_peer, test_message) {
             print("✅ Message sent successfully")
         }
-        
+
         // Test network status
         let status = p2p.get_network_status()
         print("Network Status: " + string(status))
+
+        // Test receiving messages
+        p2p.simulate_incoming_message(test_peer, {
+            "type": "response",
+            "content": "Hello back!",
+            "timestamp": datetime.now().timestamp()
+        })
+
+        let received = p2p.receive_messages()
+        print("Received messages: " + string(received.count()))
     }
 }
 
-export action get_p2p_communication() -> P2PCommunication {
-    return P2PCommunicationLayer()
+export {
+    P2PCommunicationLayer,
+    P2PCommunication,
+    test_p2p_communication
 }
