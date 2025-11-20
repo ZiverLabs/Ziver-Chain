@@ -21,30 +21,25 @@ contract PoSConsensus implements ConsensusProtocol {
         this.validators = {}
     }
 
-    contract Validator {
-        persistent storage address: string
-        persistent storage stake: integer
-        persistent storage performance: float = 1.0
-        persistent storage last_active: integer?
-        persistent storage ai_trust_score: float = 1.0
-
-        action init(address: string, stake: integer) {
-            this.address = address
-            this.stake = stake
-            this.last_active = datetime.now().timestamp()
-        }
+    entity Validator {
+        address: string
+        stake: integer
+        performance: float = 1.0
+        last_active: integer?
+        ai_trust_score: float = 1.0
     }
 
     action register_validator(address: string, stake: integer) -> boolean {
-        """
-        Register a new validator with stake
-        """
         if this.validators.has(address) {
             print("Validator already registered")
             return false
         }
 
-        let validator = Validator(address: address, stake: stake)
+        let validator = Validator{
+            address: address,
+            stake: stake,
+            last_active: datetime.now().timestamp()
+        }
         this.validators[address] = validator
         this.total_stake += stake
         print("Validator registered: " + address + " with stake: " + string(stake))
@@ -52,9 +47,6 @@ contract PoSConsensus implements ConsensusProtocol {
     }
 
     action select_validator() -> string {
-        """
-        Select next validator based on stake weight with AI scoring
-        """
         if this.validators.is_empty() {
             throw "No validators available"
         }
@@ -71,7 +63,6 @@ contract PoSConsensus implements ConsensusProtocol {
         }
 
         if total_weight == 0 {
-            // Fallback to simple stake-based selection
             return this.select_validator_fallback()
         }
 
@@ -82,7 +73,6 @@ contract PoSConsensus implements ConsensusProtocol {
         for each item in weighted_scores {
             current_sum += item.weight
             if random_value < current_sum {
-                // Update last active time
                 this.validators[item.address].last_active = datetime.now().timestamp()
                 return item.address
             }
@@ -92,7 +82,6 @@ contract PoSConsensus implements ConsensusProtocol {
     }
 
     action select_validator_fallback() -> string {
-        // Fallback to highest stake validator
         let highest_stake = 0
         let selected_validator = ""
 
@@ -112,9 +101,6 @@ contract PoSConsensus implements ConsensusProtocol {
     }
 
     action validate_transaction(tx: any) -> boolean {
-        """
-        Validate a transaction with comprehensive checks
-        """
         // Basic validation
         if tx.value < 0 {
             return false
@@ -132,16 +118,16 @@ contract PoSConsensus implements ConsensusProtocol {
         let tx_content = tx.from_addr + tx.to_addr + string(tx.value) + 
                         (tx.data ?? "") + string(tx.nonce)
         let tx_hash = crypto.keccak256(tx_content)
-        
+
         let signature_valid = crypto.verify_signature(tx_hash, tx.signature, tx.from_addr)
 
         return signature_valid
     }
 
     action process_block_reward(validator: string, block: any) -> list {
-        """
-        Process block rewards for validator with modern transaction format
-        """
+        // Import Transaction entity from block module
+        use "../core/block.zx" as block_module
+        
         let reward_data = {
             "type": "block_reward",
             "block_index": block.index,
@@ -149,62 +135,55 @@ contract PoSConsensus implements ConsensusProtocol {
             "amount": this.block_reward
         }
 
-        let reward_tx = Transaction(
+        let reward_tx = block_module.Transaction{
             hash: crypto.keccak256("reward_" + string(block.index) + validator),
-            from_addr: "0x0000000000000000000000000000000000000000",  // System address
+            from_addr: "0x0000000000000000000000000000000000000000",
             to_addr: validator,
             value: this.block_reward,
-            data: string(reward_data),  // JSON string for data
+            data: string(reward_data),
             gas_limit: 0,
             gas_used: 0,
             nonce: 0,
             signature: "system_reward",
             status: "confirmed"
-        )
+        }
 
         return [reward_tx]
     }
 
     // Enhanced AI analysis with async support
     action async ai_analyze_validator_performance(validator: string) -> float {
-        """
-        AI-driven validator performance analysis with multiple factors
-        Returns trust score between 0.0 and 1.0
-        """
         if not this.validators.has(validator) {
             return 0.0
         }
 
         let validator_data = this.validators[validator]
-        
+
         // Factor 1: Stake amount (normalized)
         let stake_factor = math.min(1.0, validator_data.stake / 10000.0)
-        
+
         // Factor 2: Recent activity
         let activity_factor = 1.0
         if validator_data.last_active != null {
             let time_diff = datetime.now().timestamp() - validator_data.last_active
-            if time_diff > 3600 { // 1 hour
-                activity_factor = math.max(0.1, 1.0 - (time_diff - 3600) / 86400.0) // Decay over 24 hours
+            if time_diff > 3600 {
+                activity_factor = math.max(0.1, 1.0 - (time_diff - 3600) / 86400.0)
             }
         }
-        
+
         // Factor 3: Historical performance
         let performance_factor = validator_data.performance
-        
+
         // Combine factors with weights
         let final_score = (stake_factor * 0.4) + (activity_factor * 0.3) + (performance_factor * 0.3)
-        
+
         // Update the validator's AI trust score
         validator_data.ai_trust_score = final_score
-        
+
         return final_score
     }
 
     action get_validator_info(address: string) -> map? {
-        """
-        Get validator information
-        """
         if this.validators.has(address) {
             let validator = this.validators[address]
             return {
@@ -219,9 +198,6 @@ contract PoSConsensus implements ConsensusProtocol {
     }
 
     action get_consensus_stats() -> map {
-        """
-        Get consensus statistics
-        """
         return {
             "total_validators": len(this.validators),
             "total_stake": this.total_stake,
@@ -231,19 +207,19 @@ contract PoSConsensus implements ConsensusProtocol {
     }
 }
 
-// Test consensus with modern async pattern
+// Test consensus
 action async test_consensus_module() {
     print("⚖️ Testing Consensus Module...")
     let consensus = PoSConsensus()
     let test_validator = "ZIV_test_validator_123"
-    
+
     if consensus.register_validator(test_validator, 1000) {
         let selected = consensus.select_validator()
         print("Selected validator: " + selected)
-        
+
         let stats = consensus.get_consensus_stats()
         print("Consensus stats: " + string(stats))
-        
+
         let validator_info = consensus.get_validator_info(test_validator)
         if validator_info != null {
             print("Validator info: " + string(validator_info))
@@ -252,6 +228,8 @@ action async test_consensus_module() {
 }
 
 // Export for module use
-export action get_consensus_protocol() -> ConsensusProtocol {
-    return PoSConsensus()
+export {
+    PoSConsensus,
+    ConsensusProtocol,
+    test_consensus_module
 }
