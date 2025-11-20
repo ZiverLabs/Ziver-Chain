@@ -8,7 +8,8 @@ protocol SEBDeFiProtocol {
     action get_borrowing_power(user: string) -> integer
     action update_engagement_metrics(user: string, activity: map) -> boolean
     action get_user_tier(user: string) -> string
-    action calculate_dynamic_interest(user: string, amount: integer) -> float
+    action calculate_borrowing_fee(user: string, amount: integer) -> map
+    action process_borrow(user: string, amount: integer) -> map
 }
 
 contract SEBDeFiEngine implements SEBDeFiProtocol {
@@ -17,7 +18,8 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
     persistent storage defi_parameters: map
     persistent storage engagement_history: map
     persistent storage developer_rules: map
-    
+    persistent storage borrowing_history: map
+
     contract UserScore {
         persistent storage address: string
         persistent storage social_capital: float = 0.0
@@ -26,8 +28,8 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
         persistent storage last_updated: integer
         persistent storage tier: string = "BRONZE"
         persistent storage total_borrowed: integer = 0
-        persistent storage total_repaid: integer = 0
-        
+        persistent storage total_fees_paid: integer = 0
+
         action init(address: string) {
             this.address = address
             this.last_updated = datetime.now().timestamp()
@@ -43,27 +45,29 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
             "SILVER": 0.4,     // Top 50% - Standard benefits
             "BRONZE": 0.2      // Everyone else - Basic access
         }
-        
-        // Dynamic DeFi parameters based on social capital
+
+        // Dynamic DeFi parameters based on social capital - USING FEE MODEL
         this.defi_parameters = {
             "max_borrow_ratio_diamond": 0.8,
             "max_borrow_ratio_platinum": 0.6,
             "max_borrow_ratio_gold": 0.4,
             "max_borrow_ratio_silver": 0.25,
             "max_borrow_ratio_bronze": 0.1,
-            
-            "base_interest_rate_diamond": 0.02,
-            "base_interest_rate_platinum": 0.05,
-            "base_interest_rate_gold": 0.08,
-            "base_interest_rate_silver": 0.12,
-            "base_interest_rate_bronze": 0.15,
-            
+
+            // FEE PERCENTAGES (removed from borrowed amount upfront)
+            "borrowing_fee_diamond": 0.01,    // 1% fee for diamond tier
+            "borrowing_fee_platinum": 0.02,   // 2% fee for platinum
+            "borrowing_fee_gold": 0.03,       // 3% fee for gold
+            "borrowing_fee_silver": 0.05,     // 5% fee for silver
+            "borrowing_fee_bronze": 0.08,     // 8% fee for bronze
+
             "liquidation_threshold_diamond": 0.9,
             "liquidation_threshold_bronze": 0.7
         }
-        
+
         this.user_scores = {}
         this.engagement_history = {}
+        this.borrowing_history = {}
         this.developer_rules = this.get_default_rules()
     }
 
@@ -74,10 +78,10 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
         if not this.user_scores.has(user) {
             this.user_scores[user] = UserScore(address: user)
         }
-        
+
         let user_data = this.user_scores[user]
         let engagement_metrics = this.get_engagement_metrics(user)
-        
+
         // Multi-factor scoring with ZAIE AI integration
         let factors = {
             "on_chain_activity": this.analyze_on_chain_behavior(user),
@@ -86,17 +90,17 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
             "governance_participation": this.evaluate_governance_activity(user),
             "network_contribution": this.calculate_network_value(user)
         }
-        
+
         // ZAIE AI engine processing (placeholder for actual AI integration)
         let zai_score = this.query_zai_engine(factors)
-        
+
         // Update user score
         user_data.social_capital = zai_score
         user_data.engagement_score = factors.community_engagement
         user_data.financial_trust = factors.financial_reputation
         user_data.tier = this.determine_tier(zai_score)
         user_data.last_updated = datetime.now().timestamp()
-        
+
         return zai_score
     }
 
@@ -107,7 +111,7 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
         let score = this.calculate_social_capital(user)
         let tier = this.get_user_tier(user)
         let wallet_balance = this.get_wallet_balance(user) // Would integrate with actual wallet
-        
+
         let max_ratio = this.defi_parameters["max_borrow_ratio_" + tier.lower()]
         return integer(wallet_balance * max_ratio)
     }
@@ -119,20 +123,20 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
         if not this.engagement_history.has(user) {
             this.engagement_history[user] = []
         }
-        
+
         // Apply developer-defined scoring rules
         let score_impact = this.apply_developer_rules(activity)
-        
+
         // Record engagement
         this.engagement_history[user].push({
             "activity": activity,
             "score_impact": score_impact,
             "timestamp": datetime.now().timestamp()
         })
-        
+
         // Recalculate social capital
         this.calculate_social_capital(user)
-        
+
         return true
     }
 
@@ -143,24 +147,82 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
         if not this.user_scores.has(user) {
             return "BRONZE"
         }
-        
+
         return this.user_scores[user].tier
     }
 
-    action calculate_dynamic_interest(user: string, amount: integer) -> float {
+    action calculate_borrowing_fee(user: string, amount: integer) -> map {
         """
-        Calculate dynamic interest rate based on social capital and risk
+        Calculate borrowing fee and net amount using Ziver's fee model
+        Fee is deducted upfront from the borrowed amount
         """
         let tier = this.get_user_tier(user)
-        let base_rate = this.defi_parameters["base_interest_rate_" + tier.lower()]
+        let fee_percentage = this.defi_parameters["borrowing_fee_" + tier.lower()]
         
-        // Risk adjustment based on loan-to-value ratio
+        let fee_amount = integer(amount * fee_percentage)
+        let net_amount = amount - fee_amount
+        
+        return {
+            "requested_amount": amount,
+            "fee_percentage": fee_percentage,
+            "fee_amount": fee_amount,
+            "net_amount": net_amount,
+            "tier": tier
+        }
+    }
+
+    action process_borrow(user: string, amount: integer) -> map {
+        """
+        Process a borrowing request using Ziver's fee model
+        User receives (amount - fee) upfront, no future interest
+        """
+        // Check borrowing power
         let borrowing_power = this.get_borrowing_power(user)
-        let ltv_ratio = amount / borrowing_power if borrowing_power > 0 else 1.0
+        if amount > borrowing_power {
+            return {
+                "success": false,
+                "error": "Amount exceeds borrowing power",
+                "borrowing_power": borrowing_power
+            }
+        }
+
+        // Calculate fee and net amount
+        let fee_calculation = this.calculate_borrowing_fee(user, amount)
         
-        let risk_multiplier = 1.0 + (ltv_ratio * 0.5) // Higher LTV = higher risk
+        // Update user stats
+        if not this.user_scores.has(user) {
+            this.calculate_social_capital(user)
+        }
         
-        return base_rate * risk_multiplier
+        let user_data = this.user_scores[user]
+        user_data.total_borrowed += amount
+        user_data.total_fees_paid += fee_calculation.fee_amount
+
+        // Record borrowing history
+        if not this.borrowing_history.has(user) {
+            this.borrowing_history[user] = []
+        }
+        
+        let borrow_record = {
+            "timestamp": datetime.now().timestamp(),
+            "requested_amount": amount,
+            "fee_amount": fee_calculation.fee_amount,
+            "net_received": fee_calculation.net_amount,
+            "tier": fee_calculation.tier,
+            "fee_percentage": fee_calculation.fee_percentage
+        }
+        
+        this.borrowing_history[user].push(borrow_record)
+
+        return {
+            "success": true,
+            "borrow_record": borrow_record,
+            "user_stats": {
+                "total_borrowed": user_data.total_borrowed,
+                "total_fees_paid": user_data.total_fees_paid,
+                "remaining_borrowing_power": borrowing_power - amount
+            }
+        }
     }
 
     // Developer Customization System
@@ -170,7 +232,7 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
         """
         let base_score = 0.0
         let activity_type = activity.type
-        
+
         // Developer can modify these rules based on their platform needs
         match activity_type {
             case "transaction":
@@ -188,11 +250,11 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
             default:
                 base_score += 0.05 // Default small reward
         }
-        
+
         // Time-based decay for recent activity
         let recency_bonus = this.calculate_recency_bonus(activity.timestamp)
         base_score *= recency_bonus
-        
+
         return math.min(1.0, base_score)
     }
 
@@ -212,10 +274,11 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
         if not this.user_scores.has(user) {
             return {"error": "User not found"}
         }
-        
+
         let user_data = this.user_scores[user]
         let engagement = this.engagement_history.get(user, [])
-        
+        let borrow_history = this.borrowing_history.get(user, [])
+
         return {
             "address": user_data.address,
             "social_capital": user_data.social_capital,
@@ -224,9 +287,18 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
             "engagement_score": user_data.engagement_score,
             "financial_trust": user_data.financial_trust,
             "total_engagements": engagement.count(),
-            "last_updated": user_data.last_updated,
-            "estimated_apy": this.calculate_dynamic_interest(user, 1000) * 100
+            "total_borrowed": user_data.total_borrowed,
+            "total_fees_paid": user_data.total_fees_paid,
+            "borrow_count": borrow_history.count(),
+            "last_updated": user_data.last_updated
         }
+    }
+
+    action get_borrowing_history(user: string) -> list {
+        """
+        Get user's borrowing history
+        """
+        return this.borrowing_history.get(user, [])
     }
 
     // Internal helper methods
@@ -308,28 +380,37 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
     }
 }
 
-// Test SEB-DeFi Engine
+// Test SEB-DeFi Engine with Ziver's fee model
 action async test_seb_defi() {
-    print("🏦 Testing SEB-DeFi Engine...")
+    print("🏦 Testing SEB-DeFi Engine with Ziver Fee Model...")
     let seb_engine = SEBDeFiEngine()
-    
+
     let test_user = "ZIV_user_123"
-    
+
     // Test social capital calculation
     let social_capital = seb_engine.calculate_social_capital(test_user)
     print("Social Capital Score: " + string(social_capital))
-    
+
     // Test borrowing power
     let borrowing_power = seb_engine.get_borrowing_power(test_user)
     print("Borrowing Power: " + string(borrowing_power))
-    
+
+    // Test fee calculation
+    let borrow_amount = 500
+    let fee_calc = seb_engine.calculate_borrowing_fee(test_user, borrow_amount)
+    print("Fee Calculation for " + string(borrow_amount) + ":")
+    print("  Tier: " + fee_calc.tier)
+    print("  Fee Percentage: " + string(fee_calc.fee_percentage * 100) + "%")
+    print("  Fee Amount: " + string(fee_calc.fee_amount))
+    print("  Net Received: " + string(fee_calc.net_amount))
+
+    // Test actual borrowing
+    let borrow_result = seb_engine.process_borrow(test_user, borrow_amount)
+    print("Borrow Result: " + string(borrow_result))
+
     // Test user analytics
     let analytics = seb_engine.get_user_analytics(test_user)
     print("User Analytics: " + string(analytics))
-    
-    // Test dynamic interest
-    let interest_rate = seb_engine.calculate_dynamic_interest(test_user, 500)
-    print("Dynamic Interest Rate: " + string(interest_rate * 100) + "%")
 }
 
 export action get_seb_defi_engine() -> SEBDeFiProtocol {
