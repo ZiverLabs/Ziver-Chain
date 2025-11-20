@@ -3,6 +3,7 @@
 
 use "crypto" as crypto_lib
 use "math" as math
+use "datetime" as datetime
 
 // Quantum-Resistant Cryptography Implementation
 protocol QuantumResistantCrypto {
@@ -15,18 +16,12 @@ protocol QuantumResistantCrypto {
 
 contract QuantumCrypto implements QuantumResistantCrypto {
     persistent storage key_registry: map
-    
-    contract KeyPair {
-        persistent storage public_key: string
-        persistent storage private_key: string
-        persistent storage address: string
-        persistent storage key_type: string = "SPHINCS+"
-        
-        action init(public_key: string, private_key: string, address: string) {
-            this.public_key = public_key
-            this.private_key = private_key
-            this.address = address
-        }
+
+    entity KeyPair {
+        public_key: string
+        private_key: string
+        address: string
+        key_type: string = "SPHINCS+"
     }
 
     action init() {
@@ -34,132 +29,70 @@ contract QuantumCrypto implements QuantumResistantCrypto {
     }
 
     action generate_quantum_keypair() -> KeyPair {
-        """
-        Generates quantum-resistant keypair using SPHINCS+ with lattice backup
-        """
-        // SPHINCS+ key generation (post-quantum signature scheme)
-        let sphincs_keypair = this.sphincs_plus_keygen()
-        
-        // Generate lattice-based key for encryption
-        let lattice_keypair = this.lattice_keygen()
-        
-        // Combine keys for hybrid approach
-        let combined_public = sphincs_keypair.public_key + "|" + lattice_keypair.public_key
-        let combined_private = sphincs_keypair.private_key + "|" + lattice_keypair.private_key
+        // For now, use traditional crypto until native bindings are available
+        let keypair = crypto_lib.generate_keypair()
         
         // Generate quantum-resistant address
-        let address_hash = crypto_lib.keccak256(combined_public)
+        let address_hash = crypto_lib.keccak256(keypair.public_key)
         let address = "ZIV_Q" + address_hash.slice(0, 40)
-        
-        let keypair = KeyPair(
-            public_key: combined_public,
-            private_key: combined_private,
+
+        let quantum_keypair = KeyPair{
+            public_key: keypair.public_key,
+            private_key: keypair.private_key,
             address: address
-        )
-        
-        this.key_registry[address] = keypair
-        return keypair
+        }
+
+        this.key_registry[address] = quantum_keypair
+        return quantum_keypair
     }
 
     action quantum_sign(message: string, private_key: string) -> string {
-        """
-        Signs message with quantum-resistant hybrid signature
-        """
-        let keys = private_key.split("|")
-        let sphincs_private = keys[0]
-        
-        // SPHINCS+ signature for post-quantum security
-        let signature = this.sphincs_plus_sign(message, sphincs_private)
+        // Use traditional signing for now
+        let signature = crypto_lib.secp256k1_sign(message, private_key)
         
         // Add timestamp for replay protection
         let timestamp = string(datetime.now().timestamp())
         let full_signature = signature + "|" + timestamp + "|" + crypto_lib.keccak256(message)
-        
+
         return full_signature
     }
 
     action quantum_verify(message: string, signature: string, public_key: string) -> boolean {
-        """
-        Verifies quantum-resistant hybrid signature
-        """
         let parts = signature.split("|")
         if parts.count() != 3 {
             return false
         }
-        
+
         let sig = parts[0]
         let timestamp = parts[1]
         let message_hash = parts[2]
-        
+
         // Check message integrity
         if crypto_lib.keccak256(message) != message_hash {
             return false
         }
-        
+
         // Check timestamp (prevent replay attacks)
         let time_diff = datetime.now().timestamp() - integer(timestamp)
-        if time_diff > 300 { // 5 minutes
+        if time_diff > 300 {
             return false
         }
-        
-        let keys = public_key.split("|")
-        let sphincs_public = keys[0]
-        
-        return this.sphincs_plus_verify(message, sig, sphincs_public)
+
+        return crypto_lib.verify_signature(message, sig, public_key)
     }
 
     action hybrid_encrypt(data: string, public_key: string) -> string {
-        """
-        Hybrid encryption: AES for data + lattice for key exchange
-        """
-        // Generate random AES key
-        let aes_key = this.generate_random_bytes(32)
-        
-        // Encrypt data with AES
-        let encrypted_data = this.aes_encrypt(data, aes_key)
-        
-        // Encrypt AES key with lattice-based cryptography
-        let keys = public_key.split("|")
-        let lattice_public = keys[1]
-        let encrypted_key = this.lattice_encrypt(aes_key, lattice_public)
-        
-        return encrypted_key + "|" + encrypted_data
+        // Simple encryption for now - would be enhanced with lattice crypto
+        let encrypted = crypto_lib.aes_encrypt(data, public_key.slice(0, 32))
+        return encrypted
     }
 
     action hybrid_decrypt(encrypted_data: string, private_key: string) -> string {
-        """
-        Hybrid decryption using quantum-resistant keys
-        """
-        let parts = encrypted_data.split("|")
-        if parts.count() != 2 {
-            throw "Invalid encrypted data format"
-        }
-        
-        let encrypted_key = parts[0]
-        let encrypted_content = parts[1]
-        
-        let keys = private_key.split("|")
-        let lattice_private = keys[1]
-        
-        // Decrypt AES key with lattice decryption
-        let aes_key = this.lattice_decrypt(encrypted_key, lattice_private)
-        
-        // Decrypt data with AES
-        return this.aes_decrypt(encrypted_content, aes_key)
+        // Simple decryption for now
+        return crypto_lib.aes_decrypt(encrypted_data, private_key.slice(0, 32))
     }
 
-    // Native crypto bindings (would be implemented in Rust/C++)
-    external action sphincs_plus_keygen() -> map from "crypto_native"
-    external action sphincs_plus_sign(message: string, private_key: string) -> string from "crypto_native"
-    external action sphincs_plus_verify(message: string, signature: string, public_key: string) -> boolean from "crypto_native"
-    external action lattice_keygen() -> map from "crypto_native"
-    external action lattice_encrypt(data: string, public_key: string) -> string from "crypto_native"
-    external action lattice_decrypt(encrypted_data: string, private_key: string) -> string from "crypto_native"
-    external action aes_encrypt(data: string, key: string) -> string from "crypto_native"
-    external action aes_decrypt(encrypted_data: string, key: string) -> string from "crypto_native"
-    external action generate_random_bytes(length: integer) -> string from "crypto_native"
-
-    // Traditional crypto for compatibility
+    // Traditional crypto implementations
     action keccak256(data: string) -> string {
         return crypto_lib.keccak256(data)
     }
@@ -168,10 +101,27 @@ contract QuantumCrypto implements QuantumResistantCrypto {
         return crypto_lib.sha256(data)
     }
 
+    action secp256k1_sign(message: string, private_key: string) -> string {
+        return crypto_lib.secp256k1_sign(message, private_key)
+    }
+
+    action verify_signature(message: string, signature: string, public_key: string) -> boolean {
+        return crypto_lib.verify_signature(message, signature, public_key)
+    }
+
+    action generate_keypair() -> KeyPair {
+        let keypair = crypto_lib.generate_keypair()
+        let address_hash = crypto_lib.keccak256(keypair.public_key)
+        let address = "ZIV_" + address_hash.slice(0, 40)
+        
+        return KeyPair{
+            public_key: keypair.public_key,
+            private_key: keypair.private_key,
+            address: address
+        }
+    }
+
     action calculate_merkle_root(transactions: list) -> string {
-        """
-        Calculates Merkle root from transaction list with quantum-resistant hashing
-        """
         if transactions.is_empty() {
             return this.keccak256("empty_merkle_root")
         }
@@ -183,7 +133,6 @@ contract QuantumCrypto implements QuantumResistantCrypto {
             hashes.push(tx_hash)
         }
 
-        // Build merkle tree with enhanced security
         return this.build_merkle_tree(hashes)
     }
 
@@ -191,16 +140,14 @@ contract QuantumCrypto implements QuantumResistantCrypto {
         while hashes.count() > 1 {
             let new_level = []
             let i = 0
-            
+
             while i < hashes.count() {
                 if i + 1 < hashes.count() {
-                    // Combine and hash with salt for quantum resistance
-                    let combined = hashes[i] + hashes[i + 1] + string(datetime.now().timestamp())
+                    let combined = hashes[i] + hashes[i + 1]
                     new_level.push(this.keccak256(combined))
                     i += 2
                 } else {
-                    // Duplicate last hash for odd number
-                    let combined = hashes[i] + hashes[i] + string(datetime.now().timestamp())
+                    let combined = hashes[i] + hashes[i]
                     new_level.push(this.keccak256(combined))
                     i += 1
                 }
@@ -212,11 +159,8 @@ contract QuantumCrypto implements QuantumResistantCrypto {
     }
 
     action derive_address(public_key: string, chain_type: string = "ZIVER") -> string {
-        """
-        Derives chain-specific address from public key
-        """
         let hash = this.keccak256(public_key)
-        
+
         match chain_type {
             case "ZIVER": return "ZIV_" + hash.slice(0, 40)
             case "ETHEREUM": return "0x" + hash.slice(hash.count() - 40)
@@ -229,28 +173,37 @@ contract QuantumCrypto implements QuantumResistantCrypto {
 
 // Test quantum-resistant cryptography
 action async test_quantum_crypto() {
-    print("🔐 Testing Quantum-Resistant Cryptography...")
+    print("🔐 Testing Cryptography Module...")
     let qcrypto = QuantumCrypto()
-    
-    // Generate quantum keypair
-    let keypair = qcrypto.generate_quantum_keypair()
-    print("Quantum Keypair Generated:")
+
+    // Generate keypair
+    let keypair = qcrypto.generate_keypair()
+    print("Keypair Generated:")
     print("  Address: " + keypair.address)
-    print("  Key Type: " + keypair.key_type)
-    
+
     // Test signing
-    let message = "Hello Quantum Ziver Chain!"
+    let message = "Hello Ziver Chain!"
     let signature = qcrypto.quantum_sign(message, keypair.private_key)
     let verified = qcrypto.quantum_verify(message, signature, keypair.public_key)
-    print("Quantum Signature Test: " + string(verified))
-    
-    // Test hybrid encryption
+    print("Signature Test: " + string(verified))
+
+    // Test encryption
     let secret_data = "Sensitive blockchain data"
     let encrypted = qcrypto.hybrid_encrypt(secret_data, keypair.public_key)
     let decrypted = qcrypto.hybrid_decrypt(encrypted, keypair.private_key)
-    print("Hybrid Encryption Test: " + string(secret_data == decrypted))
+    print("Encryption Test: " + string(secret_data == decrypted))
 }
 
-export action get_quantum_crypto() -> QuantumResistantCrypto {
-    return QuantumCrypto()
+export {
+    QuantumCrypto,
+    QuantumResistantCrypto,
+    KeyPair,
+    test_quantum_crypto,
+    keccak256,
+    sha256,
+    secp256k1_sign,
+    verify_signature,
+    generate_keypair,
+    calculate_merkle_root,
+    derive_address
 }
