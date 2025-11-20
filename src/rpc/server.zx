@@ -19,7 +19,7 @@ contract JSONRPCServer implements JSONRPCProtocol {
     persistent storage is_running: boolean = false
     persistent storage request_count: integer = 0
     persistent storage method_stats: map
-    
+
     action init(node: any, port: integer = 8545) {
         this.node = node
         this.port = port
@@ -30,44 +30,38 @@ contract JSONRPCServer implements JSONRPCProtocol {
     }
 
     action start() -> boolean {
-        """
-        Start the RPC server with enhanced capabilities
-        """
         this.is_running = true
-        
+
         print("🚀 JSON-RPC Server starting on http://localhost:" + string(this.port))
         print("📚 Available methods: " + string(this.methods.keys().count()))
-        
+
         // Start HTTP server in background
         spawn this.start_http_server()
-        
+
         // Start metrics collection
         spawn this.collect_metrics()
-        
+
         return true
     }
 
     action handle_request(request: map) -> map {
-        """
-        Handle incoming JSON-RPC request with enhanced features
-        """
         this.request_count += 1
-        
+
         let method = request.get("method", "")
         let params = request.get("params", [])
         let id = request.get("id", 1)
-        
+
         // Validate request structure
         let validation = this.validate_request(request)
         if not validation.valid {
             return this.error_response(id, -32600, validation.error)
         }
-        
+
         print("📨 RPC Request #" + string(this.request_count) + ": " + method + " ID: " + string(id))
-        
+
         // Update method statistics
         this.update_method_stats(method)
-        
+
         if not this.methods.has(method) {
             return this.error_response(id, -32601, "Method not found: " + method)
         }
@@ -76,12 +70,12 @@ contract JSONRPCServer implements JSONRPCProtocol {
             let start_time = datetime.now().timestamp()
             let result = this.methods[method](params)
             let processing_time = datetime.now().timestamp() - start_time
-            
+
             // Log slow requests
             if processing_time > 1.0 {
                 print("⚠️ Slow RPC method: " + method + " took " + string(processing_time) + "s")
             }
-            
+
             return this.success_response(id, result)
         } catch(error) {
             print("❌ RPC Error in " + method + ": " + string(error))
@@ -90,9 +84,6 @@ contract JSONRPCServer implements JSONRPCProtocol {
     }
 
     action register_core_methods() {
-        """
-        Register all available RPC methods with modern Ziver features
-        """
         // Web3 standard methods
         this.methods["web3_clientVersion"] = action(params: list) -> string {
             return "ZiverChain/v3.0.0/zexus-quantum"
@@ -103,7 +94,7 @@ contract JSONRPCServer implements JSONRPCProtocol {
         }
 
         this.methods["net_listening"] = action(params: list) -> boolean {
-            return this.node.network != null ? this.node.network.is_listening : false
+            return this.node.network != null and this.node.network.is_listening
         }
 
         this.methods["net_peerCount"] = action(params: list) -> string {
@@ -119,7 +110,7 @@ contract JSONRPCServer implements JSONRPCProtocol {
         this.methods["eth_getBalance"] = action(params: list) -> string {
             let address = params.get(0, "")
             let block_tag = params.get(1, "latest")
-            
+
             // Use SEB-DeFi integration for enhanced balance info
             let balance = this.node.get_balance_with_social_capital(address)
             return "0x" + math.to_hex_string(balance.amount)
@@ -128,28 +119,28 @@ contract JSONRPCServer implements JSONRPCProtocol {
         this.methods["eth_getBlockByNumber"] = action(params: list) -> map? {
             let block_number_hex = params.get(0, "latest")
             let full_tx = params.get(1, false)
-            
+
             let block_number = 0
             if block_number_hex == "latest" {
                 block_number = this.node.blockchain.get_latest_block_index()
             } else {
                 block_number = math.hex_to_int(block_number_hex)
             }
-            
+
             let block = this.node.blockchain.get_block(block_number)
             if block == null {
                 return null
             }
-            
+
             return this.format_block(block, full_tx)
         }
 
         this.methods["eth_sendTransaction"] = action(params: list) -> string {
             let tx_data = params.get(0, {})
-            
+
             // Enhanced transaction with bounce-back protection
             let tx = this.create_transaction_with_bounceback(tx_data)
-            
+
             let success = this.node.add_transaction(tx)
             if success {
                 // Generate AI explanation for the transaction
@@ -178,7 +169,7 @@ contract JSONRPCServer implements JSONRPCProtocol {
             let target_chain = params.get(2, "ETHEREUM")
             let amount = params.get(3, 0)
             let token_address = params.get(4, null)
-            
+
             return this.node.bridge_assets_with_tracking(
                 wallet_address, source_chain, target_chain, amount, token_address
             )
@@ -189,7 +180,7 @@ contract JSONRPCServer implements JSONRPCProtocol {
             let symbol = params.get(1, "")
             let supply = params.get(2, 0)
             let owner = params.get(3, "")
-            
+
             return this.node.deploy_token_with_seb_features(name, symbol, supply, owner)
         }
 
@@ -224,14 +215,11 @@ contract JSONRPCServer implements JSONRPCProtocol {
     }
 
     action register_method(method_name: string, handler: action) -> boolean {
-        """
-        Register custom RPC method
-        """
         if this.methods.has(method_name) {
             print("⚠️ Method already registered: " + method_name)
             return false
         }
-        
+
         this.methods[method_name] = handler
         print("✅ Registered custom method: " + method_name)
         return true
@@ -240,7 +228,7 @@ contract JSONRPCServer implements JSONRPCProtocol {
     // Enhanced Helper Methods
     action format_block(block: any, full_tx: boolean) -> map {
         let transactions = []
-        
+
         if full_tx {
             for each tx in block.transactions {
                 transactions.push(this.format_transaction(tx))
@@ -286,9 +274,6 @@ contract JSONRPCServer implements JSONRPCProtocol {
     }
 
     action create_transaction_with_bounceback(tx_data: map) -> any {
-        """
-        Create transaction with bounce-back protection
-        """
         // Check if recipient address is valid
         let to_address = tx_data.get("to", "")
         if not this.node.is_valid_address(to_address) {
@@ -296,20 +281,20 @@ contract JSONRPCServer implements JSONRPCProtocol {
             tx_data["bounceBack"] = true
             tx_data["bounceBackAddress"] = tx_data.get("from", "")
         }
-        
-        return Transaction(
-            hash: crypto.keccak256(string(tx_data) + string(datetime.now().timestamp())),
-            from_addr: tx_data.get("from", ""),
-            to_addr: tx_data.get("to", ""),
-            value: math.hex_to_int(tx_data.get("value", "0x0")),
-            data: tx_data.get("data", ""),
-            gas_limit: math.hex_to_int(tx_data.get("gas", "0x5208")),
-            gas_used: 0,
-            nonce: math.hex_to_int(tx_data.get("nonce", "0x0")),
-            signature: tx_data.get("signature", ""),
-            status: "pending",
-            bounce_back_protection: tx_data.get("bounceBack", false)
-        )
+
+        return {
+            "hash": crypto.keccak256(string(tx_data) + string(datetime.now().timestamp())),
+            "from_addr": tx_data.get("from", ""),
+            "to_addr": tx_data.get("to", ""),
+            "value": math.hex_to_int(tx_data.get("value", "0x0")),
+            "data": tx_data.get("data", ""),
+            "gas_limit": math.hex_to_int(tx_data.get("gas", "0x5208")),
+            "gas_used": 0,
+            "nonce": math.hex_to_int(tx_data.get("nonce", "0x0")),
+            "signature": tx_data.get("signature", ""),
+            "status": "pending",
+            "bounce_back_protection": tx_data.get("bounceBack", false)
+        }
     }
 
     action success_response(id: integer, result: any) -> map {
@@ -338,21 +323,18 @@ contract JSONRPCServer implements JSONRPCProtocol {
     }
 
     action validate_request(request: map) -> map {
-        """
-        Validate JSON-RPC request structure
-        """
         if request.get("jsonrpc", "") != "2.0" {
             return {"valid": false, "error": "Invalid JSON-RPC version"}
         }
-        
+
         if not request.has("method") {
             return {"valid": false, "error": "Missing method"}
         }
-        
+
         if not request.has("id") {
             return {"valid": false, "error": "Missing request ID"}
         }
-        
+
         return {"valid": true, "error": ""}
     }
 
@@ -373,8 +355,9 @@ contract JSONRPCServer implements JSONRPCProtocol {
     }
 
     // Placeholder implementations for advanced features
-    action generate_transaction_explanation(tx: any) {
+    action async generate_transaction_explanation(tx: any) {
         print("🤖 Generating AI explanation for transaction: " + tx.hash.slice(0, 16))
+        await sleep(0.1)
     }
 
     action get_seb_defi_block_data(block: any) -> map {
@@ -393,22 +376,16 @@ contract JSONRPCServer implements JSONRPCProtocol {
         return null // Would retrieve from cache
     }
 
-    action start_http_server() {
-        """
-        Start HTTP server (would integrate with actual HTTP library)
-        """
+    action async start_http_server() {
         print("🌐 HTTP Server listening on port " + string(this.port))
-        
+
         // Simulate server operation
         while this.is_running {
-            sleep(1)
+            await sleep(1)
         }
     }
 
-    action collect_metrics() {
-        """
-        Collect and report RPC server metrics
-        """
+    action async collect_metrics() {
         while this.is_running {
             let stats = {
                 "total_requests": this.request_count,
@@ -416,9 +393,9 @@ contract JSONRPCServer implements JSONRPCProtocol {
                 "method_stats": this.method_stats,
                 "uptime": datetime.now().timestamp() - this.get_start_time()
             }
-            
+
             // Log every 60 seconds
-            sleep(60)
+            await sleep(60)
             print("📊 RPC Metrics: " + string(stats))
         }
     }
@@ -427,7 +404,7 @@ contract JSONRPCServer implements JSONRPCProtocol {
         return datetime.now().timestamp() // Simplified
     }
 
-    action sleep(seconds: float) {
+    action async sleep(seconds: float) {
         // Async sleep implementation
     }
 }
@@ -435,7 +412,7 @@ contract JSONRPCServer implements JSONRPCProtocol {
 // Test Enhanced RPC Server
 action async test_enhanced_rpc() {
     print("🔌 Testing Enhanced JSON-RPC Server...")
-    
+
     // Create mock node for testing
     let mock_node = {
         "network": {"is_listening": true, "get_connected_peers_count": action() { return 5 }},
@@ -445,19 +422,19 @@ action async test_enhanced_rpc() {
         },
         "get_balance_with_social_capital": action(addr) { return {"amount": 1000} }
     }
-    
+
     let rpc_server = JSONRPCServer(node: mock_node, port: 8545)
-    
+
     if rpc_server.start() {
         print("✅ RPC Server started successfully")
-        
+
         // Test core methods
         let version = rpc_server.methods["web3_clientVersion"]([])
         print("Client Version: " + version)
-        
+
         let block_number = rpc_server.methods["eth_blockNumber"]([])
         print("Current Block: " + block_number)
-        
+
         // Test error handling
         let error_request = {"jsonrpc": "2.0", "method": "invalid_method", "id": 1}
         let error_response = rpc_server.handle_request(error_request)
@@ -465,6 +442,8 @@ action async test_enhanced_rpc() {
     }
 }
 
-export action get_json_rpc_server(node: any, port: integer) -> JSONRPCProtocol {
-    return JSONRPCServer(node: node, port: port)
+export {
+    JSONRPCServer,
+    JSONRPCProtocol,
+    test_enhanced_rpc
 }
