@@ -21,49 +21,74 @@ contract ContractRuntime implements ContractRuntimeProtocol {
     persistent storage seb_defi_integration: any
     persistent storage execution_history: list
     persistent storage sandbox_environments: map
-    
-    contract ContractCall {
-        persistent storage contract_address: string
-        persistent storage function: string
-        persistent storage arguments: list
-        persistent storage value: integer = 0
-        persistent storage gas_limit: integer = 0
-        
-        action init(contract_address: string, function: string, arguments: list, value: integer) {
-            this.contract_address = contract_address
-            this.function = function
-            this.arguments = arguments
-            this.value = value
-        }
+
+    entity ContractCall {
+        contract_address: string
+        function: string
+        arguments: list
+        value: integer = 0
+        gas_limit: integer = 0
     }
 
-    contract ExecutionContext {
-        persistent storage caller: string
-        persistent storage gas_limit: integer
-        persistent storage block_number: integer
-        persistent storage timestamp: integer
-        persistent storage transaction_hash: string
-        persistent storage social_capital: float = 0.0
-        persistent storage chain_type: string = "ZIVER"
-        
-        action init(caller: string, gas_limit: integer, block_number: integer, transaction_hash: string) {
-            this.caller = caller
-            this.gas_limit = gas_limit
-            this.block_number = block_number
-            this.timestamp = datetime.now().timestamp()
-            this.transaction_hash = transaction_hash
-        }
+    entity ExecutionContext {
+        caller: string
+        gas_limit: integer
+        block_number: integer
+        timestamp: integer
+        transaction_hash: string
+        social_capital: float = 0.0
+        chain_type: string = "ZIVER"
+    }
+
+    entity ExecutionResult {
+        success: boolean
+        return_value: any
+        gas_used: integer
+        events: list
+        state_changes: map
+        ai_assessment: map
+        seb_defi_impact: map
+    }
+
+    entity DeploymentResult {
+        success: boolean
+        contract_address: string
+        gas_used: integer
+        transaction_hash: string
+        security_level: string
+        seb_defi_tier: string
+    }
+
+    entity SimulationResult {
+        return_value: any
+        gas_used: integer
+        would_succeed: boolean
+        estimated_gas: integer
+        ai_confidence: float
+        risk_assessment: list
+        seb_defi_impact: map
+        suggested_improvements: list
+    }
+
+    entity SecurityAssessment {
+        passed: boolean
+        issues: list
+        security_level: string
+        ai_analysis: map
+        quantum_resistance: map
+        seb_defi_compliance: map
+        suggestions: list
     }
 
     action init() {
         this.vm = this.initialize_virtual_machine()
-        this.gas_tracker = GasTracker()
-        this.event_emitter = EventEmitter()
-        this.security_manager = SecurityManager()
-        this.seb_defi_integration = SEBDeFiIntegration()
+        this.gas_tracker = GasTracker{}
+        this.event_emitter = EventEmitter{}
+        this.security_manager = SecurityManager{}
+        this.seb_defi_integration = SEBDeFiIntegration{}
         this.execution_history = []
         this.sandbox_environments = {}
-        
+
         print("🔄 Advanced Contract Runtime initialized")
         print("✅ SEB-DeFi Integration: Active")
         print("✅ Quantum Security: Enabled")
@@ -71,11 +96,8 @@ contract ContractRuntime implements ContractRuntimeProtocol {
     }
 
     action execute_contract_call(contract_address: string, call: ContractCall, context: ExecutionContext) -> ExecutionResult {
-        """
-        Execute a contract call with comprehensive security and SEB-DeFi integration
-        """
         print("⚡ Executing contract call: " + contract_address + "." + call.function)
-        
+
         // Enhanced security checks with AI assessment
         let security_check = this.security_manager.can_execute_with_ai(
             context.caller, 
@@ -83,7 +105,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
             call.function,
             context
         )
-        
+
         if not security_check.allowed {
             throw "Security violation: " + security_check.reason
         }
@@ -106,7 +128,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
             call, 
             context
         )
-        
+
         if context.gas_limit < estimated_gas {
             throw "Insufficient gas: " + string(estimated_gas) + " required, " + 
                   string(context.gas_limit) + " provided"
@@ -115,7 +137,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
         // Execute contract with real-time monitoring
         let start_time = datetime.now().timestamp()
         let start_gas = context.gas_limit
-        
+
         let result = this.vm.execute_contract(
             contract_address, 
             call.function, 
@@ -133,7 +155,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
         )
 
         // Emit enhanced events with SEB-DeFi data
-        if result.events {
+        if result.events != null and not result.events.is_empty() {
             for each event in result.events {
                 let enhanced_event = this.enhance_event_with_seb_data(event, context)
                 this.event_emitter.emit_event(enhanced_event)
@@ -143,7 +165,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
         // Record execution for analytics and AI training
         this.record_execution(contract_address, call, context, result, gas_used)
 
-        return ExecutionResult(
+        return ExecutionResult{
             success: true,
             return_value: result.return_value,
             gas_used: gas_used,
@@ -151,13 +173,10 @@ contract ContractRuntime implements ContractRuntimeProtocol {
             state_changes: result.state_changes,
             ai_assessment: this.generate_ai_assessment(result),
             seb_defi_impact: this.calculate_seb_defi_impact(context.caller, result)
-        )
+        }
     }
 
     action deploy_contract(deployment: ContractDeployment) -> DeploymentResult {
-        """
-        Deploy a new contract with quantum security and AI validation
-        """
         print("📦 Deploying contract: " + deployment.name)
 
         // Comprehensive security validation
@@ -165,7 +184,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
             deployment.code, 
             deployment.owner
         )
-        
+
         if not security_scan.passed {
             throw "Contract security scan failed: " + security_scan.issues.join(", ")
         }
@@ -200,26 +219,23 @@ contract ContractRuntime implements ContractRuntimeProtocol {
             this.seb_defi_integration.track_contract(contract_address, deployment.owner)
         }
 
-        return DeploymentResult(
+        return DeploymentResult{
             success: true,
             contract_address: contract_address,
             gas_used: deployment_gas,
             transaction_hash: "deploy_tx_" + contract_address,
             security_level: security_scan.security_level,
             seb_defi_tier: this.seb_defi_integration.get_contract_tier(contract_address)
-        )
+        }
     }
 
     action simulate_call(call: ContractCall, context: ExecutionContext) -> SimulationResult {
-        """
-        Simulate contract call with AI-powered prediction
-        """
         print("🔮 Simulating contract call: " + call.contract_address + "." + call.function)
 
         // Create isolated sandbox environment
         let sandbox_id = this.create_sandbox_environment()
         let sandbox_vm = this.sandbox_environments[sandbox_id]
-        
+
         let sandbox_result = sandbox_vm.execute_contract(
             call.contract_address,
             call.function,
@@ -247,7 +263,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
         // Cleanup sandbox
         this.destroy_sandbox_environment(sandbox_id)
 
-        return SimulationResult(
+        return SimulationResult{
             return_value: sandbox_result.return_value,
             gas_used: sandbox_result.gas_used,
             would_succeed: success_prediction.confidence > 0.7,
@@ -256,21 +272,18 @@ contract ContractRuntime implements ContractRuntimeProtocol {
             risk_assessment: success_prediction.risks,
             seb_defi_impact: defi_impact_simulation,
             suggested_improvements: success_prediction.improvements
-        )
+        }
     }
 
     action validate_contract_security(code: string, deployer: string) -> SecurityAssessment {
-        """
-        Comprehensive security validation with AI analysis
-        """
-        let assessment = {
-            "passed": true,
-            "issues": [],
-            "security_level": "HIGH",
-            "ai_analysis": {},
-            "quantum_resistance": this.check_quantum_resistance(code),
-            "seb_defi_compliance": this.check_seb_defi_compliance(code),
-            "suggestions": []
+        let assessment = SecurityAssessment{
+            passed: true,
+            issues: [],
+            security_level: "HIGH",
+            ai_analysis: {},
+            quantum_resistance: this.check_quantum_resistance(code),
+            seb_defi_compliance: this.check_seb_defi_compliance(code),
+            suggestions: []
         }
 
         // Static analysis
@@ -305,17 +318,30 @@ contract ContractRuntime implements ContractRuntimeProtocol {
     // Enhanced Helper Methods
     action is_financial_operation(function: string) -> boolean {
         let financial_keywords = ["transfer", "withdraw", "deposit", "borrow", "lend", "stake"]
-        return financial_keywords.some(action(keyword) { return function.contains(keyword) })
+        for each keyword in financial_keywords {
+            if function.contains(keyword) {
+                return true
+            }
+        }
+        return false
     }
 
     action is_defi_contract(code: string) -> boolean {
         let defi_patterns = ["lending", "borrowing", "staking", "yield", "liquidity"]
-        return defi_patterns.some(action(pattern) { return code.contains(pattern) })
+        for each pattern in defi_patterns {
+            if code.contains(pattern) {
+                return true
+            }
+        }
+        return false
     }
 
     action enhance_event_with_seb_data(event: any, context: ExecutionContext) -> any {
-        let enhanced = event.copy()
-        enhanced.seb_defi_context = {
+        let enhanced = {}
+        for each key, value in event {
+            enhanced[key] = value
+        }
+        enhanced["seb_defi_context"] = {
             "caller_social_capital": context.social_capital,
             "execution_tier": this.seb_defi_integration.get_user_tier(context.caller),
             "risk_adjusted": true,
@@ -336,9 +362,9 @@ contract ContractRuntime implements ContractRuntimeProtocol {
             "ai_assessment": this.generate_ai_assessment(result),
             "seb_defi_impact": this.calculate_seb_defi_impact(context.caller, result)
         }
-        
+
         this.execution_history.push(record)
-        
+
         // Keep only last 10,000 executions
         if this.execution_history.count() > 10000 {
             this.execution_history = this.execution_history.slice(1000)
@@ -347,7 +373,20 @@ contract ContractRuntime implements ContractRuntimeProtocol {
 
     // Placeholder implementations for advanced features
     action initialize_virtual_machine() -> any {
-        return {"execute_contract": action() { return {} }}
+        return {
+            "execute_contract": action(addr, func, args, caller, value, ctx) { 
+                return {
+                    "return_value": args.is_empty() ? null : args[0],
+                    "events": [],
+                    "state_changes": {},
+                    "success": true
+                }
+            },
+            "deploy_contract_with_security": action(code, owner, balance) {
+                return "CONTRACT_" + crypto.keccak256(code).slice(0, 16)
+            },
+            "create_sandbox": action() { return {} }
+        }
     }
 
     action create_sandbox_environment() -> string {
@@ -357,7 +396,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
     }
 
     action destroy_sandbox_environment(sandbox_id: string) {
-        delete this.sandbox_environments[sandbox_id]
+        this.sandbox_environments.delete(sandbox_id)
     }
 
     action predict_execution_success(contract: string, function: string, caller: string, result: any) -> map {
@@ -408,10 +447,10 @@ contract ContractRuntime implements ContractRuntimeProtocol {
     }
 
     action contains_financial_operations(code: string) -> boolean {
-        return code.contains("transfer") || code.contains("balance")
+        return code.contains("transfer") or code.contains("balance")
     }
 
-    action calculate_security_level(assessment: map) -> string {
+    action calculate_security_level(assessment: SecurityAssessment) -> string {
         return assessment.issues.is_empty() ? "HIGH" : "MEDIUM"
     }
 
@@ -425,7 +464,7 @@ contract ContractRuntime implements ContractRuntimeProtocol {
 }
 
 // Supporting Contracts
-contract GasTracker {
+entity GasTracker {
     action estimate_gas_with_ai(contract_address: string, call: any, context: any) -> integer {
         let base_cost = 21000
         let function_cost = call.function.length() * 100
@@ -439,7 +478,12 @@ contract GasTracker {
 
     action estimate_complexity_cost(function: string) -> integer {
         let complex_functions = ["calculate_yield", "process_liquidity", "compound_rewards"]
-        return complex_functions.contains(function) ? 5000 : 1000
+        for each func in complex_functions {
+            if function.contains(func) {
+                return 5000
+            }
+        }
+        return 1000
     }
 
     action calculate_actual_gas(start_gas: integer, result: any, execution_time: integer) -> integer {
@@ -448,7 +492,7 @@ contract GasTracker {
     }
 }
 
-contract SecurityManager {
+entity SecurityManager {
     action can_execute_with_ai(caller: string, contract: string, function: string, context: any) -> map {
         return {
             "allowed": true,
@@ -466,39 +510,64 @@ contract SecurityManager {
             "quantum_secure": true
         }
     }
-}
 
-contract EventEmitter {
-    action emit_event(event: any) {
-        print("📢 Enhanced event emitted: " + event.name)
+    action register_contract_with_features(contract_address: string, owner: string, features: map) {
+        print("✅ Registered contract with enhanced security: " + contract_address)
     }
 }
 
-contract SEBDeFiIntegration {
+entity EventEmitter {
+    action emit_event(event: any) {
+        print("📢 Enhanced event emitted: " + string(event.get("name", "unknown")))
+    }
+}
+
+entity SEBDeFiIntegration {
     action check_access(caller: string, function: string, value: integer) -> map {
         return {"granted": true, "reason": ""}
+    }
+
+    action validate_defi_compliance(code: string) -> map {
+        return {"valid": true, "reasons": []}
+    }
+
+    action track_contract(contract_address: string, owner: string) {
+        print("📊 Tracking SEB-DeFi contract: " + contract_address)
+    }
+
+    action get_contract_tier(contract_address: string) -> string {
+        return "STANDARD"
+    }
+
+    action get_user_tier(caller: string) -> string {
+        return "SILVER"
+    }
+
+    action analyze_compliance(code: string) -> map {
+        return {"fully_compliant": true, "issues": []}
     }
 }
 
 // Test Advanced Contract Runtime
 action async test_advanced_contract_runtime() {
     print("⚡ Testing Advanced Contract Runtime...")
-    
-    let runtime = ContractRuntime()
-    
-    let test_call = ContractCall(
+
+    let runtime = ContractRuntime{}
+
+    let test_call = ContractCall{
         contract_address: "CONTRACT_TEST",
         function: "transfer",
         arguments: ["ZIV_recipient", 100],
         value: 0
-    )
+    }
 
-    let context = ExecutionContext(
+    let context = ExecutionContext{
         caller: "ZIV_caller",
         gas_limit: 100000,
         block_number: 1,
-        transaction_hash: "test_tx"
-    )
+        transaction_hash: "test_tx",
+        timestamp: datetime.now().timestamp()
+    }
 
     // Test security validation
     let security_assessment = runtime.validate_contract_security("contract_code", "deployer")
@@ -507,6 +576,8 @@ action async test_advanced_contract_runtime() {
     print("✅ Advanced Contract Runtime ready with SEB-DeFi integration")
 }
 
-export action get_contract_runtime() -> ContractRuntimeProtocol {
-    return ContractRuntime()
+export {
+    ContractRuntime,
+    ContractRuntimeProtocol,
+    test_advanced_contract_runtime
 }
