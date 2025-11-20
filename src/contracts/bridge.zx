@@ -1,134 +1,145 @@
 # src/contracts/bridge.zx
 # Cross-Chain Bridge Manager
 
-entity CrossChainBridge:
-    supported_chains: Map<text, ChainInfo>
-    bridge_fees: Map<text, integer>  # chain -> fee
-    bridge_contracts: Map<text, Address>  # chain -> bridge contract address
-    
-    entity ChainInfo:
-        chain_id: integer
-        rpc_url: text
-        bridge_address: Address
-        is_active: boolean = true
-    
-    action constructor():
+use "datetime" as datetime
+
+entity ChainInfo {
+    chain_id: integer
+    rpc_url: string
+    bridge_address: string
+    is_active: boolean = true
+}
+
+contract CrossChainBridge {
+    persistent storage supported_chains: map
+    persistent storage bridge_fees: map
+    persistent storage bridge_contracts: map
+
+    action init() {
         """
         Initialize bridge with supported chains
         """
-        # Ziver Chain
-        self.supported_chains["ZIVER"] = ChainInfo(
+        // Ziver Chain
+        this.supported_chains["ZIVER"] = ChainInfo{
             chain_id: 12345,
             rpc_url: "http://localhost:8545",
             bridge_address: "ZIV_bridge_001"
-        )
-        
-        # Ethereum (testnet)
-        self.supported_chains["ETHEREUM"] = ChainInfo(
-            chain_id: 5,  # Goerli
+        }
+
+        // Ethereum (testnet)
+        this.supported_chains["ETHEREUM"] = ChainInfo{
+            chain_id: 5,  // Goerli
             rpc_url: "https://goerli.infura.io/v3/",
             bridge_address: "0xBridgeEthereum"
-        )
-        
-        # BSC (testnet)
-        self.supported_chains["BSC"] = ChainInfo(
-            chain_id: 97,  # BSC Testnet
+        }
+
+        // BSC (testnet)
+        this.supported_chains["BSC"] = ChainInfo{
+            chain_id: 97,  // BSC Testnet
             rpc_url: "https://data-seed-prebsc-1-s1.binance.org:8545/",
             bridge_address: "0xBridgeBSC"
-        )
-        
-        # TON (testnet)
-        self.supported_chains["TON"] = ChainInfo(
+        }
+
+        // TON (testnet)
+        this.supported_chains["TON"] = ChainInfo{
             chain_id: 1,
             rpc_url: "https://ton-testnet.com",
             bridge_address: "EQBridgeTON"
-        )
-        
-        # Set bridge fees
-        self.bridge_fees["ZIVER"] = 10
-        self.bridge_fees["ETHEREUM"] = 50000  # Higher gas
-        self.bridge_fees["BSC"] = 10000
-        self.bridge_fees["TON"] = 100
-        
-        print "🌉 Cross-chain bridge initialized"
-    
-    action bridge_assets(source_chain: text, target_chain: text, wallet: Address, amount: integer, token_address: text?) -> boolean:
+        }
+
+        // Set bridge fees
+        this.bridge_fees["ZIVER"] = 10
+        this.bridge_fees["ETHEREUM"] = 50000  // Higher gas
+        this.bridge_fees["BSC"] = 10000
+        this.bridge_fees["TON"] = 100
+
+        print("🌉 Cross-chain bridge initialized")
+    }
+
+    action bridge_assets(source_chain: string, target_chain: string, wallet: string, amount: integer, token_address: string?) -> boolean {
         """
         Bridge assets between chains
         """
-        if not self.supported_chains.has(source_chain) or not self.supported_chains.has(target_chain):
-            print "❌ Unsupported chain"
+        if not this.supported_chains.has(source_chain) or not this.supported_chains.has(target_chain) {
+            print("❌ Unsupported chain")
             return false
-        
-        let source_info = self.supported_chains[source_chain]
-        let target_info = self.supported_chains[target_chain]
-        
-        if not source_info.is_active or not target_info.is_active:
-            print "❌ Chain not active"
+        }
+
+        let source_info = this.supported_chains[source_chain]
+        let target_info = this.supported_chains[target_chain]
+
+        if not source_info.is_active or not target_info.is_active {
+            print("❌ Chain not active")
             return false
-        
-        # Calculate bridge fee
-        let fee = self.bridge_fees[target_chain] ?? 0
-        
-        print "🌉 Bridging from " + source_chain + " to " + target_chain
-        print "  Amount: " + string(amount)
-        print "  Fee: " + string(fee)
-        print "  Wallet: " + wallet
-        
-        # In real implementation, this would:
-        # 1. Lock assets on source chain
-        # 2. Emit bridge event
-        # 3. Relay to target chain
-        # 4. Mint assets on target chain
-        
-        # Simulate bridge process
-        self.simulate_bridge_process(source_chain, target_chain, wallet, amount, token_address)
-        
+        }
+
+        // Calculate bridge fee
+        let fee = this.bridge_fees.get(target_chain, 0)
+
+        print("🌉 Bridging from " + source_chain + " to " + target_chain)
+        print("  Amount: " + string(amount))
+        print("  Fee: " + string(fee))
+        print("  Wallet: " + wallet)
+
+        // In real implementation, this would:
+        // 1. Lock assets on source chain
+        // 2. Emit bridge event
+        // 3. Relay to target chain
+        // 4. Mint assets on target chain
+
+        // Simulate bridge process
+        this.simulate_bridge_process(source_chain, target_chain, wallet, amount, token_address)
+
         return true
-    
-    action simulate_bridge_process(source_chain: text, target_chain: text, wallet: Address, amount: integer, token_address: text?):
+    }
+
+    action async simulate_bridge_process(source_chain: string, target_chain: string, wallet: string, amount: integer, token_address: string?) {
         """
         Simulate the bridge process (placeholder for actual implementation)
         """
-        print "  🔒 Locking assets on " + source_chain
-        wait 2 seconds
-        
-        print "  📨 Emitting bridge event"
-        wait 1 seconds
-        
-        print "  🔗 Relaying to " + target_chain
-        wait 3 seconds
-        
-        print "  🪙 Minting assets on " + target_chain
-        wait 1 seconds
-        
-        print "  ✅ Bridge completed: " + source_chain + " → " + target_chain
-    
-    action add_supported_chain(chain: text, chain_info: ChainInfo):
+        print("  🔒 Locking assets on " + source_chain)
+        await sleep(2)
+
+        print("  📨 Emitting bridge event")
+        await sleep(1)
+
+        print("  🔗 Relaying to " + target_chain)
+        await sleep(3)
+
+        print("  🪙 Minting assets on " + target_chain)
+        await sleep(1)
+
+        print("  ✅ Bridge completed: " + source_chain + " → " + target_chain)
+    }
+
+    action add_supported_chain(chain: string, chain_info: ChainInfo) {
         """
         Add new supported chain
         """
-        if self.supported_chains.has(chain):
-            print "⚠️ Chain already supported"
+        if this.supported_chains.has(chain) {
+            print("⚠️ Chain already supported")
             return
-        
-        self.supported_chains[chain] = chain_info
-        print "✅ Added supported chain: " + chain
-    
-    action set_bridge_fee(chain: text, fee: integer):
+        }
+
+        this.supported_chains[chain] = chain_info
+        print("✅ Added supported chain: " + chain)
+    }
+
+    action set_bridge_fee(chain: string, fee: integer) {
         """
         Set bridge fee for a chain
         """
-        self.bridge_fees[chain] = fee
-        print "💰 Bridge fee for " + chain + " set to: " + string(fee)
-    
-    action get_bridge_quote(source_chain: text, target_chain: text, amount: integer) -> Map<text, any>:
+        this.bridge_fees[chain] = fee
+        print("💰 Bridge fee for " + chain + " set to: " + string(fee))
+    }
+
+    action get_bridge_quote(source_chain: string, target_chain: string, amount: integer) -> map {
         """
         Get bridge quote with estimated fees and time
         """
-        let fee = self.bridge_fees[target_chain] ?? 0
-        let estimated_time = 180  # 3 minutes estimate
-        
+        let fee = this.bridge_fees.get(target_chain, 0)
+        let estimated_time = 180  // 3 minutes estimate
+
         return {
             "source_chain": source_chain,
             "target_chain": target_chain,
@@ -137,14 +148,28 @@ entity CrossChainBridge:
             "estimated_time_seconds": estimated_time,
             "total_received": amount - fee
         }
+    }
 
-# Test the bridge
-print "🌉 Testing Cross-Chain Bridge..."
-let bridge = CrossChainBridge()
+    action async sleep(seconds: integer) {
+        // Async sleep implementation
+    }
+}
 
-# Get bridge quote
-let quote = bridge.get_bridge_quote("ZIVER", "ETHEREUM", 1000)
-print "💰 Bridge Quote: " + string(quote)
+// Test the bridge
+action async test_cross_chain_bridge() {
+    print("🌉 Testing Cross-Chain Bridge...")
+    let bridge = CrossChainBridge{}
 
-# Test bridge (simulation)
-bridge.bridge_assets("ZIVER", "ETHEREUM", "ZIV_user_123", 500, null)
+    // Get bridge quote
+    let quote = bridge.get_bridge_quote("ZIVER", "ETHEREUM", 1000)
+    print("💰 Bridge Quote: " + string(quote))
+
+    // Test bridge (simulation)
+    await bridge.bridge_assets("ZIVER", "ETHEREUM", "ZIV_user_123", 500, null)
+}
+
+export {
+    CrossChainBridge,
+    ChainInfo,
+    test_cross_chain_bridge
+}
