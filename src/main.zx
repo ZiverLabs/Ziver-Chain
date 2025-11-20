@@ -1,162 +1,248 @@
 # src/main.zx - FIXED VERSION
-use { JSONRPCServer, WebSocketRPCServer } from "./rpc/server.zx"
+use { JSONRPCServer, JSONRPCProtocol } from "./rpc/server.zx"
+use { WebSocketRPCServer, WebSocketRPCProtocol } from "./rpc/websocket.zx"
 use { ContractRuntime } from "./runtime/contract_runtime.zx"
 use { StateManager } from "./runtime/state_manager.zx"
+use { P2PNetwork, P2PNetworkProtocol } from "./network/network.zx"
+use { ZiverVirtualMachine, VirtualMachine } from "./core/zvm.zx"
+use { PoSConsensus, ConsensusProtocol } from "./core/consensus.zx"
+use { QuantumCrypto, QuantumResistantCrypto } from "./core/crypto.zx"
+use { create_genesis_block, create_block, Block, Transaction } from "./core/block.zx"
 use "./stubs.zx" as stubs
 
-entity ZiverNode:
+entity ZiverNode {
     rpc_server: JSONRPCServer
     ws_server: WebSocketRPCServer
     contract_runtime: ContractRuntime
     state_manager: StateManager
     node_wallet: any
-    consensus: any
-    network: any
-    zvm: any
+    consensus: PoSConsensus
+    network: P2PNetwork
+    zvm: ZiverVirtualMachine
     bridge_manager: any
     blockchain: any
-    pending_transactions: any
+    pending_transactions: list
     token_registry: any
     wallet_contracts: any
+}
 
-    action initialize():
-        """
-        Initialize complete blockchain node
-        """
-        print("🚀 Initializing Complete Ziver Node...")
+action ZiverNode.init() {
+    """
+    Initialize complete blockchain node
+    """
+    print("🚀 Initializing Complete Ziver Node...")
 
-        # Initialize core components
-        let crypto = Crypto()
-        self.node_wallet = crypto.generate_keypair()
+    // Initialize core components
+    let crypto = QuantumCrypto()
+    self.node_wallet = crypto.generate_keypair()
 
-        self.consensus = PoSConsensus()
-        self.network = P2PNetwork()
-        self.zvm = ZiverVirtualMachine()
-        self.bridge_manager = CrossChainBridge()
+    self.consensus = PoSConsensus()
+    self.network = P2PNetwork(node_id: "ziver_node_" + self.node_wallet.address.slice(0, 8))
+    self.zvm = ZiverVirtualMachine()
+    self.bridge_manager = CrossChainBridge()
 
-        # Initialize new runtime components
-        self.contract_runtime = ContractRuntime()
-        self.state_manager = StateManager()
+    // Initialize new runtime components
+    self.contract_runtime = ContractRuntime()
+    self.state_manager = StateManager()
 
-        # Create genesis block if needed
-        if self.blockchain.is_empty():
-            let genesis = create_genesis_block()
-            self.blockchain.add(genesis)
-            self.state_manager.apply_block(genesis)
+    // Initialize collections
+    self.blockchain = []
+    self.pending_transactions = []
+    self.token_registry = {}
+    self.wallet_contracts = {}
 
-        # Register as validator
-        self.consensus.register_validator(self.node_wallet.address, 1000)
+    // Create genesis block if needed
+    if self.blockchain.is_empty() {
+        let genesis = create_genesis_block()
+        self.blockchain.push(genesis)
+        self.state_manager.apply_block(genesis)
+    }
 
-        # Initialize RPC servers
-        self.rpc_server = JSONRPCServer(self, 8545)
-        self.ws_server = WebSocketRPCServer(self.rpc_server, 8546)
+    // Register as validator
+    self.consensus.register_validator(self.node_wallet.address, 1000)
 
-        print("✅ Complete node initialized with RPC, Runtime, and State management")
-        return true
+    // Initialize RPC servers
+    self.rpc_server = JSONRPCServer(self, 8545)
+    self.ws_server = WebSocketRPCServer(self.rpc_server, 8546)
 
-    action start_full_node(port: integer = 3030):
-        """
-        Start complete blockchain node with all services
-        """
-        print("🎯 Starting Full Ziver Node...")
+    print("✅ Complete node initialized with RPC, Runtime, and State management")
+    return true
+}
 
-        # Start networking
-        self.network.start_node(port)
-        self.network.discover_peers()
+action ZiverNode.initialize() -> boolean {
+    return self.init()
+}
 
-        # Start RPC services
-        self.rpc_server.start()
-        self.ws_server.start()
+action ZiverNode.start_full_node(port: integer = 3030) -> boolean {
+    """
+    Start complete blockchain node with all services
+    """
+    print("🎯 Starting Full Ziver Node...")
 
-        # Start consensus
-        self.start_consensus()
+    // Start networking
+    self.network.start_node(port)
+    self.network.discover_peers()
 
-        print("🎉 Ziver Full Node running!")
-        print("   Network: localhost:" + string(port))
-        print("   JSON-RPC: http://localhost:8545")
-        print("   WebSocket: ws://localhost:8546")
-        print("   Node ID: " + self.node_wallet.address)
-        return true
+    // Start RPC services
+    self.rpc_server.start()
+    self.ws_server.start()
 
-    action start_consensus():
-        """
-        Start consensus mechanism
-        """
-        print("🏁 Starting consensus...")
-        return true
+    // Start consensus
+    self.start_consensus()
 
-    action mine_block():
-        """
-        Enhanced block mining with state management
-        """
-        if self.pending_transactions.is_empty():
-            return
-        
-        let previous_block = self.blockchain[self.blockchain.count() - 1]
-        
-        # Validate and process transactions
-        let valid_transactions = []
-        for each tx in self.pending_transactions:
-            if self.consensus.validate_transaction(tx):
-                valid_transactions.add(tx)
-        
-        if valid_transactions.is_empty():
-            return
+    print("🎉 Ziver Full Node running!")
+    print("   Network: localhost:" + string(port))
+    print("   JSON-RPC: http://localhost:8545")
+    print("   WebSocket: ws://localhost:8546")
+    print("   Node ID: " + self.node_wallet.address)
+    return true
+}
 
-        # Create new block
-        let new_block = create_block(
-            previous_block: previous_block,
-            transactions: valid_transactions,
-            validator: self.node_wallet.address,
-            private_key: self.node_wallet.private_key
-        )
+action ZiverNode.start_consensus() -> boolean {
+    """
+    Start consensus mechanism
+    """
+    print("🏁 Starting consensus...")
+    return true
+}
 
-        # Add block reward
-        let reward_txs = self.consensus.process_block_reward(self.node_wallet.address, new_block)
-        new_block.transactions = reward_txs + valid_transactions
+action ZiverNode.mine_block() {
+    """
+    Enhanced block mining with state management
+    """
+    if self.pending_transactions.is_empty() {
+        return
+    }
 
-        # Apply block to state
-        if self.state_manager.apply_block(new_block):
-            self.blockchain.add(new_block)
-            self.network.broadcast_block(new_block)
-            self.ws_server.broadcast_new_block(new_block)
-            self.pending_transactions = []
-            print("✅ Block mined: #" + string(new_block.index))
+    let previous_block = self.blockchain[self.blockchain.count() - 1]
 
-    action create_wallet(user_id: string) -> string:
-        """
-        Create a new wallet
-        """
-        print("👛 Creating wallet for: " + user_id)
-        return "wallet_" + user_id
-
-    action deploy_token(name: string, symbol: string, supply: integer, owner: string) -> string:
-        """
-        Deploy a new ZRC-20 token
-        """
-        let token_address = "TOKEN_" + name + "_" + symbol
-        print("🪙 Token deployed: " + name + " (" + symbol + ") at " + token_address)
-        return token_address
-
-    action get_wallet_info(wallet_address: string) -> map:
-        """
-        Get comprehensive wallet information
-        """
-        return {
-            "owner": wallet_address,
-            "portfolio": 1000,
-            "supported_chains": ["ziver", "ethereum"],
-            "guardians": 2
+    // Validate and process transactions
+    let valid_transactions = []
+    for each tx in self.pending_transactions {
+        if self.consensus.validate_transaction(tx) {
+            valid_transactions.push(tx)
         }
+    }
 
-# Create a global instance and export functions
-let ziver_node_instance = ZiverNode()
+    if valid_transactions.is_empty() {
+        return
+    }
 
-action get_ziver_node() -> ZiverNode:
+    // Create new block
+    let new_block = create_block(
+        previous_block: previous_block,
+        transactions: valid_transactions,
+        validator: self.node_wallet.address,
+        private_key: self.node_wallet.private_key
+    )
+
+    // Add block reward
+    let reward_txs = self.consensus.process_block_reward(self.node_wallet.address, new_block)
+    new_block.transactions = reward_txs.concat(valid_transactions)
+
+    // Apply block to state
+    if self.state_manager.apply_block(new_block) {
+        self.blockchain.push(new_block)
+        self.network.broadcast_block(new_block)
+        self.ws_server.broadcast_new_block(new_block)
+        self.pending_transactions = []
+        print("✅ Block mined: #" + string(new_block.index))
+    }
+}
+
+action ZiverNode.create_wallet(user_id: string) -> string {
+    """
+    Create a new wallet
+    """
+    print("👛 Creating wallet for: " + user_id)
+    return "wallet_" + user_id
+}
+
+action ZiverNode.deploy_token(name: string, symbol: string, supply: integer, owner: string) -> string {
+    """
+    Deploy a new ZRC-20 token
+    """
+    let token_address = "TOKEN_" + name + "_" + symbol
+    print("🪙 Token deployed: " + name + " (" + symbol + ") at " + token_address)
+    return token_address
+}
+
+action ZiverNode.get_wallet_info(wallet_address: string) -> map {
+    """
+    Get comprehensive wallet information
+    """
+    return {
+        "owner": wallet_address,
+        "portfolio": 1000,
+        "supported_chains": ["ziver", "ethereum"],
+        "guardians": 2
+    }
+}
+
+// Placeholder implementations for RPC methods
+action ZiverNode.get_balance_with_social_capital(address: string) -> map {
+    return {"amount": 1000}
+}
+
+action ZiverNode.get_enhanced_wallet_info(wallet_address: string) -> map {
+    return {"address": wallet_address, "balance": 1000}
+}
+
+action ZiverNode.create_quantum_wallet(owner_address: string) -> string {
+    return "quantum_wallet_" + owner_address
+}
+
+action ZiverNode.bridge_assets_with_tracking(wallet_address: string, source_chain: string, target_chain: string, amount: integer, token_address: string?) -> map {
+    return {"status": "bridged", "amount": amount}
+}
+
+action ZiverNode.deploy_token_with_seb_features(name: string, symbol: string, supply: integer, owner: string) -> string {
+    return "TOKEN_" + name + "_" + symbol
+}
+
+action ZiverNode.get_social_capital_score(user_address: string) -> map {
+    return {"score": 0.75, "tier": "GOLD"}
+}
+
+action ZiverNode.get_borrowing_power(user_address: string) -> integer {
+    return 5000
+}
+
+action ZiverNode.get_transaction_explanation(tx_hash: string) -> string {
+    return "AI explanation for transaction"
+}
+
+action ZiverNode.run_ai_optimization() -> map {
+    return {"optimized": true}
+}
+
+action ZiverNode.get_quantum_key_info(address: string) -> map {
+    return {"quantum_secure": true}
+}
+
+action ZiverNode.is_valid_address(address: string) -> boolean {
+    return address.starts_with("ZIV_") or address.starts_with("0x")
+}
+
+action ZiverNode.add_transaction(tx: any) -> boolean {
+    self.pending_transactions.push(tx)
+    return true
+}
+
+// Create a global instance and export functions
+let ziver_node_instance = ZiverNode{}
+
+action get_ziver_node() -> ZiverNode {
     """
     Get the Ziver node instance
     """
     return ziver_node_instance
+}
 
-# Export the main function
-export { get_ziver_node, ZiverNode }
+// Export the main function
+export {
+    get_ziver_node,
+    ZiverNode,
+    JSONRPCServer,
+    WebSocketRPCServer
+}
