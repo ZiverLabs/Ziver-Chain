@@ -1,388 +1,576 @@
+# src/core/social_capital.zx
 use "crypto" as crypto
 use "datetime" as datetime
 use "math" as math
 
-// ZAIE (Ziver Adaptive Intelligence Engine) - Social Capital Scoring
-protocol ZAIEProtocol {
-    action analyze_user_behavior(user: string) -> map
-    action calculate_trust_score(user: string) -> float
-    action generate_explanation(score: float, factors: map) -> string
-    action detect_anomalies(user: string) -> list
+// Social Capital Score (SCS) System for SEB-DeFi Protocol
+protocol SCSSystem {
+    action calculate_scs(user: string, app_id: string?) -> integer
+    action get_scs_explanation(user: string, app_id: string?) -> map
+    action record_activity(user: string, activity_type: string, app_id: string, metadata: map) -> boolean
+    action get_scs_history(user: string, days: integer?) -> list
+    action get_app_config(app_id: string) -> map?
 }
 
-contract ZAIEEngine implements ZAIEProtocol {
-    persistent storage behavior_profiles: map
-    persistent storage trust_network: map
-    persistent storage anomaly_detection: map
-    
-    contract BehaviorProfile {
-        persistent storage address: string
-        persistent storage transaction_patterns: map
-        persistent storage social_connections: list
-        persistent storage content_quality: float = 0.5
-        persistent storage consistency_score: float = 0.5
-        persistent storage last_analysis: integer
-        
-        action init(address: string) {
-            this.address = address
-            this.last_analysis = datetime.now().timestamp()
-            this.transaction_patterns = {
-                "frequency": 0,
-                "amount_distribution": {},
-                "time_patterns": {},
-                "counterparty_diversity": 0.5
-            }
-        }
+contract SocialCapitalEngine implements SCSSystem {
+    persistent storage user_scores: map
+    persistent storage activity_logs: map
+    persistent storage app_configs: map
+    persistent storage score_history: map
+
+    entity ActivityRecord {
+        user: string
+        activity_type: string
+        app_id: string
+        timestamp: integer
+        points_earned: integer
+        metadata: map
+        explanation: string
+    }
+
+    entity SCSConfig {
+        min_points: integer = 10
+        max_points: integer = 100
+        daily_cap: integer = 500
+        activity_weights: map
+        cooldown_periods: map
     }
 
     action init() {
-        this.behavior_profiles = {}
-        this.trust_network = {}
-        this.anomaly_detection = this.initialize_anomaly_detection()
+        this.user_scores = {}
+        this.activity_logs = {}
+        this.app_configs = {}
+        this.score_history = {}
+        
+        // Initialize default configuration
+        this.initialize_default_config()
     }
 
-    action analyze_user_behavior(user: string) -> map {
+    action calculate_scs(user: string, app_id: string?) -> integer {
         """
-        Comprehensive analysis of user behavior across multiple dimensions
+        Calculate Social Capital Score with randomizer within app-specific ranges
         """
-        if not this.behavior_profiles.has(user) {
-            this.behavior_profiles[user] = BehaviorProfile(address: user)
-        }
+        let config = this.get_app_config_or_default(app_id)
+        let base_score = this.get_user_base_score(user)
         
-        let profile = this.behavior_profiles[user]
-        let analysis = {}
+        // Get recent activities for this user/app
+        let recent_activities = this.get_recent_activities(user, app_id, 30) // Last 30 days
         
-        // Multi-dimensional analysis
-        analysis.transaction_analysis = this.analyze_transaction_behavior(user)
-        analysis.social_analysis = this.analyze_social_behavior(user)
-        analysis.financial_analysis = this.analyze_financial_behavior(user)
-        analysis.temporal_analysis = this.analyze_temporal_patterns(user)
-        analysis.network_analysis = this.analyze_trust_network(user)
+        // Calculate activity-based multiplier
+        let activity_multiplier = this.calculate_activity_multiplier(recent_activities, config)
         
-        // Update profile
-        profile.transaction_patterns = analysis.transaction_analysis
-        profile.consistency_score = this.calculate_consistency(analysis)
-        profile.last_analysis = datetime.now().timestamp()
+        // Generate random score within configured range with activity influence
+        let min_score = config.min_points
+        let max_score = config.max_points
+        let random_factor = math.random_int(0, 100) / 100.0 // 0.0 to 1.0
         
-        return analysis
+        // Base random score + activity influence
+        let raw_score = min_score + integer((max_score - min_score) * random_factor)
+        let final_score = integer(raw_score * activity_multiplier)
+        
+        // Apply daily cap
+        let daily_total = this.get_daily_points(user, app_id)
+        let capped_score = math.min(final_score, config.daily_cap - daily_total)
+        
+        // Ensure score is within bounds
+        let bounded_score = math.max(min_score, math.min(max_score, capped_score))
+        
+        // Update user score
+        this.update_user_score(user, bounded_score, app_id)
+        
+        // Log this scoring event
+        this.record_scoring_event(user, bounded_score, app_id, recent_activities, activity_multiplier)
+        
+        return bounded_score
     }
 
-    action calculate_trust_score(user: string) -> float {
+    action get_scs_explanation(user: string, app_id: string?) -> map {
         """
-        Calculate comprehensive trust score using ZAIE AI
+        Provide transparent explanation of how SCS was calculated
         """
-        let behavior_analysis = this.analyze_user_behavior(user)
+        let recent_activities = this.get_recent_activities(user, app_id, 7) // Last 7 days
+        let config = this.get_app_config_or_default(app_id)
+        let current_score = this.user_scores.get(user, {}).get("current_score", 0)
         
-        // Weighted scoring across multiple dimensions
-        let dimensions = {
-            "transaction_health": this.score_transaction_health(behavior_analysis.transaction_analysis),
-            "social_engagement": this.score_social_engagement(behavior_analysis.social_analysis),
-            "financial_responsibility": this.score_financial_responsibility(behavior_analysis.financial_analysis),
-            "behavior_consistency": behavior_analysis.temporal_analysis.consistency,
-            "network_reputation": behavior_analysis.network_analysis.trust_score
+        let activity_breakdown = []
+        let total_activity_points = 0
+        
+        for each activity in recent_activities {
+            let activity_value = this.calculate_activity_value(activity, config)
+            activity_breakdown.push({
+                "type": activity.activity_type,
+                "app": activity.app_id,
+                "timestamp": activity.timestamp,
+                "points": activity_value,
+                "explanation": activity.explanation
+            })
+            total_activity_points += activity_value
         }
         
-        // AI-powered weighting based on context
-        let weights = this.calculate_contextual_weights(user, dimensions)
-        
-        // Calculate final trust score
-        let trust_score = 0.0
-        let total_weight = 0.0
-        
-        for each dimension, score in dimensions {
-            let weight = weights[dimension]
-            trust_score += score * weight
-            total_weight += weight
-        }
-        
-        let final_score = trust_score / total_weight if total_weight > 0 else 0.0
-        
-        // Apply anomaly detection adjustments
-        let anomalies = this.detect_anomalies(user)
-        if not anomalies.is_empty() {
-            final_score *= this.calculate_anomaly_penalty(anomalies)
-        }
-        
-        return math.max(0.0, math.min(1.0, final_score))
-    }
-
-    action generate_explanation(score: float, factors: map) -> string {
-        """
-        Generate AI-powered explanation for social capital score
-        """
-        let explanation_parts = []
-        
-        // Positive factors
-        if factors.transaction_health > 0.7 {
-            explanation_parts.push("Strong transaction history with consistent patterns")
-        }
-        
-        if factors.social_engagement > 0.7 {
-            explanation_parts.push("Active community participation and engagement")
-        }
-        
-        if factors.financial_responsibility > 0.7 {
-            explanation_parts.push("Demonstrated financial responsibility and trustworthiness")
-        }
-        
-        if factors.behavior_consistency > 0.8 {
-            explanation_parts.push("Highly consistent behavior patterns over time")
-        }
-        
-        // Improvement suggestions
-        let suggestions = []
-        if factors.transaction_health < 0.5 {
-            suggestions.push("Increase transaction frequency and diversity")
-        }
-        
-        if factors.social_engagement < 0.5 {
-            suggestions.push("Participate more in community activities and governance")
-        }
-        
-        if factors.network_reputation < 0.4 {
-            suggestions.push("Build stronger connections with trusted network participants")
-        }
-        
-        // Construct final explanation
-        let base_explanation = "Your social capital score of " + string(math.round(score * 100)) + 
-                              " is based on analysis of your on-chain behavior, community engagement, " +
-                              "and financial responsibility."
-        
-        if not explanation_parts.is_empty() {
-            base_explanation += " Key strengths include: " + explanation_parts.join(", ") + "."
-        }
-        
-        if not suggestions.is_empty() {
-            base_explanation += " To improve your score: " + suggestions.join(", ") + "."
-        }
-        
-        return base_explanation
-    }
-
-    action detect_anomalies(user: string) -> list {
-        """
-        Detect anomalous behavior patterns using AI
-        """
-        let profile = this.behavior_profiles.get(user, null)
-        if profile == null {
-            return ["No behavior profile available"]
-        }
-        
-        let anomalies = []
-        let current_time = datetime.now().timestamp()
-        
-        // Check for sudden behavior changes
-        if this.detects_sudden_activity_spike(user) {
-            anomalies.push("Sudden increase in transaction activity")
-        }
-        
-        // Check for unusual transaction patterns
-        if this.detects_unusual_transaction_patterns(user) {
-            anomalies.push("Unusual transaction patterns detected")
-        }
-        
-        // Check for connection anomalies
-        if this.detects_suspicious_connections(user) {
-            anomalies.push("Connections to suspicious addresses")
-        }
-        
-        // Check for timing anomalies
-        if this.detects_anomalous_timing(user) {
-            anomalies.push("Unusual activity timing patterns")
-        }
-        
-        return anomalies
-    }
-
-    // Advanced Analysis Methods
-    action analyze_transaction_behavior(user: string) -> map {
-        """
-        Analyze transaction patterns and behaviors
-        """
         return {
-            "total_transactions": 0, // Would query blockchain
-            "transaction_frequency": 0.5,
-            "amount_distribution": {"mean": 0, "std_dev": 0},
-            "counterparty_diversity": 0.6,
-            "gas_usage_efficiency": 0.7,
-            "success_rate": 0.95
+            "user": user,
+            "current_scs": current_score,
+            "app_config": {
+                "min_points": config.min_points,
+                "max_points": config.max_points,
+                "daily_cap": config.daily_cap
+            },
+            "recent_activities": activity_breakdown,
+            "total_activity_points": total_activity_points,
+            "calculation_period": "7 days",
+            "random_factor_range": config.max_points - config.min_points,
+            "explanation": this.generate_natural_language_explanation(user, current_score, activity_breakdown, config)
         }
     }
 
-    action analyze_social_behavior(user: string) -> map {
+    action record_activity(user: string, activity_type: string, app_id: string, metadata: map) -> boolean {
         """
-        Analyze social engagement and community participation
+        Record user activity from connected applications
         """
-        return {
-            "governance_participation": 0.5,
-            "community_interactions": 0.6,
-            "content_contributions": 0.4,
-            "helpfulness_score": 0.7,
-            "network_centrality": 0.5
-        }
-    }
-
-    action analyze_financial_behavior(user: string) -> map {
-        """
-        Analyze financial responsibility and patterns
-        """
-        return {
-            "portfolio_diversity": 0.6,
-            "risk_taking": 0.4,
-            "liquidity_management": 0.7,
-            "collateral_quality": 0.8,
-            "repayment_history": 0.9
-        }
-    }
-
-    action analyze_temporal_patterns(user: string) -> map {
-        """
-        Analyze temporal behavior patterns and consistency
-        """
-        return {
-            "activity_consistency": 0.8,
-            "seasonal_patterns": {},
-            "response_times": 0.6,
-            "reliability_score": 0.7
-        }
-    }
-
-    action analyze_trust_network(user: string) -> map {
-        """
-        Analyze trust network and social connections
-        """
-        return {
-            "trust_score": 0.6,
-            "network_size": 0.5,
-            "connection_quality": 0.7,
-            "influence_score": 0.4
-        }
-    }
-
-    // Scoring Algorithms
-    action score_transaction_health(analysis: map) -> float {
-        let factors = [
-            analysis.transaction_frequency * 0.3,
-            analysis.counterparty_diversity * 0.25,
-            analysis.success_rate * 0.25,
-            analysis.gas_usage_efficiency * 0.2
-        ]
-        return factors.reduce(action(acc, val) { return acc + val }, 0.0)
-    }
-
-    action score_social_engagement(analysis: map) -> float {
-        let factors = [
-            analysis.governance_participation * 0.3,
-            analysis.community_interactions * 0.25,
-            analysis.content_contributions * 0.2,
-            analysis.helpfulness_score * 0.15,
-            analysis.network_centrality * 0.1
-        ]
-        return factors.reduce(action(acc, val) { return acc + val }, 0.0)
-    }
-
-    action score_financial_responsibility(analysis: map) -> float {
-        let factors = [
-            analysis.portfolio_diversity * 0.25,
-            (1.0 - analysis.risk_taking) * 0.25, // Lower risk is better
-            analysis.liquidity_management * 0.2,
-            analysis.collateral_quality * 0.15,
-            analysis.repayment_history * 0.15
-        ]
-        return factors.reduce(action(acc, val) { return acc + val }, 0.0)
-    }
-
-    action calculate_consistency(analysis: map) -> float {
-        // Measure how consistent user behavior is across dimensions
-        let scores = [
-            analysis.transaction_analysis.success_rate,
-            analysis.temporal_analysis.activity_consistency,
-            analysis.financial_analysis.repayment_history
-        ]
+        let timestamp = datetime.now().timestamp()
         
-        let mean = scores.reduce(action(acc, val) { return acc + val }, 0.0) / scores.count()
-        let variance = scores.reduce(action(acc, val) { return acc + (val - mean) * (val - mean) }, 0.0) / scores.count()
+        // Check cooldown period for this activity type
+        if not this.can_perform_activity(user, activity_type, app_id) {
+            print("Activity cooldown active for: " + activity_type)
+            return false
+        }
         
-        return math.max(0.0, 1.0 - variance) // Lower variance = higher consistency
+        let config = this.get_app_config_or_default(app_id)
+        let base_points = config.activity_weights.get(activity_type, 10)
+        
+        // Calculate dynamic points based on metadata
+        let final_points = this.calculate_dynamic_points(base_points, metadata, config)
+        
+        let explanation = this.generate_activity_explanation(activity_type, final_points, metadata)
+        
+        let activity = ActivityRecord{
+            user: user,
+            activity_type: activity_type,
+            app_id: app_id,
+            timestamp: timestamp,
+            points_earned: final_points,
+            metadata: metadata,
+            explanation: explanation
+        }
+        
+        // Store activity
+        if not this.activity_logs.has(user) {
+            this.activity_logs[user] = []
+        }
+        this.activity_logs[user].push(activity)
+        
+        // Update last activity timestamp
+        this.update_activity_cooldown(user, activity_type, app_id)
+        
+        print("📝 Activity recorded: " + user + " - " + activity_type + " (" + string(final_points) + " points)")
+        return true
     }
 
-    action calculate_contextual_weights(user: string, dimensions: map) -> map {
-        // AI-powered contextual weighting based on user profile and network state
+    action get_scs_history(user: string, days: integer? = 30) -> list {
+        """
+        Get SCS history and activity timeline
+        """
+        let end_time = datetime.now().timestamp()
+        let start_time = end_time - (days * 24 * 60 * 60) // Convert days to seconds
+        
+        let user_history = this.score_history.get(user, [])
+        let filtered_history = user_history.filter(action(record) {
+            return record.timestamp >= start_time and record.timestamp <= end_time
+        })
+        
+        let activities = this.get_recent_activities(user, null, days)
+        
         return {
-            "transaction_health": 0.3,
-            "social_engagement": 0.25,
-            "financial_responsibility": 0.2,
-            "behavior_consistency": 0.15,
-            "network_reputation": 0.1
+            "scs_timeline": filtered_history,
+            "activities": activities,
+            "period": {
+                "days": days,
+                "start_time": start_time,
+                "end_time": end_time
+            },
+            "summary": this.generate_history_summary(filtered_history, activities)
         }
     }
 
-    action calculate_anomaly_penalty(anomalies: list) -> float {
-        let penalty = 1.0
-        for each anomaly in anomalies {
-            penalty *= 0.9 // 10% penalty per anomaly
+    action get_app_config(app_id: string) -> map? {
+        """
+        Get configuration for specific application
+        """
+        return this.app_configs.get(app_id, null)
+    }
+
+    action register_app_config(app_id: string, config: map) -> boolean {
+        """
+        Register custom configuration for an application
+        """
+        let default_config = this.get_default_config()
+        let merged_config = this.merge_configs(default_config, config)
+        
+        // Validate configuration
+        if not this.validate_app_config(merged_config) {
+            return false
         }
-        return math.max(0.5, penalty) // Cap at 50% penalty
+        
+        this.app_configs[app_id] = merged_config
+        print("✅ App config registered: " + app_id)
+        return true
     }
 
-    // Anomaly Detection Methods
-    action detects_sudden_activity_spike(user: string) -> boolean {
-        return false // Would implement spike detection
+    // Internal implementation methods
+    action initialize_default_config() {
+        let default_config = SCSConfig{
+            min_points: 10,
+            max_points: 100,
+            daily_cap: 500,
+            activity_weights: {
+                "login": 5,
+                "transaction": 15,
+                "governance_vote": 25,
+                "content_creation": 20,
+                "community_engagement": 15,
+                "referral": 30,
+                "staking": 20,
+                "liquidity_provision": 35
+            },
+            cooldown_periods: {
+                "login": 3600, // 1 hour
+                "transaction": 300, // 5 minutes
+                "governance_vote": 86400, // 24 hours
+                "content_creation": 7200, // 2 hours
+                "community_engagement": 1800, // 30 minutes
+                "referral": 0, // No cooldown
+                "staking": 3600,
+                "liquidity_provision": 3600
+            }
+        }
+        
+        this.app_configs["default"] = default_config
     }
 
-    action detects_unusual_transaction_patterns(user: string) -> boolean {
-        return false // Would implement pattern analysis
+    action get_app_config_or_default(app_id: string?) -> SCSConfig {
+        if app_id != null and this.app_configs.has(app_id) {
+            return this.app_configs[app_id]
+        }
+        return this.app_configs["default"]
     }
 
-    action detects_suspicious_connections(user: string) -> boolean {
-        return false // Would implement network analysis
+    action get_user_base_score(user: string) -> integer {
+        let user_data = this.user_scores.get(user, {
+            "current_score": 50, // Default starting score
+            "last_updated": datetime.now().timestamp(),
+            "total_activities": 0
+        })
+        return user_data.current_score
     }
 
-    action detects_anomalous_timing(user: string) -> boolean {
-        return false // Would implement temporal analysis
+    action get_recent_activities(user: string, app_id: string?, days: integer) -> list {
+        let user_activities = this.activity_logs.get(user, [])
+        let cutoff_time = datetime.now().timestamp() - (days * 24 * 60 * 60)
+        
+        let filtered = user_activities.filter(action(activity) {
+            let time_match = activity.timestamp >= cutoff_time
+            let app_match = app_id == null or activity.app_id == app_id
+            return time_match and app_match
+        })
+        
+        return filtered
     }
 
-    action initialize_anomaly_detection() -> map {
+    action calculate_activity_multiplier(activities: list, config: SCSConfig) -> float {
+        if activities.is_empty() {
+            return 0.5 // Low multiplier for no activity
+        }
+        
+        let total_points = 0
+        for each activity in activities {
+            total_points += activity.points_earned
+        }
+        
+        let avg_daily_points = total_points / 7.0 // Normalize to weekly average
+        let multiplier = math.min(2.0, 0.5 + (avg_daily_points / 100.0)) // Cap at 2.0x
+        
+        return math.max(0.5, multiplier) // Ensure minimum 0.5x
+    }
+
+    action update_user_score(user: string, new_points: integer, app_id: string?) {
+        let current_data = this.user_scores.get(user, {
+            "current_score": 50,
+            "last_updated": datetime.now().timestamp(),
+            "total_activities": 0
+        })
+        
+        current_data.current_score = new_points
+        current_data.last_updated = datetime.now().timestamp()
+        
+        this.user_scores[user] = current_data
+        
+        // Record in history
+        let history_record = {
+            "timestamp": datetime.now().timestamp(),
+            "score": new_points,
+            "app_id": app_id,
+            "type": "scs_calculation"
+        }
+        
+        if not this.score_history.has(user) {
+            this.score_history[user] = []
+        }
+        this.score_history[user].push(history_record)
+    }
+
+    action record_scoring_event(user: string, score: integer, app_id: string?, activities: list, multiplier: float) {
+        let record = {
+            "timestamp": datetime.now().timestamp(),
+            "user": user,
+            "final_score": score,
+            "app_id": app_id,
+            "activity_count": activities.count(),
+            "activity_multiplier": multiplier,
+            "calculation_method": "randomized_with_activity_boost"
+        }
+        
+        // This would be stored in a separate scoring events log
+        print("🎯 SCS Calculated: " + user + " = " + string(score) + " points")
+    }
+
+    action get_daily_points(user: string, app_id: string?) -> integer {
+        let today_start = datetime.now().timestamp() - (datetime.now().timestamp() % 86400)
+        let user_activities = this.activity_logs.get(user, [])
+        
+        let today_activities = user_activities.filter(action(activity) {
+            let activity_today = activity.timestamp >= today_start
+            let app_match = app_id == null or activity.app_id == app_id
+            return activity_today and app_match
+        })
+        
+        let total_points = 0
+        for each activity in today_activities {
+            total_points += activity.points_earned
+        }
+        
+        return total_points
+    }
+
+    action can_perform_activity(user: string, activity_type: string, app_id: string) -> boolean {
+        let config = this.get_app_config_or_default(app_id)
+        let cooldown = config.cooldown_periods.get(activity_type, 0)
+        
+        if cooldown == 0 {
+            return true // No cooldown
+        }
+        
+        let user_activities = this.activity_logs.get(user, [])
+        let last_activity = user_activities
+            .filter(action(a) { return a.activity_type == activity_type and a.app_id == app_id })
+            .sort(action(a, b) { return b.timestamp - a.timestamp })
+            .first()
+        
+        if last_activity == null {
+            return true
+        }
+        
+        let time_since_last = datetime.now().timestamp() - last_activity.timestamp
+        return time_since_last >= cooldown
+    }
+
+    action update_activity_cooldown(user: string, activity_type: string, app_id: string) {
+        // Cooldown is enforced in can_perform_activity, no need to store separately
+    }
+
+    action calculate_dynamic_points(base_points: integer, metadata: map, config: SCSConfig) -> integer {
+        // Apply multipliers based on metadata
+        let multiplier = 1.0
+        
+        // Example: Higher value transactions get more points
+        if metadata.has("transaction_value") {
+            let value = metadata.transaction_value
+            if value > 1000 { multiplier += 0.5 }
+            if value > 10000 { multiplier += 0.5 }
+        }
+        
+        // Example: Quality content gets bonus
+        if metadata.has("content_quality") {
+            multiplier += metadata.content_quality * 0.3
+        }
+        
+        return integer(base_points * multiplier)
+    }
+
+    action generate_activity_explanation(activity_type: string, points: integer, metadata: map) -> string {
+        let base_explanations = {
+            "login": "Daily login reward",
+            "transaction": "Transaction completion",
+            "governance_vote": "Participating in governance",
+            "content_creation": "Creating valuable content",
+            "community_engagement": "Active community participation",
+            "referral": "Referring new users",
+            "staking": "Staking tokens",
+            "liquidity_provision": "Providing liquidity"
+        }
+        
+        let base = base_explanations.get(activity_type, "Platform activity")
+        
+        if metadata.has("bonus_reason") {
+            return base + " + " + metadata.bonus_reason + " bonus"
+        }
+        
+        return base + " (" + string(points) + " points)"
+    }
+
+    action generate_natural_language_explanation(user: string, score: integer, activities: list, config: SCSConfig) -> string {
+        let activity_count = activities.count()
+        let total_activity_points = activities.reduce(action(acc, a) { return acc + a.points }, 0)
+        
+        let explanation = "Your Social Capital Score of " + string(score) + " is based on:\n"
+        
+        if activity_count > 0 {
+            explanation += "• " + string(activity_count) + " recent activities worth " + string(total_activity_points) + " points\n"
+            explanation += "• Random factor range: " + string(config.min_points) + "-" + string(config.max_points) + " points\n"
+            explanation += "• Daily cap: " + string(config.daily_cap) + " points\n"
+        } else {
+            explanation += "• Base random score (no recent activities)\n"
+        }
+        
+        explanation += "\nRecent activities that influenced your score:"
+        
+        for each activity in activities.slice(0, 5) { // Show top 5 recent activities
+            let time_ago = this.format_time_ago(activity.timestamp)
+            explanation += "\n• " + activity.explanation + " (" + time_ago + ")"
+        }
+        
+        if activities.count() > 5 {
+            explanation += "\n• ... and " + string(activities.count() - 5) + " more activities"
+        }
+        
+        return explanation
+    }
+
+    action generate_history_summary(scs_history: list, activities: list) -> map {
+        let scores = scs_history.map(action(record) { return record.score })
+        let max_score = scores.reduce(action(max, score) { return math.max(max, score) }, 0)
+        let min_score = scores.reduce(action(min, score) { return math.min(min, score) }, 1000000)
+        let avg_score = scores.reduce(action(sum, score) { return sum + score }, 0) / scores.count() if scores.count() > 0 else 0
+        
         return {
-            "spike_threshold": 3.0, // 3x normal activity
-            "pattern_deviation_threshold": 0.8,
-            "suspicious_connection_score": 0.2,
-            "timing_anomaly_threshold": 2.5
+            "period_activities": activities.count(),
+            "average_scs": integer(avg_score),
+            "highest_scs": max_score,
+            "lowest_scs": min_score,
+            "trend": this.calculate_trend(scs_history),
+            "consistency_score": this.calculate_consistency(scs_history)
         }
+    }
+
+    action calculate_trend(history: list) -> string {
+        if history.count() < 2 {
+            return "stable"
+        }
+        
+        let first_score = history.first().score
+        let last_score = history.last().score
+        
+        if last_score > first_score + 10 {
+            return "increasing"
+        } else if last_score < first_score - 10 {
+            return "decreasing"
+        } else {
+            return "stable"
+        }
+    }
+
+    action calculate_consistency(history: list) -> float {
+        if history.count() < 2 {
+            return 1.0
+        }
+        
+        let scores = history.map(action(record) { return record.score })
+        let mean = scores.reduce(action(sum, score) { return sum + score }, 0) / scores.count()
+        let variance = scores.reduce(action(sum, score) { return sum + (score - mean) * (score - mean) }, 0) / scores.count()
+        
+        return math.max(0.0, 1.0 - (variance / 100.0)) // Normalize variance
+    }
+
+    action format_time_ago(timestamp: integer) -> string {
+        let now = datetime.now().timestamp()
+        let diff = now - timestamp
+        
+        if diff < 60: return "just now"
+        if diff < 3600: return string(integer(diff / 60)) + " minutes ago"
+        if diff < 86400: return string(integer(diff / 3600)) + " hours ago"
+        return string(integer(diff / 86400)) + " days ago"
+    }
+
+    action get_default_config() -> SCSConfig {
+        return this.app_configs["default"]
+    }
+
+    action merge_configs(default_config: SCSConfig, custom_config: map) -> SCSConfig {
+        // Simple merge - in production would be more sophisticated
+        return SCSConfig{
+            min_points: custom_config.get("min_points", default_config.min_points),
+            max_points: custom_config.get("max_points", default_config.max_points),
+            daily_cap: custom_config.get("daily_cap", default_config.daily_cap),
+            activity_weights: { ...default_config.activity_weights, ...custom_config.get("activity_weights", {}) },
+            cooldown_periods: { ...default_config.cooldown_periods, ...custom_config.get("cooldown_periods", {}) }
+        }
+    }
+
+    action validate_app_config(config: SCSConfig) -> boolean {
+        if config.min_points < 0 or config.max_points < config.min_points {
+            return false
+        }
+        if config.daily_cap < config.max_points {
+            return false
+        }
+        return true
     }
 }
 
-// Test ZAIE Engine
-action async test_zaie_engine() {
-    print("🧠 Testing ZAIE Engine...")
-    let zaie = ZAIEEngine()
-    
-    let test_user = "ZIV_user_456"
-    
-    // Test behavior analysis
-    let behavior_analysis = zaie.analyze_user_behavior(test_user)
-    print("Behavior Analysis: " + string(behavior_analysis))
-    
-    // Test trust score
-    let trust_score = zaie.calculate_trust_score(test_user)
-    print("Trust Score: " + string(trust_score))
-    
-    // Test explanation generation
-    let factors = {
-        "transaction_health": 0.8,
-        "social_engagement": 0.6,
-        "financial_responsibility": 0.7,
-        "behavior_consistency": 0.9,
-        "network_reputation": 0.5
-    }
-    let explanation = zaie.generate_explanation(trust_score, factors)
-    print("AI Explanation: " + explanation)
-    
-    // Test anomaly detection
-    let anomalies = zaie.detect_anomalies(test_user)
-    print("Detected Anomalies: " + string(anomalies))
+// Test Social Capital System
+action async test_social_capital_system() {
+    print("🏆 Testing Social Capital Score System...")
+    let scs = SocialCapitalEngine()
+
+    let test_user = "ZIV_user_789"
+    let test_app = "ziver_dapp"
+
+    // Register custom app configuration
+    scs.register_app_config(test_app, {
+        "min_points": 20,
+        "max_points": 150,
+        "daily_cap": 750,
+        "activity_weights": {
+            "login": 10,
+            "transaction": 25,
+            "governance_vote": 40
+        }
+    })
+
+    // Record some activities
+    scs.record_activity(test_user, "login", test_app, {"bonus_reason": "7-day streak"})
+    scs.record_activity(test_user, "transaction", test_app, {"transaction_value": 5000})
+    scs.record_activity(test_user, "governance_vote", test_app, {"proposal_id": "prop_123"})
+
+    // Calculate SCS
+    let score = scs.calculate_scs(test_user, test_app)
+    print("Social Capital Score: " + string(score))
+
+    // Get explanation
+    let explanation = scs.get_scs_explanation(test_user, test_app)
+    print("SCS Explanation: " + string(explanation))
+
+    // Get history
+    let history = scs.get_scs_history(test_user, 7)
+    print("7-day History: " + string(history.summary))
 }
 
-export action get_zaie_engine() -> ZAIEProtocol {
-    return ZAIEEngine()
+export {
+    SocialCapitalEngine,
+    SCSSystem,
+    test_social_capital_system,
+    register_app_config,
+    calculate_scs,
+    get_scs_explanation,
+    record_activity,
+    get_scs_history
 }
