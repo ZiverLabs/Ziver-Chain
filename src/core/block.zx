@@ -2,62 +2,32 @@
 use "crypto" as crypto
 use "datetime" as datetime
 
-// Modern Zexus uses 'contract' instead of 'entity' for data structures
-contract Block {
-    persistent storage index: integer
-    persistent storage timestamp: integer  
-    persistent storage previous_hash: string
-    persistent storage hash: string
-    persistent storage merkle_root: string
-    persistent storage transactions: list
-    persistent storage validator: string
-    persistent storage signature: string
-    persistent storage nonce: integer
-    persistent storage difficulty: integer
-    persistent storage version: string = "1.0"
-
-    action init(index: integer, timestamp: integer, previous_hash: string, hash: string, 
-                merkle_root: string, transactions: list, validator: string, 
-                signature: string, nonce: integer, difficulty: integer) {
-        this.index = index
-        this.timestamp = timestamp
-        this.previous_hash = previous_hash
-        this.hash = hash
-        this.merkle_root = merkle_root
-        this.transactions = transactions
-        this.validator = validator
-        this.signature = signature
-        this.nonce = nonce
-        this.difficulty = difficulty
-    }
+// Modern Zexus uses 'entity' for data structures, 'contract' for stateful
+entity Block {
+    index: integer
+    timestamp: integer  
+    previous_hash: string
+    hash: string
+    merkle_root: string
+    transactions: list
+    validator: string
+    signature: string
+    nonce: integer
+    difficulty: integer
+    version: string = "1.0"
 }
 
-contract Transaction {
-    persistent storage hash: string
-    persistent storage from_addr: string
-    persistent storage to_addr: string
-    persistent storage value: integer
-    persistent storage data: string?
-    persistent storage gas_limit: integer
-    persistent storage gas_used: integer
-    persistent storage nonce: integer
-    persistent storage signature: string
-    persistent storage status: string = "pending"
-
-    action init(hash: string, from_addr: string, to_addr: string, value: integer, 
-                data: string?, gas_limit: integer, gas_used: integer, nonce: integer, 
-                signature: string, status: string) {
-        this.hash = hash
-        this.from_addr = from_addr
-        this.to_addr = to_addr
-        this.value = value
-        this.data = data
-        this.gas_limit = gas_limit
-        this.gas_used = gas_used
-        this.nonce = nonce
-        this.signature = signature
-        this.status = status
-    }
+entity Transaction {
+    hash: string
+    from_addr: string
+    to_addr: string
+    value: integer
+    data: string?
+    gas_limit: integer
+    gas_used: integer
+    nonce: integer
+    signature: string
+    status: string = "pending"
 }
 
 action create_genesis_block() -> Block {
@@ -66,13 +36,13 @@ action create_genesis_block() -> Block {
 
     // Create empty transactions list
     let empty_tx_list = []
-    let merkle_root = crypto.keccak256(genesis_data) // Using built-in crypto
+    let merkle_root = crypto.keccak256(genesis_data)
 
     // Calculate genesis hash with proper string conversion
     let content = "0" + string(timestamp) + "0" + merkle_root + "0" + "genesis"
     let genesis_hash = crypto.keccak256(content)
 
-    return Block(
+    return Block{
         index: 0,
         timestamp: timestamp,
         previous_hash: "0",
@@ -83,7 +53,7 @@ action create_genesis_block() -> Block {
         signature: "genesis_signature",
         nonce: 0,
         difficulty: 1
-    )
+    }
 }
 
 action create_block(previous_block: Block, transactions: list, validator: string, private_key: string) -> Block {
@@ -101,10 +71,10 @@ action create_block(previous_block: Block, transactions: list, validator: string
                   merkle_root + validator + string(previous_block.difficulty)
     let block_hash = crypto.keccak256(content)
 
-    // Sign the block - using modern crypto API
+    // Sign the block
     let signature = crypto.secp256k1_sign(block_hash, private_key)
 
-    return Block(
+    return Block{
         index: previous_block.index + 1,
         timestamp: timestamp,
         previous_hash: previous_block.hash,
@@ -115,7 +85,7 @@ action create_block(previous_block: Block, transactions: list, validator: string
         signature: signature,
         nonce: 0,
         difficulty: previous_block.difficulty
-    )
+    }
 }
 
 action validate_block(block: Block, previous_block: Block) -> boolean {
@@ -141,7 +111,7 @@ action validate_block(block: Block, previous_block: Block) -> boolean {
         return false
     }
 
-    // Verify signature using modern crypto
+    // Verify signature
     let signature_valid = crypto.verify_signature(block.hash, block.signature, block.validator)
     if not signature_valid {
         print("Block signature invalid")
@@ -162,22 +132,22 @@ action validate_block(block: Block, previous_block: Block) -> boolean {
     return true
 }
 
-// Test the block system with modern async pattern
+// Test the block system
 action async test_block_system() {
     print("🧱 Testing Block System...")
     let genesis = create_genesis_block()
     print("Genesis Block Created:")
     print("  Hash: " + genesis.hash.slice(0, 16) + "...")
     print("  Index: " + string(genesis.index))
-    print("  Valid: " + string(validate_block(genesis, genesis)))  // Genesis validates itself
+    print("  Valid: " + string(validate_block(genesis, genesis)))
 }
 
-// Export the functions for module use
-export action get_block_functions() -> map {
-    return {
-        "create_genesis_block": create_genesis_block,
-        "create_block": create_block,
-        "validate_block": validate_block,
-        "test_block_system": test_block_system
-    }
+// Export the functions properly
+export {
+    create_genesis_block,
+    create_block, 
+    validate_block,
+    test_block_system,
+    Block,
+    Transaction
 }
