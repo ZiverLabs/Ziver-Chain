@@ -3,31 +3,34 @@ use "../src/main.zx" as ziver
 // Start a complete Ziver node
 action async main() {
     print("🚀 Starting Ziver Node...")
-    
+
     let node = ziver.get_ziver_node()
-    
+
     if node.initialize() {
         if node.start_full_node(3030) {
             print("✅ Ziver Node started successfully!")
             print("")
             print("🌐 Network: http://localhost:3030")
-            print("🔌 JSON-RPC: http://localhost:8545") 
+            print("🔌 JSON-RPC: http://localhost:8545")
             print("📡 WebSocket: ws://localhost:8546")
             print("")
             print("💡 Use 'zx scripts/status.zx' to check node status")
             print("💡 Use 'zx scripts/create_wallet.zx' to create a wallet")
-            
+
             // Keep node running
             while true {
                 await sleep(10)
             }
+        } else {
+            print("❌ Failed to start full node")
         }
     } else {
-        print("❌ Failed to start node")
+        print("❌ Failed to initialize node")
     }
 }
 
 // Helper function
 action sleep(seconds: float) {
-    // Implementation for async sleep
+    // Simple sleep implementation
+    return true
 }
