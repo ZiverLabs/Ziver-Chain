@@ -1,0 +1,20 @@
+# test_contract.zx
+# Minimal working contract to test syntax
+
+# Correct contract definition
+contract SimpleWallet {
+    name: "SimpleWallet"
+    version: "1.0.0"
+    
+    action init() {
+        print("Wallet initialized")
+    }
+    
+    action get_balance() -> integer {
+        return 100
+    }
+}
+
+# Create instance and export
+let wallet = SimpleWallet()
+export default wallet
