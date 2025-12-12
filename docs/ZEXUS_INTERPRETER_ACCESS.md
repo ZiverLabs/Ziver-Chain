@@ -46,14 +46,11 @@ If the `Zexus-interpreter` repository exists and you want it accessible for futu
 
 #### Option 1: Make the Repository Public (Recommended)
 
-If it's currently private:
-```bash
-# On GitHub:
+If it's currently private, on GitHub:
 1. Go to repository Settings
 2. Scroll to "Danger Zone"
 3. Click "Change visibility"
 4. Select "Make public"
-```
 
 #### Option 2: Add as Git Submodule
 

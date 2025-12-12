@@ -311,9 +311,10 @@ let user = User{
     age: 30
 }
 
-# Accessing entity fields
+# Accessing and modifying entity fields
 let name = user.name
-user.active = false
+user.active = false  # Entities are mutable
+user.age += 1        # Can modify fields directly
 ```
 
 ## Storage
@@ -489,23 +490,6 @@ this.field  # In contracts
 
 # Chained calls
 result = object.method1().method2()
-
-# Null-safe access (implied)
-if value != null {
-    use_value(value)
-}
-```
-
-### Database Integration
-
-```zexus
-database Users {
-    entity User {
-        name: string
-        email: string
-        created: datetime
-    }
-}
 ```
 
 ### AI Integration
