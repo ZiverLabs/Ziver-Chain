@@ -229,6 +229,43 @@ this.variable_name = value
 let value = this.variable_name
 ```
 
+### Nested Contracts
+
+Zexus supports nested contract definitions for organizing related data structures:
+
+```zexus
+contract ParentContract {
+    persistent storage users: map
+    
+    # Nested contract acts like an entity but with persistent storage
+    contract UserScore {
+        persistent storage address: string
+        persistent storage score: float = 0.0
+        persistent storage tier: string = "BRONZE"
+        persistent storage last_updated: integer
+        
+        action init(address: string) {
+            this.address = address
+            this.last_updated = datetime.now().timestamp()
+        }
+        
+        action update_score(new_score: float) {
+            this.score = new_score
+            this.last_updated = datetime.now().timestamp()
+        }
+    }
+    
+    action init() {
+        this.users = {}
+    }
+    
+    action create_user(address: string) {
+        let user = UserScore{address: address}
+        this.users[address] = user
+    }
+}
+```
+
 ## Protocols and Interfaces
 
 ### Protocol Definition
