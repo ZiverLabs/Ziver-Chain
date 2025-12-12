@@ -141,10 +141,11 @@ zx --debug program.zx
 
 📖 Documentation
 
-· [Comprehensive Syntax Reference](../docs/ZEXUS_SYNTAX_REFERENCE.md) ⭐ **NEW**
-· [About Zexus-interpreter Access](../docs/ZEXUS_INTERPRETER_ACCESS.md) ℹ️
-· Language Specification
-· Standard Library Reference
+· [Comprehensive Syntax Reference](../docs/ZEXUS_SYNTAX_REFERENCE.md) ⭐ **UPDATED**
+· [About Zexus-interpreter Access](../docs/ZEXUS_INTERPRETER_ACCESS.md) ✅ **NOW PUBLIC**
+· [Official Zexus-interpreter Repository](https://github.com/Zaidux/zexus-interpreter) 🔗
+· Language Specification (see interpreter repo)
+· Standard Library Reference (see interpreter repo)
 · Tutorials
 · API Documentation
 

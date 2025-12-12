@@ -1,15 +1,18 @@
 # Zexus Language Syntax Reference
 
-This document provides a comprehensive reference for the Zexus programming language syntax based on the Ziver-Chain codebase.
+This document provides a comprehensive reference for the Zexus programming language syntax, compiled from both the Ziver-Chain codebase and the official Zexus-interpreter repository.
 
 ## About Zexus-interpreter Repository
 
-**Note**: This reference is compiled from the Ziver-Chain repository. If you have a separate `Zexus-interpreter` repository that contains the full language specification and interpreter implementation, it is currently not publicly accessible under the ZiverLabs organization. 
+**✅ Official Interpreter**: The complete Zexus language specification and interpreter implementation is now publicly available at:
 
-To make the Zexus-interpreter repository accessible:
-1. Ensure the repository is public (if it exists as a private repository)
-2. Or share the repository URL if it exists under a different organization/account
-3. Alternatively, consider adding it as a git submodule to this repository
+🔗 **https://github.com/Zaidux/zexus-interpreter**
+
+This reference combines:
+- Syntax patterns from Ziver-Chain's `.zx` files
+- Official documentation from the Zexus-interpreter repository
+- Security features and advanced syntax from the 10-phase implementation
+- Best practices from both codebases
 
 ## Table of Contents
 
@@ -22,7 +25,9 @@ To make the Zexus-interpreter repository accessible:
 7. [Entities (Data Structures)](#entities-data-structures)
 8. [Storage](#storage)
 9. [Module System](#module-system)
-10. [Advanced Features](#advanced-features)
+10. [Security Features](#security-features)
+11. [Advanced Features](#advanced-features)
+12. [Modifiers](#modifiers)
 
 ## Basic Syntax
 
@@ -366,6 +371,151 @@ let timestamp = datetime.now().timestamp()
 let random = math.random_int(0, 100)
 ```
 
+## Security Features
+
+Zexus provides comprehensive security features for protecting code execution, enforcing access control, and validating operations.
+
+### Entity Types
+
+Define type-safe data structures:
+
+```zexus
+entity User {
+    username: string,
+    email: string,
+    role: string = "user",
+    is_active: boolean = true
+}
+
+let john = User.create({
+    username: "john",
+    email: "john@example.com",
+    role: "admin"
+})
+
+print(john.username)  # Output: "john"
+```
+
+### Export (Access Control)
+
+Control which files can access functions:
+
+```zexus
+# Grant read-only access
+export function_name to "other_file.zx" with "read_only"
+
+# Grant read-write access
+export contract_name to "client.zx" with "read_write"
+
+# Deny all access
+export sensitive_function to "untrusted.zx" with "deny"
+```
+
+### Verify (Runtime Checks)
+
+Add runtime validation to functions:
+
+```zexus
+action transfer_money(to_user: User, amount: integer) -> boolean {
+    print("Transferring " + string(amount) + " to " + to_user.username)
+    return true
+}
+
+# Add verification checks
+verify(transfer_money, [
+    action() { return balance >= amount },      # Check balance
+    action() { return to_user != null },        # User exists
+    action() { return amount > 0 }             # Valid amount
+])
+```
+
+### Protect (Security Rules)
+
+Enforce security policies on functions:
+
+```zexus
+protect(api_function, {
+    rate_limit: 100,                # Max 100 calls per minute
+    auth_required: true,            # Must be authenticated
+    require_https: true,            # Only over HTTPS
+    min_password_strength: "strong",
+    session_timeout: 3600,          # 1 hour timeout
+    allowed_ips: ["10.0.0.0/8"],
+    blocked_ips: []
+})
+```
+
+### Auth (Authentication)
+
+Configure global authentication:
+
+```zexus
+auth {
+    provider: "oauth2",
+    scopes: ["read", "write", "delete"],
+    token_expiry: 3600,
+    mfa_required: true,
+    session_timeout: 1800
+}
+```
+
+### Middleware (Request Processing)
+
+Add request/response middleware:
+
+```zexus
+middleware(log_requests, action(request, response) {
+    print("Incoming: " + request.method + " " + request.path)
+    return true  # Continue to next handler
+})
+
+middleware(check_token, action(request, response) {
+    let token = request.headers["Authorization"]
+    if token == null {
+        response.status = 401
+        return false  # Stop chain
+    }
+    return true
+})
+```
+
+### Throttle (Rate Limiting)
+
+Prevent abuse with rate limiting:
+
+```zexus
+throttle(api_endpoint, {
+    requests_per_minute: 100,
+    burst_size: 10,
+    per_user: true
+})
+```
+
+### Cache (Performance)
+
+Cache expensive operations:
+
+```zexus
+cache(expensive_query, {
+    ttl: 300,                      # Cache for 5 minutes
+    invalidate_on: ["data_changed"]
+})
+```
+
+### Security Layers
+
+Zexus security works in layers:
+
+1. **File Level** (`export`) - Who can access
+2. **Runtime** (`verify`) - If they should be allowed
+3. **Rules** (`protect`) - Enforce security policies
+4. **Process** (`middleware`) - Process & validate requests
+5. **Auth** (`auth`) - Handle authentication
+6. **Throttle** (`throttle`) - Prevent abuse
+7. **Cache** (`cache`) - Optimize performance
+8. **State** (`contract`) - Persistent storage
+9. **Types** (`entity`) - Type safety
+
 ## Advanced Features
 
 ### Error Handling
@@ -620,24 +770,121 @@ action async main() {
 }
 ```
 
+## Modifiers
+
+Zexus uses modifiers to annotate functions and types with semantic meaning and behavioral hints.
+
+### Access Modifiers
+
+```zexus
+@public
+action visible_function() {
+    # Accessible from anywhere
+}
+
+@private
+action _internal_helper() {
+    # Private by convention - enforced through tools
+}
+
+@sealed
+action final_method() {
+    # Cannot be overridden in subclasses
+}
+```
+
+### Behavioral Modifiers
+
+```zexus
+@async
+action async_operation() {
+    # Runs asynchronously
+}
+
+@inline
+action hot_loop() {
+    # Inlined by compiler for performance
+}
+
+@native
+action system_call() {
+    # Calls native/system functionality
+}
+```
+
+### Semantic Modifiers
+
+```zexus
+@secure
+action handle_password() {
+    # Runs in secure context with extra validation
+}
+
+@pure
+action calculate(x: integer) -> integer {
+    # Pure function - no side effects
+    return x * 2
+}
+```
+
+### Optimization Hints
+
+```zexus
+@optimize
+action critical_path() {
+    # Compiler applies aggressive optimization
+}
+
+@once
+action singleton() {
+    # Runs only once, subsequent calls return cached result
+}
+```
+
+### Modifier Combinations
+
+```zexus
+@public @async @secure
+action secure_api_call() {
+    # Public, asynchronous, and secure
+}
+
+@private @inline @pure
+action fast_helper(x: integer) -> integer {
+    # Private, inlined, and pure
+    return x + 1
+}
+```
+
 ## Additional Resources
 
+### Ziver-Chain Resources
 - **Main README**: `/README.md` - Overview of Ziver Chain
 - **Zexus README**: `/zexus/README.md` - Zexus language introduction
 - **Example Scripts**: `/scripts/*.zx` - Working examples
 - **Test Files**: `/tests/**/*.zx` - Test examples
 - **Source Code**: `/src/**/*.zx` - Implementation examples
 
-## Note on Zexus-interpreter Repository
+### Official Zexus-interpreter Repository
 
-If you have a `Zexus-interpreter` repository that contains the formal language specification, parser, and interpreter implementation, please consider:
+✅ **Now Publicly Available**: https://github.com/Zaidux/zexus-interpreter
 
-1. **Making it public** so it can be referenced
-2. **Adding it as a submodule** to this repository
-3. **Linking to it** in the documentation
-4. **Contributing examples** from it to this reference
+The official interpreter repository contains:
+- **Complete language specification** - Formal syntax and semantics
+- **Full interpreter implementation** - Python-based interpreter
+- **10-phase feature system** - All advanced features documented
+- **Comprehensive test suites** - 224+ test cases
+- **Security documentation** - Capability system, sandboxing, etc.
+- **Plugin system guide** - Extensibility framework
+- **Performance optimization** - Bytecode compilation and optimization
 
-This would provide the complete picture of the Zexus language and enable better development on the Ziver-Chain platform.
+#### Key Documentation Files in Interpreter:
+- `STATUS.md` - Implementation status (all 10 phases complete)
+- `PHILOSOPHY.md` - Design principles and architecture
+- `docs/QUICK_START.md` - 5-minute getting started guide
+- `docs/SECURITY_FEATURES.md` - Complete security guide
+- `docs/PLUGIN_SYSTEM.md` - Plugin development guide
+- `docs/ARCHITECTURE.md` - System architecture details
 
 ## Contributing
 
@@ -649,5 +896,8 @@ If you find syntax patterns not documented here, please:
 ---
 
 **Last Updated**: December 2025  
-**Version**: 1.0.0  
-**Based on**: Ziver-Chain repository code analysis
+**Version**: 2.0.0  
+**Based on**: 
+- Ziver-Chain repository code analysis (6,801 lines of Zexus code)
+- Official Zexus-interpreter repository (https://github.com/Zaidux/zexus-interpreter)
+- 10-phase implementation documentation

@@ -137,8 +137,9 @@ Ziver Chain is licensed under Apache 2.0. See LICENSE for details.
 🔗 Resources
 
 · [Whitepaper](docs/whitepaper.md)
-· [Zexus Syntax Reference](docs/ZEXUS_SYNTAX_REFERENCE.md)
-· [Zexus Interpreter Access](docs/ZEXUS_INTERPRETER_ACCESS.md)
+· [Zexus Syntax Reference](docs/ZEXUS_SYNTAX_REFERENCE.md) ⭐ **Updated**
+· [Zexus Interpreter Access](docs/ZEXUS_INTERPRETER_ACCESS.md) ✅ **Now Public**
+· [Official Zexus-interpreter Repository](https://github.com/Zaidux/zexus-interpreter)
 · API Documentation
 · Network Status
 · Block Explorer
