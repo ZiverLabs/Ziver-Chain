@@ -1,0 +1,17 @@
+print "=== DETAILED FUNCTION DEBUG ==="
+
+# Test with simple values
+let test_number = 42
+let test_text = "hello"
+
+print "Before function: test_number = " + string(test_number)
+print "Before function: test_text = " + test_text
+
+action simple_test(a, b):
+    print "Inside function: a = " + string(a)
+    print "Inside function: b = " + b
+    return a + len(b)
+
+print "Calling function..."
+let result = simple_test(test_number, test_text)
+print "Function result: " + string(result)

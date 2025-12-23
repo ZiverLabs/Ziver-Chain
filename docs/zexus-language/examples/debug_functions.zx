@@ -1,0 +1,10 @@
+print "Testing basic function..."
+
+action simple_func():
+    print "INSIDE FUNCTION: This should print!"
+    return "function worked"
+
+print "Calling function..."
+let result = simple_func()
+print "Function returned: " + result
+print "Test complete"
