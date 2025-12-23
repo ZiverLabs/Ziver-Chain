@@ -1,0 +1,10 @@
+print "Testing environment..."
+
+# Define a simple function
+action test_function(x):
+    print "Inside function, x = " + string(x)
+    return x * 2
+
+print "Function defined, now calling..."
+let result = test_function(5)
+print "Result: " + string(result)

@@ -1,0 +1,10 @@
+# Test explicit function assignment
+print "Testing explicit assignment..."
+
+# Explicitly assign function to variable
+let my_func = action(): 
+    return "explicit_assignment_works"
+
+print "Function assigned, now calling..."
+let result = my_func()
+print "Result: " + result

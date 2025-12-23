@@ -1,0 +1,9 @@
+# Test if ActionLiteral is processed
+print "Testing ActionLiteral..."
+
+# This should trigger ActionLiteral processing
+let my_function = action(): return "action_works"
+
+print "ActionLiteral processed, now calling..."
+let result = my_function()
+print "Result: " + result

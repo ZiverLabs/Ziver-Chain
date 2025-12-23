@@ -1,0 +1,10 @@
+# Minimal function test - isolate the issue
+print "=== MINIMAL FUNCTION TEST ==="
+
+# Define simplest possible function
+action simplest():
+    return "function_works"
+
+print "Function defined, now calling..."
+let result = simplest()
+print "Result: " + result
