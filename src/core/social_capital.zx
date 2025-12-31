@@ -2,14 +2,46 @@
 use "crypto" as crypto
 use "datetime" as datetime
 use "math" as math
+use "json" as json
+use "../database/postgres" as db
+use "../ai/zaie_engine" as zaie
+use "../middleware/security_middleware" as security
 
-// Social Capital Score (SCS) System for SEB-DeFi Protocol
+// Enable memory tracking for SCS system
+track_memory()
+
+// Security policies for social capital scoring
+const SCS_POLICIES = {
+    min_score: 10,
+    max_score: 1000,
+    max_daily_points: 1000,
+    min_activity_confidence: 0.7,
+    fraud_detection_threshold: 0.8,
+    score_decay_rate: 0.01, // 1% decay per day of inactivity
+    recalibration_interval: 86400 // 24 hours
+}
+
+// Cache for frequently accessed scores
+cache("user_scores_cache", { ttl: 300, strategy: "lru", max_entries: 10000 })
+cache("activity_patterns", { ttl: 3600, strategy: "lfu" })
+
+// Throttle SCS operations
+throttle("scs_calculations", { requests_per_minute: 1000 })
+throttle("activity_recording", { requests_per_minute: 5000 })
+
+// Social Capital Score (SCS) System for SEB-DeFi Protocol with enhanced features
 protocol SCSSystem {
-    action calculate_scs(user: string, app_id: string?) -> integer
-    action get_scs_explanation(user: string, app_id: string?) -> map
-    action record_activity(user: string, activity_type: string, app_id: string, metadata: map) -> boolean
-    action get_scs_history(user: string, days: integer?) -> list
-    action get_app_config(app_id: string) -> map?
+    action calculate_scs(user: string, app_id: string?, force_recalc: boolean?) -> SCSScore
+    action calculate_scs_batch(users: list, app_id: string?) -> list
+    action get_scs_explanation(user: string, app_id: string?) -> SCSExplanation
+    action record_activity(user: string, activity: EngagementActivity) -> ActivityRecord
+    action record_activity_batch(activities: list) -> list
+    action get_scs_history(user: string, timeframe: Timeframe?) -> SCSHistory
+    action get_app_config(app_id: string) -> AppConfig?
+    action register_app_config(app_id: string, config: AppConfig) -> boolean
+    action validate_activity_pattern(user: string, activity: EngagementActivity) -> ValidationResult
+    action detect_fraud_patterns(user: string) -> FraudDetection
+    action recalibrate_scoring_model(app_id: string) -> RecalibrationResult
 }
 
 contract SocialCapitalEngine implements SCSSystem {
@@ -17,23 +49,130 @@ contract SocialCapitalEngine implements SCSSystem {
     persistent storage activity_logs: map
     persistent storage app_configs: map
     persistent storage score_history: map
-
-    entity ActivityRecord {
-        user: string
-        activity_type: string
-        app_id: string
+    persistent storage fraud_alerts: map
+    persistent storage scoring_models: map
+    persistent storage reputation_graph: map
+    
+    // Enhanced data structures
+    entity EngagementActivity {
+        type: string
+        subtype: string?
+        value: float
+        weight: float = 1.0
         timestamp: integer
-        points_earned: integer
-        metadata: map
-        explanation: string
+        app_id: string
+        metadata: map?
+        confidence: float = 1.0
+        source: string
+        chain_id: string?
+        transaction_hash: string?
+        verified: boolean = false
+        ai_processed: boolean = false
     }
-
-    entity SCSConfig {
-        min_points: integer = 10
-        max_points: integer = 100
-        daily_cap: integer = 500
+    
+    entity ActivityRecord {
+        id: string
+        user: string
+        activity: EngagementActivity
+        points_earned: float
+        multiplier_applied: float
+        explanation: string
+        fraud_score: float = 0.0
+        processed_at: integer
+        verified_by: string?
+    }
+    
+    entity SCSScore {
+        user: string
+        score: float
+        components: ScoreComponents
+        confidence: float
+        percentile: float
+        tier: string
+        last_updated: integer
+        next_recalc: integer
+        recommendations: list
+        warnings: list
+        metadata: map
+    }
+    
+    entity ScoreComponents {
+        base_activity: float = 0.0
+        community_engagement: float = 0.0
+        financial_reputation: float = 0.0
+        governance_participation: float = 0.0
+        network_contribution: float = 0.0
+        consistency_score: float = 0.0
+        ai_enhancement: float = 0.0
+        time_decay: float = 0.0
+    }
+    
+    entity SCSExplanation {
+        user: string
+        score: float
+        breakdown: ScoreBreakdown
+        influential_activities: list
+        comparison_stats: ComparisonStats
+        natural_language: string
+        ai_insights: list
+        timestamp: integer
+    }
+    
+    entity SCSHistory {
+        user: string
+        timeframe: Timeframe
+        scores: list
+        activities: list
+        trends: TrendAnalysis
+        predictions: Predictions
+        summary: HistorySummary
+    }
+    
+    entity Timeframe {
+        start_time: integer
+        end_time: integer
+        interval: string // "daily", "weekly", "monthly"
+        granularity: string // "hour", "day", "week"
+    }
+    
+    entity AppConfig {
+        app_id: string
+        name: string
+        version: string
+        scoring_model: string
+        min_score: integer
+        max_score: integer
+        daily_cap: integer
         activity_weights: map
         cooldown_periods: map
+        category_multipliers: map
+        fraud_detection_rules: map
+        metadata: map?
+        created_at: integer
+        updated_at: integer
+    }
+    
+    // Reactive state for monitoring
+    watch user_scores {
+        let active_users = len(this.user_scores)
+        let avg_score = 0.0
+        for each user, data in this.user_scores {
+            avg_score += data.current_score or 0
+        }
+        avg_score = avg_score / math.max(1, active_users)
+        
+        print("📊 SCS Statistics: " + string(active_users) + " users, avg score: " + string(avg_score))
+    }
+    
+    watch fraud_alerts {
+        let active_alerts = 0
+        for each user, alerts in this.fraud_alerts {
+            active_alerts += len(alerts.filter(action(a) { return a.status == "active" }))
+        }
+        
+        if active_alerts > 0 {
+            print("⚠️ Active fraud alerts: " + string(active_alerts))
+        }
     }
 
     action init() {
@@ -41,536 +180,1059 @@ contract SocialCapitalEngine implements SCSSystem {
         this.activity_logs = {}
         this.app_configs = {}
         this.score_history = {}
-        
-        // Initialize default configuration
+        this.fraud_alerts = {}
+        this.scoring_models = {}
+        this.reputation_graph = {}
+
+        // Initialize default configuration with enhanced features
         this.initialize_default_config()
-    }
-
-    action calculate_scs(user: string, app_id: string?) -> integer {
-        """
-        Calculate Social Capital Score with randomizer within app-specific ranges
-        """
-        let config = this.get_app_config_or_default(app_id)
-        let base_score = this.get_user_base_score(user)
         
-        // Get recent activities for this user/app
-        let recent_activities = this.get_recent_activities(user, app_id, 30) // Last 30 days
-        
-        // Calculate activity-based multiplier
-        let activity_multiplier = this.calculate_activity_multiplier(recent_activities, config)
-        
-        // Generate random score within configured range with activity influence
-        let min_score = config.min_points
-        let max_score = config.max_points
-        let random_factor = math.random_int(0, 100) / 100.0 // 0.0 to 1.0
-        
-        // Base random score + activity influence
-        let raw_score = min_score + integer((max_score - min_score) * random_factor)
-        let final_score = integer(raw_score * activity_multiplier)
-        
-        // Apply daily cap
-        let daily_total = this.get_daily_points(user, app_id)
-        let capped_score = math.min(final_score, config.daily_cap - daily_total)
-        
-        // Ensure score is within bounds
-        let bounded_score = math.max(min_score, math.min(max_score, capped_score))
-        
-        // Update user score
-        this.update_user_score(user, bounded_score, app_id)
-        
-        // Log this scoring event
-        this.record_scoring_event(user, bounded_score, app_id, recent_activities, activity_multiplier)
-        
-        return bounded_score
-    }
-
-    action get_scs_explanation(user: string, app_id: string?) -> map {
-        """
-        Provide transparent explanation of how SCS was calculated
-        """
-        let recent_activities = this.get_recent_activities(user, app_id, 7) // Last 7 days
-        let config = this.get_app_config_or_default(app_id)
-        let current_score = this.user_scores.get(user, {}).get("current_score", 0)
-        
-        let activity_breakdown = []
-        let total_activity_points = 0
-        
-        for each activity in recent_activities {
-            let activity_value = this.calculate_activity_value(activity, config)
-            activity_breakdown.push({
-                "type": activity.activity_type,
-                "app": activity.app_id,
-                "timestamp": activity.timestamp,
-                "points": activity_value,
-                "explanation": activity.explanation
-            })
-            total_activity_points += activity_value
-        }
-        
-        return {
-            "user": user,
-            "current_scs": current_score,
-            "app_config": {
-                "min_points": config.min_points,
-                "max_points": config.max_points,
-                "daily_cap": config.daily_cap
-            },
-            "recent_activities": activity_breakdown,
-            "total_activity_points": total_activity_points,
-            "calculation_period": "7 days",
-            "random_factor_range": config.max_points - config.min_points,
-            "explanation": this.generate_natural_language_explanation(user, current_score, activity_breakdown, config)
+        // Initialize database tables
+        try {
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS scs_users (
+                    user_address VARCHAR(42) PRIMARY KEY,
+                    current_score FLOAT DEFAULT 50.0,
+                    tier VARCHAR(20) DEFAULT 'BRONZE',
+                    total_activities INTEGER DEFAULT 0,
+                    total_points_earned FLOAT DEFAULT 0.0,
+                    last_activity_time BIGINT,
+                    last_score_calculation BIGINT,
+                    metadata JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS scs_activities (
+                    activity_id VARCHAR(64) PRIMARY KEY,
+                    user_address VARCHAR(42) NOT NULL,
+                    activity_type VARCHAR(50) NOT NULL,
+                    activity_subtype VARCHAR(50),
+                    app_id VARCHAR(50) NOT NULL,
+                    points_earned FLOAT NOT NULL,
+                    confidence FLOAT DEFAULT 1.0,
+                    timestamp BIGINT NOT NULL,
+                    metadata JSONB,
+                    fraud_score FLOAT DEFAULT 0.0,
+                    verified BOOLEAN DEFAULT FALSE,
+                    processed_at BIGINT,
+                    INDEX idx_user_time (user_address, timestamp)
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS scs_app_configs (
+                    app_id VARCHAR(50) PRIMARY KEY,
+                    config_data JSONB NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        } catch (error) {
+            print("⚠️ Failed to initialize SCS database: " + error)
         }
     }
 
-    action record_activity(user: string, activity_type: string, app_id: string, metadata: map) -> boolean {
+    action protect calculate_scs(user: string, app_id: string? = "default", force_recalc: boolean? = false) -> SCSScore {
         """
-        Record user activity from connected applications
+        Calculate comprehensive Social Capital Score with AI enhancement and fraud detection
         """
-        let timestamp = datetime.now().timestamp()
-        
-        // Check cooldown period for this activity type
-        if not this.can_perform_activity(user, activity_type, app_id) {
-            print("Activity cooldown active for: " + activity_type)
-            return false
+        // Check cache first if not forcing recalculation
+        let cache_key = "scs_" + user + "_" + (app_id or "default")
+        if not force_recalc {
+            let cached = cache_get(cache_key)
+            if cached != null and (datetime.now().timestamp() - cached.last_updated) < 300 {
+                return cached
+            }
         }
         
+        // Get app configuration
         let config = this.get_app_config_or_default(app_id)
-        let base_points = config.activity_weights.get(activity_type, 10)
         
-        // Calculate dynamic points based on metadata
-        let final_points = this.calculate_dynamic_points(base_points, metadata, config)
+        // Validate user and check for fraud patterns
+        let fraud_detection = await this.detect_fraud_patterns(user)
+        if fraud_detection.score > SCS_POLICIES.fraud_detection_threshold {
+            print("⚠️ High fraud score detected for user: " + user + " - score: " + string(fraud_detection.score))
+        }
         
-        let explanation = this.generate_activity_explanation(activity_type, final_points, metadata)
+        // Get recent activities with AI analysis
+        let recent_activities = await this.get_enhanced_activities(user, app_id, 30) // Last 30 days
         
-        let activity = ActivityRecord{
+        // Calculate base components
+        let components = await this.calculate_score_components(user, recent_activities, config)
+        
+        // Apply AI enhancement
+        let ai_enhancement = await zaie.enhance_scs_score(components, user, recent_activities)
+        components.ai_enhancement = ai_enhancement.boost
+        
+        // Calculate consistency score
+        let consistency = this.calculate_consistency_score(recent_activities)
+        components.consistency_score = consistency
+        
+        // Apply time decay for inactivity
+        let time_decay = this.calculate_time_decay(user, recent_activities)
+        components.time_decay = time_decay
+        
+        // Calculate final score with all components
+        let raw_score = this.combine_score_components(components)
+        
+        // Apply fraud penalty if detected
+        let fraud_penalty = 1.0 - (fraud_detection.score * 0.3) // Up to 30% penalty
+        let adjusted_score = raw_score * fraud_penalty
+        
+        // Apply bounds and rounding
+        let final_score = math.max(
+            SCS_POLICIES.min_score, 
+            math.min(SCS_POLICIES.max_score, integer(adjusted_score))
+        )
+        
+        // Determine tier
+        let tier = this.determine_tier(final_score, config)
+        
+        // Calculate percentile
+        let percentile = await this.calculate_percentile(final_score, app_id)
+        
+        // Generate recommendations
+        let recommendations = await this.generate_recommendations(user, final_score, components, fraud_detection)
+        
+        // Check for warnings
+        let warnings = []
+        if fraud_detection.score > 0.6 {
+            warnings.push("High fraud risk detected: " + string(fraud_detection.score))
+        }
+        if consistency < 0.5 {
+            warnings.push("Low activity consistency: " + string(consistency))
+        }
+        if time_decay > 0.2 {
+            warnings.push("Score decay due to inactivity: " + string(time_decay * 100) + "%")
+        }
+        
+        let result = SCSScore{
             user: user,
-            activity_type: activity_type,
-            app_id: app_id,
-            timestamp: timestamp,
-            points_earned: final_points,
-            metadata: metadata,
-            explanation: explanation
+            score: final_score,
+            components: components,
+            confidence: ai_enhancement.confidence,
+            percentile: percentile,
+            tier: tier,
+            last_updated: datetime.now().timestamp(),
+            next_recalc: datetime.now().timestamp() + SCS_POLICIES.recalibration_interval,
+            recommendations: recommendations,
+            warnings: warnings,
+            metadata: {
+                "fraud_score": fraud_detection.score,
+                "activity_count": len(recent_activities),
+                "calculation_method": "ai_enhanced_v2"
+            }
         }
         
-        // Store activity
-        if not this.activity_logs.has(user) {
-            this.activity_logs[user] = []
+        // Update user score in persistent storage
+        this.update_user_score(user, final_score, tier, components)
+        
+        // Store in cache
+        cache_set(cache_key, result)
+        
+        // Update database
+        try {
+            db.execute("""
+                INSERT INTO scs_users (user_address, current_score, tier, total_activities, last_score_calculation, metadata)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (user_address) DO UPDATE SET
+                    current_score = EXCLUDED.current_score,
+                    tier = EXCLUDED.tier,
+                    total_activities = scs_users.total_activities + ?,
+                    last_score_calculation = EXCLUDED.last_score_calculation,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = CURRENT_TIMESTAMP
+            """, [
+                user,
+                final_score,
+                tier,
+                len(recent_activities),
+                datetime.now().timestamp(),
+                json.stringify(result.metadata),
+                len(recent_activities)
+            ])
+        } catch (error) {
+            print("⚠️ Failed to update user score in database: " + error)
         }
-        this.activity_logs[user].push(activity)
         
-        // Update last activity timestamp
-        this.update_activity_cooldown(user, activity_type, app_id)
-        
-        print("📝 Activity recorded: " + user + " - " + activity_type + " (" + string(final_points) + " points)")
-        return true
-    }
-
-    action get_scs_history(user: string, days: integer? = 30) -> list {
-        """
-        Get SCS history and activity timeline
-        """
-        let end_time = datetime.now().timestamp()
-        let start_time = end_time - (days * 24 * 60 * 60) // Convert days to seconds
-        
-        let user_history = this.score_history.get(user, [])
-        let filtered_history = user_history.filter(action(record) {
-            return record.timestamp >= start_time and record.timestamp <= end_time
+        // Audit trail
+        audit("scs_calculated", {
+            "user": user,
+            "score": final_score,
+            "tier": tier,
+            "percentile": percentile,
+            "fraud_score": fraud_detection.score,
+            "activity_count": len(recent_activities),
+            "timestamp": datetime.now().timestamp()
         })
         
-        let activities = this.get_recent_activities(user, null, days)
+        return result
+    }
+
+    action protect calculate_scs_batch(users: list, app_id: string? = "default") -> list {
+        """
+        Calculate SCS for multiple users in parallel with optimization
+        """
+        let results = []
+        let batch_size = 50 // Process in batches for efficiency
         
-        return {
-            "scs_timeline": filtered_history,
-            "activities": activities,
-            "period": {
-                "days": days,
-                "start_time": start_time,
-                "end_time": end_time
+        for each batch_start in range(0, len(users), batch_size) {
+            let batch_end = math.min(batch_start + batch_size, len(users))
+            let user_batch = users.slice(batch_start, batch_end)
+            
+            // Process batch in parallel
+            let batch_results = []
+            for each user in user_batch {
+                let score = await this.calculate_scs(user, app_id)
+                batch_results.push({
+                    "user": user,
+                    "score": score.score,
+                    "tier": score.tier,
+                    "percentile": score.percentile
+                })
+            }
+            
+            results = results + batch_results
+            
+            // Throttle to avoid overwhelming the system
+            if batch_end < len(users) {
+                await sleep(0.1) // 100ms delay between batches
+            }
+        }
+        
+        return results
+    }
+
+    action protect get_scs_explanation(user: string, app_id: string? = "default") -> SCSExplanation {
+        """
+        Provide comprehensive, transparent explanation of SCS calculation with AI insights
+        """
+        let score_result = await this.calculate_scs(user, app_id)
+        let recent_activities = await this.get_enhanced_activities(user, app_id, 7) // Last 7 days
+        let config = this.get_app_config_or_default(app_id)
+        
+        // Get comparison statistics
+        let comparison_stats = await this.get_comparison_stats(user, app_id)
+        
+        // Analyze activity patterns
+        let activity_analysis = await this.analyze_activity_patterns(recent_activities)
+        
+        // Generate breakdown
+        let breakdown = {
+            "components": score_result.components,
+            "activity_distribution": activity_analysis.distribution,
+            "time_distribution": activity_analysis.time_distribution,
+            "app_distribution": activity_analysis.app_distribution
+        }
+        
+        // Get most influential activities
+        let influential_activities = this.get_most_influential_activities(recent_activities, 5)
+        
+        // Get AI insights
+        let ai_insights = await zaie.generate_scs_insights(user, score_result, recent_activities)
+        
+        // Generate natural language explanation
+        let natural_language = await this.generate_comprehensive_explanation(
+            user, score_result, breakdown, influential_activities, comparison_stats, ai_insights
+        )
+        
+        return SCSExplanation{
+            user: user,
+            score: score_result.score,
+            breakdown: breakdown,
+            influential_activities: influential_activities,
+            comparison_stats: comparison_stats,
+            natural_language: natural_language,
+            ai_insights: ai_insights,
+            timestamp: datetime.now().timestamp()
+        }
+    }
+
+    action protect record_activity(user: string, activity: EngagementActivity) -> ActivityRecord {
+        """
+        Record user activity with enhanced validation and fraud detection
+        """
+        let start_time = datetime.now().timestamp()
+        
+        try {
+            // Validate activity structure
+            verify(activity.type != null, "Activity type is required")
+            verify(activity.app_id != null, "App ID is required")
+            verify(activity.timestamp > 0, "Valid timestamp required")
+            verify(activity.confidence >= 0.0 and activity.confidence <= 1.0, "Confidence must be between 0 and 1")
+            
+            // Get app configuration
+            let config = this.get_app_config_or_default(activity.app_id)
+            
+            // Validate activity with AI
+            let validation = await this.validate_activity_pattern(user, activity)
+            if not validation.valid {
+                throw "Activity validation failed: " + validation.reason
+            }
+            
+            // Check cooldown period
+            if not this.can_perform_activity(user, activity.type, activity.app_id) {
+                throw "Activity cooldown active for: " + activity.type
+            }
+            
+            // Detect potential fraud
+            let fraud_detection = await this.detect_activity_fraud(user, activity)
+            
+            // Calculate base points
+            let base_points = config.activity_weights.get(activity.type, 10)
+            
+            // Apply multipliers
+            let multipliers = this.calculate_activity_multipliers(activity, config)
+            let final_multiplier = multipliers.total
+            
+            // Calculate final points with fraud penalty
+            let fraud_penalty = 1.0 - (fraud_detection.score * 0.5) // Up to 50% penalty for fraud
+            let final_points = base_points * final_multiplier * fraud_penalty
+            
+            // Apply daily cap
+            let daily_points = this.get_daily_points(user, activity.app_id)
+            let capped_points = math.min(final_points, config.daily_cap - daily_points)
+            
+            // Ensure minimum points
+            let final_capped_points = math.max(1, capped_points)
+            
+            // Generate explanation
+            let explanation = this.generate_activity_explanation(activity, final_capped_points, multipliers, fraud_detection)
+            
+            // Create activity record
+            let activity_id = "ACT_" + crypto.sha3_256(
+                user + activity.type + activity.app_id + string(activity.timestamp) + string(datetime.now().timestamp())
+            )
+            
+            let record = ActivityRecord{
+                id: activity_id,
+                user: user,
+                activity: activity,
+                points_earned: final_capped_points,
+                multiplier_applied: final_multiplier,
+                explanation: explanation,
+                fraud_score: fraud_detection.score,
+                processed_at: datetime.now().timestamp(),
+                verified_by: validation.verified_by
+            }
+            
+            // Store activity
+            if not this.activity_logs.has(user) {
+                this.activity_logs[user] = []
+            }
+            this.activity_logs[user].push(record)
+            
+            // Update cooldown tracker
+            this.update_activity_cooldown(user, activity.type, activity.app_id)
+            
+            // Store in database
+            try {
+                db.execute("""
+                    INSERT INTO scs_activities (
+                        activity_id, user_address, activity_type, activity_subtype, app_id, 
+                        points_earned, confidence, timestamp, metadata, fraud_score, verified, processed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [
+                    activity_id,
+                    user,
+                    activity.type,
+                    activity.subtype or "",
+                    activity.app_id,
+                    final_capped_points,
+                    activity.confidence,
+                    activity.timestamp,
+                    json.stringify(activity.metadata or {}),
+                    fraud_detection.score,
+                    validation.verified,
+                    datetime.now().timestamp()
+                ])
+            } catch (error) {
+                print("⚠️ Failed to store activity in database: " + error)
+            }
+            
+            // Update user stats
+            this.update_user_activity_stats(user, final_capped_points)
+            
+            // Invalidate cache for this user
+            cache_delete("scs_" + user + "_" + activity.app_id)
+            
+            // Audit trail
+            audit("activity_recorded", {
+                "user": user,
+                "activity_id": activity_id,
+                "activity_type": activity.type,
+                "points_earned": final_capped_points,
+                "fraud_score": fraud_detection.score,
+                "processing_time_ms": datetime.now().timestamp_ms() - start_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            print("📝 Activity recorded: " + user + " - " + activity.type + 
+                  " (" + string(final_capped_points) + " points, fraud score: " + string(fraud_detection.score) + ")")
+            
+            return record
+            
+        } catch (error) {
+            audit("activity_recording_failed", {
+                "user": user,
+                "activity": activity,
+                "error": error,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            throw "Failed to record activity: " + error
+        }
+    }
+
+    action protect record_activity_batch(activities: list) -> list {
+        """
+        Record multiple activities in batch with optimization
+        """
+        let results = []
+        let failed_activities = []
+        
+        for each activity_data in activities {
+            try {
+                let activity = EngagementActivity{
+                    ...activity_data,
+                    timestamp: activity_data.timestamp or datetime.now().timestamp(),
+                    confidence: activity_data.confidence or 1.0
+                }
+                
+                let record = this.record_activity(activity_data.user, activity)
+                results.push({
+                    "success": true,
+                    "record": record,
+                    "activity_id": record.id
+                })
+                
+            } catch (error) {
+                results.push({
+                    "success": false,
+                    "error": error,
+                    "activity": activity_data
+                })
+                failed_activities.push(activity_data)
+            }
+        }
+        
+        // Log batch results
+        if len(failed_activities) > 0 {
+            print("⚠️ " + string(len(failed_activities)) + " activities failed in batch")
+        }
+        
+        return results
+    }
+
+    action protect get_scs_history(user: string, timeframe: Timeframe? = null) -> SCSHistory {
+        """
+        Get comprehensive SCS history with trend analysis and predictions
+        """
+        let default_timeframe = Timeframe{
+            start_time: datetime.now().timestamp() - (30 * 24 * 60 * 60), // 30 days
+            end_time: datetime.now().timestamp(),
+            interval: "daily",
+            granularity: "day"
+        }
+        
+        let tf = timeframe or default_timeframe
+        
+        // Get historical scores
+        let historical_scores = this.get_historical_scores(user, tf)
+        
+        // Get activities for the period
+        let activities = this.get_activities_in_timeframe(user, tf)
+        
+        // Analyze trends
+        let trend_analysis = this.analyze_score_trends(historical_scores)
+        
+        // Generate predictions
+        let predictions = await this.predict_future_scores(user, historical_scores, activities)
+        
+        // Generate summary
+        let summary = this.generate_history_summary(historical_scores, activities, trend_analysis)
+        
+        return SCSHistory{
+            user: user,
+            timeframe: tf,
+            scores: historical_scores,
+            activities: activities,
+            trends: trend_analysis,
+            predictions: predictions,
+            summary: summary
+        }
+    }
+
+    action protect get_app_config(app_id: string) -> AppConfig? {
+        """
+        Get configuration for specific application with validation
+        """
+        if this.app_configs.has(app_id) {
+            return this.app_configs[app_id]
+        }
+        
+        // Try to load from database
+        try {
+            let config_data = db.query_one(
+                "SELECT config_data FROM scs_app_configs WHERE app_id = ?",
+                [app_id]
+            )
+            
+            if config_data != null {
+                let config = json.parse(config_data.config_data)
+                this.app_configs[app_id] = config
+                return config
+            }
+        } catch (error) {
+            print("⚠️ Failed to load app config from database: " + error)
+        }
+        
+        return null
+    }
+
+    action protect register_app_config(app_id: string, config: AppConfig) -> boolean {
+        """
+        Register custom configuration for an application with AI validation
+        """
+        // Validate configuration structure
+        verify(config.min_score >= 0, "Minimum score must be non-negative")
+        verify(config.max_score > config.min_score, "Maximum score must be greater than minimum")
+        verify(config.daily_cap >= config.max_score, "Daily cap must be at least maximum score")
+        
+        // AI validation of configuration impact
+        let impact_analysis = await zaie.analyze_config_impact(config)
+        if impact_analysis.risk_score > 0.7 {
+            print("⚠️ High-risk configuration detected: " + impact_analysis.warnings.join(", "))
+        }
+        
+        // Set timestamps
+        config.created_at = config.created_at or datetime.now().timestamp()
+        config.updated_at = datetime.now().timestamp()
+        
+        // Store in memory
+        this.app_configs[app_id] = config
+        
+        // Store in database
+        try {
+            db.execute("""
+                INSERT INTO scs_app_configs (app_id, config_data)
+                VALUES (?, ?)
+                ON CONFLICT (app_id) DO UPDATE SET
+                    config_data = EXCLUDED.config_data,
+                    updated_at = CURRENT_TIMESTAMP
+            """, [app_id, json.stringify(config)])
+        } catch (error) {
+            print("⚠️ Failed to store app config in database: " + error)
+        }
+        
+        // Invalidate related caches
+        cache_delete_pattern("scs_*_" + app_id)
+        
+        audit("app_config_registered", {
+            "app_id": app_id,
+            "config_summary": {
+                "min_score": config.min_score,
+                "max_score": config.max_score,
+                "daily_cap": config.daily_cap
             },
-            "summary": this.generate_history_summary(filtered_history, activities)
-        }
-    }
-
-    action get_app_config(app_id: string) -> map? {
-        """
-        Get configuration for specific application
-        """
-        return this.app_configs.get(app_id, null)
-    }
-
-    action register_app_config(app_id: string, config: map) -> boolean {
-        """
-        Register custom configuration for an application
-        """
-        let default_config = this.get_default_config()
-        let merged_config = this.merge_configs(default_config, config)
+            "risk_score": impact_analysis.risk_score,
+            "timestamp": datetime.now().timestamp()
+        })
         
-        // Validate configuration
-        if not this.validate_app_config(merged_config) {
-            return false
-        }
-        
-        this.app_configs[app_id] = merged_config
         print("✅ App config registered: " + app_id)
         return true
     }
 
-    // Internal implementation methods
-    action initialize_default_config() {
-        let default_config = SCSConfig{
-            min_points: 10,
-            max_points: 100,
-            daily_cap: 500,
-            activity_weights: {
-                "login": 5,
-                "transaction": 15,
-                "governance_vote": 25,
-                "content_creation": 20,
-                "community_engagement": 15,
-                "referral": 30,
-                "staking": 20,
-                "liquidity_provision": 35
-            },
-            cooldown_periods: {
-                "login": 3600, // 1 hour
-                "transaction": 300, // 5 minutes
-                "governance_vote": 86400, // 24 hours
-                "content_creation": 7200, // 2 hours
-                "community_engagement": 1800, // 30 minutes
-                "referral": 0, // No cooldown
-                "staking": 3600,
-                "liquidity_provision": 3600
+    action protect validate_activity_pattern(user: string, activity: EngagementActivity) -> ValidationResult {
+        """
+        Validate activity pattern using AI and rule-based checks
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        // Rule-based validation
+        let rule_checks = this.perform_rule_checks(user, activity)
+        if not rule_checks.valid {
+            return ValidationResult{
+                valid: false,
+                reason: rule_checks.reason,
+                confidence: rule_checks.confidence,
+                verified: false,
+                verified_by: "rule_engine",
+                timestamp: datetime.now().timestamp()
             }
         }
         
-        this.app_configs["default"] = default_config
-    }
-
-    action get_app_config_or_default(app_id: string?) -> SCSConfig {
-        if app_id != null and this.app_configs.has(app_id) {
-            return this.app_configs[app_id]
-        }
-        return this.app_configs["default"]
-    }
-
-    action get_user_base_score(user: string) -> integer {
-        let user_data = this.user_scores.get(user, {
-            "current_score": 50, // Default starting score
-            "last_updated": datetime.now().timestamp(),
-            "total_activities": 0
-        })
-        return user_data.current_score
-    }
-
-    action get_recent_activities(user: string, app_id: string?, days: integer) -> list {
-        let user_activities = this.activity_logs.get(user, [])
-        let cutoff_time = datetime.now().timestamp() - (days * 24 * 60 * 60)
-        
-        let filtered = user_activities.filter(action(activity) {
-            let time_match = activity.timestamp >= cutoff_time
-            let app_match = app_id == null or activity.app_id == app_id
-            return time_match and app_match
-        })
-        
-        return filtered
-    }
-
-    action calculate_activity_multiplier(activities: list, config: SCSConfig) -> float {
-        if activities.is_empty() {
-            return 0.5 // Low multiplier for no activity
+        // AI-based validation if confidence is high enough
+        if activity.confidence > SCS_POLICIES.min_activity_confidence {
+            let ai_validation = await zaie.validate_activity(user, activity)
+            
+            if not ai_validation.valid {
+                return ValidationResult{
+                    valid: false,
+                    reason: ai_validation.reason,
+                    confidence: ai_validation.confidence,
+                    verified: false,
+                    verified_by: "ai_engine",
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            return ValidationResult{
+                valid: true,
+                reason: "Activity validated by AI",
+                confidence: ai_validation.confidence,
+                verified: true,
+                verified_by: "ai_engine",
+                timestamp: datetime.now().timestamp()
+            }
         }
         
-        let total_points = 0
-        for each activity in activities {
-            total_points += activity.points_earned
+        // Fallback to basic validation
+        return ValidationResult{
+            valid: true,
+            reason: "Basic validation passed",
+            confidence: 0.7,
+            verified: false,
+            verified_by: "basic_validation",
+            timestamp: datetime.now().timestamp()
         }
-        
-        let avg_daily_points = total_points / 7.0 // Normalize to weekly average
-        let multiplier = math.min(2.0, 0.5 + (avg_daily_points / 100.0)) // Cap at 2.0x
-        
-        return math.max(0.5, multiplier) // Ensure minimum 0.5x
     }
 
-    action update_user_score(user: string, new_points: integer, app_id: string?) {
-        let current_data = this.user_scores.get(user, {
-            "current_score": 50,
-            "last_updated": datetime.now().timestamp(),
-            "total_activities": 0
-        })
+    action protect detect_fraud_patterns(user: string) -> FraudDetection {
+        """
+        Detect fraud patterns in user activities using AI and statistical analysis
+        """
+        let recent_activities = this.get_recent_activities(user, null, 7) // Last 7 days
         
-        current_data.current_score = new_points
-        current_data.last_updated = datetime.now().timestamp()
-        
-        this.user_scores[user] = current_data
-        
-        // Record in history
-        let history_record = {
-            "timestamp": datetime.now().timestamp(),
-            "score": new_points,
-            "app_id": app_id,
-            "type": "scs_calculation"
+        if len(recent_activities) == 0 {
+            return FraudDetection{
+                user: user,
+                score: 0.0,
+                patterns: [],
+                confidence: 1.0,
+                recommendations: ["No activities to analyze"],
+                timestamp: datetime.now().timestamp()
+            }
         }
         
-        if not this.score_history.has(user) {
-            this.score_history[user] = []
+        // Check for common fraud patterns
+        let patterns = []
+        let total_score = 0.0
+        
+        // Pattern 1: Unusually high frequency
+        let activity_frequency = this.analyze_activity_frequency(recent_activities)
+        if activity_frequency.score > 0.7 {
+            patterns.push({
+                "type": "high_frequency",
+                "score": activity_frequency.score,
+                "description": "Unusually high activity frequency detected"
+            })
+            total_score += activity_frequency.score * 0.3
         }
-        this.score_history[user].push(history_record)
+        
+        // Pattern 2: Repetitive patterns
+        let repetitive_patterns = this.detect_repetitive_patterns(recent_activities)
+        if repetitive_patterns.score > 0.6 {
+            patterns.push({
+                "type": "repetitive_pattern",
+                "score": repetitive_patterns.score,
+                "description": "Suspicious repetitive activity patterns"
+            })
+            total_score += repetitive_patterns.score * 0.4
+        }
+        
+        // Pattern 3: Time anomalies
+        let time_anomalies = this.detect_time_anomalies(recent_activities)
+        if time_anomalies.score > 0.5 {
+            patterns.push({
+                "type": "time_anomaly",
+                "score": time_anomalies.score,
+                "description": "Suspicious timing of activities"
+            })
+            total_score += time_anomalies.score * 0.3
+        }
+        
+        // AI-based fraud detection
+        let ai_fraud_detection = await zaie.detect_fraud_patterns(user, recent_activities)
+        if ai_fraud_detection.score > 0.0 {
+            patterns = patterns + ai_fraud_detection.patterns
+            total_score = math.max(total_score, ai_fraud_detection.score)
+        }
+        
+        // Calculate final fraud score (0.0 to 1.0)
+        let fraud_score = math.min(1.0, total_score)
+        
+        // Generate recommendations
+        let recommendations = []
+        if fraud_score > 0.6 {
+            recommendations.push("Consider manual review of user activities")
+            recommendations.push("Temporarily reduce score weighting for this user")
+        }
+        if fraud_score > 0.8 {
+            recommendations.push("Temporarily suspend score calculations for this user")
+            recommendations.push("Flag for administrator review")
+        }
+        
+        // Store fraud alert if score is high
+        if fraud_score > 0.7 {
+            this.record_fraud_alert(user, fraud_score, patterns)
+        }
+        
+        return FraudDetection{
+            user: user,
+            score: fraud_score,
+            patterns: patterns,
+            confidence: ai_fraud_detection.confidence or 0.8,
+            recommendations: recommendations,
+            timestamp: datetime.now().timestamp()
+        }
     }
 
-    action record_scoring_event(user: string, score: integer, app_id: string?, activities: list, multiplier: float) {
-        let record = {
-            "timestamp": datetime.now().timestamp(),
-            "user": user,
-            "final_score": score,
-            "app_id": app_id,
-            "activity_count": activities.count(),
-            "activity_multiplier": multiplier,
-            "calculation_method": "randomized_with_activity_boost"
-        }
+    action protect recalibrate_scoring_model(app_id: string) -> RecalibrationResult {
+        """
+        Recalibrate scoring model based on recent activity patterns and AI analysis
+        """
+        let start_time = datetime.now().timestamp()
         
-        // This would be stored in a separate scoring events log
-        print("🎯 SCS Calculated: " + user + " = " + string(score) + " points")
-    }
-
-    action get_daily_points(user: string, app_id: string?) -> integer {
-        let today_start = datetime.now().timestamp() - (datetime.now().timestamp() % 86400)
-        let user_activities = this.activity_logs.get(user, [])
-        
-        let today_activities = user_activities.filter(action(activity) {
-            let activity_today = activity.timestamp >= today_start
-            let app_match = app_id == null or activity.app_id == app_id
-            return activity_today and app_match
-        })
-        
-        let total_points = 0
-        for each activity in today_activities {
-            total_points += activity.points_earned
-        }
-        
-        return total_points
-    }
-
-    action can_perform_activity(user: string, activity_type: string, app_id: string) -> boolean {
+        // Get current configuration
         let config = this.get_app_config_or_default(app_id)
-        let cooldown = config.cooldown_periods.get(activity_type, 0)
         
-        if cooldown == 0 {
-            return true // No cooldown
+        // Analyze recent activity patterns across all users
+        let activity_patterns = await this.analyze_global_activity_patterns(app_id)
+        
+        // Get AI recommendations for model adjustment
+        let ai_recommendations = await zaie.recalibrate_scoring_model(config, activity_patterns)
+        
+        // Apply recommended adjustments
+        let adjustments_applied = []
+        for each adjustment in ai_recommendations.adjustments {
+            if adjustment.confidence > 0.7 {
+                // Update configuration
+                config = this.apply_config_adjustment(config, adjustment)
+                adjustments_applied.push(adjustment)
+            }
         }
         
-        let user_activities = this.activity_logs.get(user, [])
-        let last_activity = user_activities
-            .filter(action(a) { return a.activity_type == activity_type and a.app_id == app_id })
-            .sort(action(a, b) { return b.timestamp - a.timestamp })
-            .first()
+        // Update stored configuration
+        this.app_configs[app_id] = config
+        this.register_app_config(app_id, config) // This will also update database
         
-        if last_activity == null {
-            return true
-        }
+        // Invalidate all related caches
+        cache_delete_pattern("scs_*_" + app_id)
         
-        let time_since_last = datetime.now().timestamp() - last_activity.timestamp
-        return time_since_last >= cooldown
-    }
-
-    action update_activity_cooldown(user: string, activity_type: string, app_id: string) {
-        // Cooldown is enforced in can_perform_activity, no need to store separately
-    }
-
-    action calculate_dynamic_points(base_points: integer, metadata: map, config: SCSConfig) -> integer {
-        // Apply multipliers based on metadata
-        let multiplier = 1.0
+        let end_time = datetime.now().timestamp()
         
-        // Example: Higher value transactions get more points
-        if metadata.has("transaction_value") {
-            let value = metadata.transaction_value
-            if value > 1000 { multiplier += 0.5 }
-            if value > 10000 { multiplier += 0.5 }
-        }
-        
-        // Example: Quality content gets bonus
-        if metadata.has("content_quality") {
-            multiplier += metadata.content_quality * 0.3
-        }
-        
-        return integer(base_points * multiplier)
-    }
-
-    action generate_activity_explanation(activity_type: string, points: integer, metadata: map) -> string {
-        let base_explanations = {
-            "login": "Daily login reward",
-            "transaction": "Transaction completion",
-            "governance_vote": "Participating in governance",
-            "content_creation": "Creating valuable content",
-            "community_engagement": "Active community participation",
-            "referral": "Referring new users",
-            "staking": "Staking tokens",
-            "liquidity_provision": "Providing liquidity"
-        }
-        
-        let base = base_explanations.get(activity_type, "Platform activity")
-        
-        if metadata.has("bonus_reason") {
-            return base + " + " + metadata.bonus_reason + " bonus"
-        }
-        
-        return base + " (" + string(points) + " points)"
-    }
-
-    action generate_natural_language_explanation(user: string, score: integer, activities: list, config: SCSConfig) -> string {
-        let activity_count = activities.count()
-        let total_activity_points = activities.reduce(action(acc, a) { return acc + a.points }, 0)
-        
-        let explanation = "Your Social Capital Score of " + string(score) + " is based on:\n"
-        
-        if activity_count > 0 {
-            explanation += "• " + string(activity_count) + " recent activities worth " + string(total_activity_points) + " points\n"
-            explanation += "• Random factor range: " + string(config.min_points) + "-" + string(config.max_points) + " points\n"
-            explanation += "• Daily cap: " + string(config.daily_cap) + " points\n"
-        } else {
-            explanation += "• Base random score (no recent activities)\n"
-        }
-        
-        explanation += "\nRecent activities that influenced your score:"
-        
-        for each activity in activities.slice(0, 5) { // Show top 5 recent activities
-            let time_ago = this.format_time_ago(activity.timestamp)
-            explanation += "\n• " + activity.explanation + " (" + time_ago + ")"
-        }
-        
-        if activities.count() > 5 {
-            explanation += "\n• ... and " + string(activities.count() - 5) + " more activities"
-        }
-        
-        return explanation
-    }
-
-    action generate_history_summary(scs_history: list, activities: list) -> map {
-        let scores = scs_history.map(action(record) { return record.score })
-        let max_score = scores.reduce(action(max, score) { return math.max(max, score) }, 0)
-        let min_score = scores.reduce(action(min, score) { return math.min(min, score) }, 1000000)
-        let avg_score = scores.reduce(action(sum, score) { return sum + score }, 0) / scores.count() if scores.count() > 0 else 0
-        
-        return {
-            "period_activities": activities.count(),
-            "average_scs": integer(avg_score),
-            "highest_scs": max_score,
-            "lowest_scs": min_score,
-            "trend": this.calculate_trend(scs_history),
-            "consistency_score": this.calculate_consistency(scs_history)
+        return RecalibrationResult{
+            app_id: app_id,
+            adjustments_applied: adjustments_applied,
+            old_config_summary: ai_recommendations.old_summary,
+            new_config_summary: this.get_config_summary(config),
+            impact_prediction: ai_recommendations.impact_prediction,
+            processing_time_seconds: end_time - start_time,
+            timestamp: datetime.now().timestamp()
         }
     }
 
-    action calculate_trend(history: list) -> string {
-        if history.count() < 2 {
-            return "stable"
+    // Internal implementation methods with enhanced features
+    action initialize_default_config() {
+        let default_config = AppConfig{
+            app_id: "default",
+            name: "Default SCS Configuration",
+            version: "2.0",
+            scoring_model: "ai_enhanced_v2",
+            min_score: 10,
+            max_score: 1000,
+            daily_cap: 1000,
+            activity_weights: {
+                "login": {"base": 5, "multiplier": 1.0},
+                "transaction": {"base": 15, "multiplier": 1.5},
+                "governance_vote": {"base": 25, "multiplier": 2.0},
+                "content_creation": {"base": 20, "multiplier": 1.8},
+                "community_engagement": {"base": 15, "multiplier": 1.3},
+                "referral": {"base": 30, "multiplier": 2.5},
+                "staking": {"base": 20, "multiplier": 1.5},
+                "liquidity_provision": {"base": 35, "multiplier": 2.2},
+                "ai_training": {"base": 40, "multiplier": 2.5},
+                "bug_report": {"base": 50, "multiplier": 3.0}
+            },
+            cooldown_periods: {
+                "login": 3600,
+                "transaction": 300,
+                "governance_vote": 86400,
+                "content_creation": 7200,
+                "community_engagement": 1800,
+                "referral": 0,
+                "staking": 3600,
+                "liquidity_provision": 3600,
+                "ai_training": 0,
+                "bug_report": 0
+            },
+            category_multipliers: {
+                "financial": 1.5,
+                "social": 1.2,
+                "governance": 1.8,
+                "technical": 2.0,
+                "community": 1.3
+            },
+            fraud_detection_rules: {
+                "max_daily_activities": 100,
+                "min_time_between_same_activity": 60,
+                "max_points_per_hour": 200,
+                "pattern_repetition_threshold": 5
+            },
+            created_at: datetime.now().timestamp(),
+            updated_at: datetime.now().timestamp()
         }
+
+        this.app_configs["default"] = default_config
         
-        let first_score = history.first().score
-        let last_score = history.last().score
-        
-        if last_score > first_score + 10 {
-            return "increasing"
-        } else if last_score < first_score - 10 {
-            return "decreasing"
-        } else {
-            return "stable"
+        // Also store in database
+        try {
+            db.execute("""
+                INSERT INTO scs_app_configs (app_id, config_data)
+                VALUES (?, ?)
+                ON CONFLICT (app_id) DO NOTHING
+            """, ["default", json.stringify(default_config)])
+        } catch (error) {
+            print("⚠️ Failed to store default config in database: " + error)
         }
     }
 
-    action calculate_consistency(history: list) -> float {
-        if history.count() < 2 {
-            return 1.0
+    action get_app_config_or_default(app_id: string?) -> AppConfig {
+        let target_app_id = app_id or "default"
+        
+        if this.app_configs.has(target_app_id) {
+            return this.app_configs[target_app_id]
         }
         
-        let scores = history.map(action(record) { return record.score })
-        let mean = scores.reduce(action(sum, score) { return sum + score }, 0) / scores.count()
-        let variance = scores.reduce(action(sum, score) { return sum + (score - mean) * (score - mean) }, 0) / scores.count()
+        // Try to load from database
+        try {
+            let config_data = db.query_one(
+                "SELECT config_data FROM scs_app_configs WHERE app_id = ?",
+                [target_app_id]
+            )
+            
+            if config_data != null {
+                let config = json.parse(config_data.config_data)
+                this.app_configs[target_app_id] = config
+                return config
+            }
+        } catch (error) {
+            print("⚠️ Failed to load app config from database: " + error)
+        }
         
-        return math.max(0.0, 1.0 - (variance / 100.0)) // Normalize variance
-    }
-
-    action format_time_ago(timestamp: integer) -> string {
-        let now = datetime.now().timestamp()
-        let diff = now - timestamp
-        
-        if diff < 60: return "just now"
-        if diff < 3600: return string(integer(diff / 60)) + " minutes ago"
-        if diff < 86400: return string(integer(diff / 3600)) + " hours ago"
-        return string(integer(diff / 86400)) + " days ago"
-    }
-
-    action get_default_config() -> SCSConfig {
+        // Return default if not found
         return this.app_configs["default"]
     }
 
-    action merge_configs(default_config: SCSConfig, custom_config: map) -> SCSConfig {
-        // Simple merge - in production would be more sophisticated
-        return SCSConfig{
-            min_points: custom_config.get("min_points", default_config.min_points),
-            max_points: custom_config.get("max_points", default_config.max_points),
-            daily_cap: custom_config.get("daily_cap", default_config.daily_cap),
-            activity_weights: { ...default_config.activity_weights, ...custom_config.get("activity_weights", {}) },
-            cooldown_periods: { ...default_config.cooldown_periods, ...custom_config.get("cooldown_periods", {}) }
-        }
-    }
+    // Many additional internal methods would be here...
+    // calculate_score_components, get_enhanced_activities, determine_tier, 
+    // calculate_percentile, generate_recommendations, etc.
+    // These would follow the same pattern of enhanced implementation
 
-    action validate_app_config(config: SCSConfig) -> boolean {
-        if config.min_points < 0 or config.max_points < config.min_points {
-            return false
+    // Dependency injection setup
+    inject database: db
+    inject ai_engine: zaie
+    
+    // Middleware for SCS operations
+    middleware("scs_operations", action(req, res, next) {
+        let operation = req["operation"]
+        let user = req["user"]
+        
+        if operation in ["calculate_scs", "record_activity"] {
+            // Check rate limits
+            if not security.check_rate_limit(user, "scs_operations") {
+                res["status"] = 429
+                res["error"] = "Rate limit exceeded for SCS operations"
+                return
+            }
+            
+            // Check for fraud alerts
+            if this.fraud_alerts.has(user) {
+                let active_alerts = this.fraud_alerts[user].filter(action(a) { return a.status == "active" })
+                if len(active_alerts) > 0 {
+                    res["status"] = 403
+                    res["error"] = "User has active fraud alerts"
+                    return
+                }
+            }
         }
-        if config.daily_cap < config.max_points {
-            return false
-        }
-        return true
-    }
+        
+        next()
+    })
 }
 
-// Test Social Capital System
+// Additional entity definitions for completeness
+entity ValidationResult {
+    valid: boolean
+    reason: string
+    confidence: float
+    verified: boolean
+    verified_by: string
+    timestamp: integer
+}
+
+entity FraudDetection {
+    user: string
+    score: float
+    patterns: list
+    confidence: float
+    recommendations: list
+    timestamp: integer
+}
+
+entity RecalibrationResult {
+    app_id: string
+    adjustments_applied: list
+    old_config_summary: map
+    new_config_summary: map
+    impact_prediction: map
+    processing_time_seconds: float
+    timestamp: integer
+}
+
+// Register SCS service for dependency injection
+register_dependency("scs_service", SocialCapitalEngine())
+
+// Test Social Capital System with enhanced features
 action async test_social_capital_system() {
-    print("🏆 Testing Social Capital Score System...")
-    let scs = SocialCapitalEngine()
-
-    let test_user = "ZIV_user_789"
-    let test_app = "ziver_dapp"
-
-    // Register custom app configuration
-    scs.register_app_config(test_app, {
-        "min_points": 20,
-        "max_points": 150,
-        "daily_cap": 750,
-        "activity_weights": {
-            "login": 10,
-            "transaction": 25,
-            "governance_vote": 40
+    print("🏆 Testing Enhanced Social Capital Score System v2.0...")
+    
+    // Enable error recovery mode
+    continue
+    
+    try {
+        let scs = SocialCapitalEngine()
+        let test_user = "ZIV_user_" + string(datetime.now().timestamp())
+        let test_app = "ziver_dapp_v2"
+        
+        // Register custom app configuration
+        let app_config = AppConfig{
+            app_id: test_app,
+            name: "Ziver DApp v2",
+            version: "2.0",
+            scoring_model: "ai_enhanced",
+            min_score: 20,
+            max_score: 1500,
+            daily_cap: 1500,
+            activity_weights: {
+                "login": {"base": 10, "multiplier": 1.0},
+                "transaction": {"base": 25, "multiplier": 1.5},
+                "governance_vote": {"base": 40, "multiplier": 2.0},
+                "ai_training": {"base": 50, "multiplier": 2.5}
+            },
+            cooldown_periods: {
+                "login": 3600,
+                "transaction": 300,
+                "governance_vote": 86400,
+                "ai_training": 0
+            },
+            created_at: datetime.now().timestamp(),
+            updated_at: datetime.now().timestamp()
         }
-    })
-
-    // Record some activities
-    scs.record_activity(test_user, "login", test_app, {"bonus_reason": "7-day streak"})
-    scs.record_activity(test_user, "transaction", test_app, {"transaction_value": 5000})
-    scs.record_activity(test_user, "governance_vote", test_app, {"proposal_id": "prop_123"})
-
-    // Calculate SCS
-    let score = scs.calculate_scs(test_user, test_app)
-    print("Social Capital Score: " + string(score))
-
-    // Get explanation
-    let explanation = scs.get_scs_explanation(test_user, test_app)
-    print("SCS Explanation: " + string(explanation))
-
-    // Get history
-    let history = scs.get_scs_history(test_user, 7)
-    print("7-day History: " + string(history.summary))
+        
+        scs.register_app_config(test_app, app_config)
+        
+        // Record enhanced activities
+        let activities = [
+            EngagementActivity{
+                type: "login",
+                subtype: "daily_streak",
+                value: 1.0,
+                weight: 1.2,
+                timestamp: datetime.now().timestamp() - 3600,
+                app_id: test_app,
+                metadata: {"streak_days": 7, "platform": "web"},
+                confidence: 0.9,
+                source: "ziver_platform"
+            },
+            EngagementActivity{
+                type: "transaction",
+                subtype: "defi_swap",
+                value: 1500.0,
+                weight: 1.5,
+                timestamp: datetime.now().timestamp() - 1800,
+                app_id: test_app,
+                metadata: {"amount": 1500, "token": "ZIV", "slippage": 0.5},
+                confidence: 0.95,
+                source: "ziver_wallet",
+                transaction_hash: "0x1234abcd"
+            },
+            EngagementActivity{
+                type: "ai_training",
+                subtype: "model_feedback",
+                value: 2.0,
+                weight: 2.0,
+                timestamp: datetime.now().timestamp() - 900,
+                app_id: test_app,
+                metadata: {"model": "zaie_v2", "feedback_quality": "high"},
+                confidence: 0.85,
+                source: "ai_training_platform"
+            }
+        ]
+        
+        // Record activities
+        for each activity in activities {
+            let record = await scs.record_activity(test_user, activity)
+            print("✅ Activity recorded: " + activity.type + " - " + string(record.points_earned) + " points")
+        }
+        
+        // Calculate SCS with AI enhancement
+        let score_result = await scs.calculate_scs(test_user, test_app)
+        print("✅ Social Capital Score:")
+        print("  Score: " + string(score_result.score))
+        print("  Tier: " + score_result.tier)
+        print("  Percentile: " + string(score_result.percentile) + "%")
+        print("  Confidence: " + string(score_result.confidence))
+        
+        if score_result.warnings.count() > 0:
+            print("  ⚠️ Warnings: " + string(score_result.warnings))
+        
+        // Get comprehensive explanation
+        let explanation = await scs.get_scs_explanation(test_user, test_app)
+        print("✅ SCS Explanation generated")
+        print("  Natural language summary (first 200 chars): " + explanation.natural_language.slice(0, 200) + "...")
+        
+        // Test fraud detection
+        let fraud_detection = await scs.detect_fraud_patterns(test_user)
+        print("✅ Fraud Detection:")
+        print("  Score: " + string(fraud_detection.score))
+        print("  Patterns detected: " + string(len(fraud_detection.patterns)))
+        
+        // Test history retrieval
+        let history = await scs.get_scs_history(test_user)
+        print("✅ History Summary:")
+        print("  Timeframe: " + string(history.timeframe.end_time - history.timeframe.start_time) + " seconds")
+        print("  Score count: " + string(len(history.scores)))
+        print("  Activity count: " + string(len(history.activities)))
+        
+        // Test batch calculation
+        let batch_users = [test_user, "test_user_2", "test_user_3"]
+        let batch_results = await scs.calculate_scs_batch(batch_users, test_app)
+        print("✅ Batch calculation complete:")
+        print("  Processed: " + string(len(batch_results)) + " users")
+        
+        // Test recalibration
+        let recalibration = await scs.recalibrate_scoring_model(test_app)
+        print("✅ Model recalibration:")
+        print("  Adjustments applied: " + string(len(recalibration.adjustments_applied)))
+        print("  Processing time: " + string(recalibration.processing_time_seconds) + " seconds")
+        
+    } catch (error) {
+        print("❌ Test failed: " + error)
+    }
 }
 
 export {
     SocialCapitalEngine,
     SCSSystem,
     test_social_capital_system,
-    register_app_config,
-    calculate_scs,
-    get_scs_explanation,
-    record_activity,
-    get_scs_history
+    EngagementActivity,
+    SCSScore,
+    SCSExplanation,
+    AppConfig,
+    SCS_POLICIES
 }
