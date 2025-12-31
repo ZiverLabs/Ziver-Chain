@@ -1,8 +1,20 @@
-# src/core/block.zx
 use "crypto" as crypto
 use "datetime" as datetime
+use "../middleware/security_middleware" as security
 
-// Modern Zexus uses 'entity' for data structures, 'contract' for stateful
+// Enable memory tracking for blockchain
+track_memory()
+
+// Security policy for block operations
+const BLOCK_SECURITY_POLICY = {
+    rate_limit: 100,
+    auth_required: false,
+    max_transactions: 1000,
+    max_block_size: 1024 * 1024, // 1MB
+    allow_duplicate_txs: false
+}
+
+// Enhanced Block entity with reactive properties
 entity Block {
     index: integer
     timestamp: integer  
@@ -14,9 +26,15 @@ entity Block {
     signature: string
     nonce: integer
     difficulty: integer
-    version: string = "1.0"
+    version: string = "2.0"
+    gas_used: integer = 0
+    gas_limit: integer = 8000000
+    state_root: string?
+    receipts_root: string?
+    sealed: boolean = false
 }
 
+// Enhanced Transaction entity with validation
 entity Transaction {
     hash: string
     from_addr: string
@@ -28,21 +46,55 @@ entity Transaction {
     nonce: integer
     signature: string
     status: string = "pending"
+    timestamp: integer
+    fee: integer = 0
+    access_list: list?  // EIP-2930 support
+    max_fee_per_gas: integer? // EIP-1559 support
+    max_priority_fee_per_gas: integer? // EIP-1559 support
 }
 
-action create_genesis_block() -> Block {
-    let timestamp = datetime.now().timestamp()
-    let genesis_data = "Ziver Chain Genesis Block - The Self-Evolving Blockchain"
+// Data class for block headers with pattern matching support
+data BlockHeader {
+    index: integer
+    hash: string
+    parent_hash: string
+    state_root: string
+    timestamp: integer
+    validator: string
+    
+    // Pattern matching support
+    match_status() {
+        match this.index {
+            0 => "genesis",
+            n if n % 1000 == 0 => "milestone",
+            _ => "regular"
+        }
+    }
+}
 
+// Cache for recent blocks (enterprise feature)
+cache("recent_blocks", { ttl: 300, max_entries: 100 })
+
+// Protected genesis block creation
+action protect create_genesis_block() -> Block {
+    let timestamp = datetime.now().timestamp()
+    let genesis_data = "Ziver Chain Genesis Block v2.0 - AI-Enhanced Self-Evolving Blockchain"
+    
+    // Verify genesis data
+    verify(len(genesis_data) > 0, "Genesis data cannot be empty")
+    
     // Create empty transactions list
     let empty_tx_list = []
     let merkle_root = crypto.keccak256(genesis_data)
 
-    // Calculate genesis hash with proper string conversion
-    let content = "0" + string(timestamp) + "0" + merkle_root + "0" + "genesis"
-    let genesis_hash = crypto.keccak256(content)
+    // Calculate genesis hash with enhanced security
+    let content = "0" + string(timestamp) + "0" + merkle_root + "0" + "genesis" + "v2.0"
+    let genesis_hash = crypto.double_keccak256(content) // Enhanced hash
 
-    return Block{
+    // Create state root for genesis
+    let state_root = crypto.keccak256("genesis_state_root")
+
+    let genesis_block = Block{
         index: 0,
         timestamp: timestamp,
         previous_hash: "0",
@@ -50,31 +102,60 @@ action create_genesis_block() -> Block {
         merkle_root: merkle_root,
         transactions: empty_tx_list,
         validator: "0x0000000000000000000000000000000000000000",
-        signature: "genesis_signature",
+        signature: crypto.sign("genesis", "system_private_key"),
         nonce: 0,
-        difficulty: 1
+        difficulty: 1,
+        state_root: state_root,
+        sealed: true
     }
+    
+    // Audit genesis creation
+    audit("genesis_created", {
+        "block_hash": genesis_hash,
+        "timestamp": timestamp,
+        "version": "2.0"
+    })
+    
+    return genesis_block
 }
 
-action create_block(previous_block: Block, transactions: list, validator: string, private_key: string) -> Block {
+// Enhanced block creation with security policies
+action protect create_block(previous_block: Block, transactions: list, validator: string, private_key: string) -> Block {
+    // Input validation
+    verify(previous_block != null, "Previous block cannot be null")
+    verify(len(transactions) <= BLOCK_SECURITY_POLICY.max_transactions, "Too many transactions")
+    verify(validator != null and len(validator) > 0, "Validator address required")
+    
     let timestamp = datetime.now().timestamp()
-
-    // Calculate merkle root from transactions
+    
+    // Calculate merkle root from transactions with batch processing
     let tx_hashes = []
     for each tx in transactions {
+        // Verify transaction has hash
+        verify(tx.hash != null, "Transaction missing hash")
         tx_hashes.push(tx.hash)
     }
+    
     let merkle_root = crypto.calculate_merkle_root(tx_hashes)
-
-    // Create block content for hashing
+    
+    // Calculate state root (simplified for now)
+    let state_root = crypto.keccak256(merkle_root + string(timestamp))
+    
+    // Create block content for hashing with enhanced data
     let content = string(previous_block.index + 1) + string(timestamp) + previous_block.hash + 
-                  merkle_root + validator + string(previous_block.difficulty)
-    let block_hash = crypto.keccak256(content)
-
-    // Sign the block
-    let signature = crypto.secp256k1_sign(block_hash, private_key)
-
-    return Block{
+                  merkle_root + validator + string(previous_block.difficulty) + state_root
+    let block_hash = crypto.double_keccak256(content)
+    
+    // Sign the block with enhanced signature
+    let signature = crypto.secp256k1_sign_with_recovery(block_hash, private_key)
+    
+    // Calculate gas used
+    let total_gas_used = 0
+    for each tx in transactions {
+        total_gas_used += tx.gas_used or 0
+    }
+    
+    let new_block = Block{
         index: previous_block.index + 1,
         timestamp: timestamp,
         previous_hash: previous_block.hash,
@@ -84,70 +165,235 @@ action create_block(previous_block: Block, transactions: list, validator: string
         validator: validator,
         signature: signature,
         nonce: 0,
-        difficulty: previous_block.difficulty
+        difficulty: previous_block.difficulty,
+        gas_used: total_gas_used,
+        gas_limit: 8000000,
+        state_root: state_root
+    }
+    
+    // Watch for block creation (reactive programming)
+    watch new_block {
+        print("🔔 New block created: #" + string(new_block.index) + " by " + new_block.validator)
+        
+        // Cache the block
+        cache_set("block_" + string(new_block.index), new_block)
+        
+        // Update metrics
+        update_block_metrics(new_block)
+    }
+    
+    // Audit trail
+    audit("block_created", {
+        "index": new_block.index,
+        "hash": new_block.hash,
+        "validator": validator,
+        "tx_count": len(transactions),
+        "timestamp": timestamp
+    })
+    
+    return new_block
+}
+
+// Enhanced block validation with comprehensive checks
+action protect validate_block(block: Block, previous_block: Block) -> boolean {
+    try {
+        // Verify inputs
+        verify(block != null, "Block cannot be null")
+        verify(previous_block != null, "Previous block cannot be null")
+        
+        // Check block index continuity
+        if block.index != previous_block.index + 1 {
+            throw "Block index mismatch: expected " + string(previous_block.index + 1) + ", got " + string(block.index)
+        }
+
+        // Check previous hash
+        if block.previous_hash != previous_block.hash {
+            throw "Previous hash mismatch"
+        }
+
+        // Verify block hash
+        let content = string(block.index) + string(block.timestamp) + block.previous_hash + 
+                      block.merkle_root + block.validator + string(block.difficulty) + (block.state_root or "")
+        let calculated_hash = crypto.double_keccak256(content)
+
+        if calculated_hash != block.hash {
+            throw "Block hash invalid"
+        }
+
+        // Verify signature with enhanced verification
+        let signature_valid = crypto.verify_signature_with_recovery(block.hash, block.signature, block.validator)
+        if not signature_valid {
+            throw "Block signature invalid"
+        }
+
+        // Verify merkle root
+        let tx_hashes = []
+        for each tx in block.transactions {
+            verify(tx.hash != null, "Transaction missing hash")
+            tx_hashes.push(tx.hash)
+        }
+        
+        let calculated_merkle = crypto.calculate_merkle_root(tx_hashes)
+        if calculated_merkle != block.merkle_root {
+            throw "Merkle root invalid"
+        }
+
+        // Validate gas usage
+        if block.gas_used > block.gas_limit {
+            throw "Gas used exceeds gas limit"
+        }
+
+        // Validate timestamp (not too far in future/past)
+        let current_time = datetime.now().timestamp()
+        let time_diff = math.abs(current_time - block.timestamp)
+        if time_diff > 900 { // 15 minutes
+            throw "Block timestamp too far from current time"
+        }
+
+        print("✅ Block #" + string(block.index) + " validated successfully")
+        return true
+        
+    } catch (error) {
+        print("❌ Block validation failed: " + error)
+        
+        // Log validation failure
+        audit("block_validation_failed", {
+            "block_index": block?.index or -1,
+            "error": error,
+            "timestamp": datetime.now().timestamp()
+        })
+        
+        return false
     }
 }
 
-action validate_block(block: Block, previous_block: Block) -> boolean {
-    // Check block index continuity
-    if block.index != previous_block.index + 1 {
-        print("Block index mismatch")
-        return false
+// New: Block sealing mechanism
+action seal_block(block: Block) -> Block {
+    verify(not block.sealed, "Block already sealed")
+    
+    let sealed_block = Block{
+        ...block,
+        sealed: true,
+        hash: crypto.keccak256(block.hash + "_sealed_" + string(datetime.now().timestamp()))
     }
-
-    // Check previous hash
-    if block.previous_hash != previous_block.hash {
-        print("Previous hash mismatch")
-        return false
+    
+    // Watch for seal
+    watch sealed_block {
+        print("🔒 Block #" + string(sealed_block.index) + " sealed")
     }
-
-    // Verify block hash
-    let content = string(block.index) + string(block.timestamp) + block.previous_hash + 
-                  block.merkle_root + block.validator + string(block.difficulty)
-    let calculated_hash = crypto.keccak256(content)
-
-    if calculated_hash != block.hash {
-        print("Block hash invalid")
-        return false
-    }
-
-    // Verify signature
-    let signature_valid = crypto.verify_signature(block.hash, block.signature, block.validator)
-    if not signature_valid {
-        print("Block signature invalid")
-        return false
-    }
-
-    // Verify merkle root
-    let tx_hashes = []
-    for each tx in block.transactions {
-        tx_hashes.push(tx.hash)
-    }
-    let calculated_merkle = crypto.calculate_merkle_root(tx_hashes)
-    if calculated_merkle != block.merkle_root {
-        print("Merkle root invalid")
-        return false
-    }
-
-    return true
+    
+    return sealed_block
 }
 
-// Test the block system
+// New: Block batch validation
+action async validate_block_batch(blocks: list) -> list {
+    let results = []
+    let valid_count = 0
+    
+    for each i, block in blocks {
+        if i == 0 {
+            // First block should be genesis or valid
+            results.push({"index": block.index, "valid": true})
+            valid_count += 1
+            continue
+        }
+        
+        let previous_block = blocks[i-1]
+        let valid = validate_block(block, previous_block)
+        results.push({"index": block.index, "valid": valid})
+        
+        if valid {
+            valid_count += 1
+        }
+    }
+    
+    print("📊 Batch validation: " + string(valid_count) + "/" + string(len(blocks)) + " blocks valid")
+    return results
+}
+
+// New: Block metrics tracking
+let block_metrics = {
+    total_blocks: 0,
+    total_transactions: 0,
+    average_block_time: 0,
+    last_block_timestamp: 0
+}
+
+action update_block_metrics(block: Block) {
+    block_metrics.total_blocks += 1
+    block_metrics.total_transactions += len(block.transactions)
+    
+    if block_metrics.last_block_timestamp > 0 {
+        let time_diff = block.timestamp - block_metrics.last_block_timestamp
+        // Moving average
+        block_metrics.average_block_time = (block_metrics.average_block_time * 0.9) + (time_diff * 0.1)
+    }
+    
+    block_metrics.last_block_timestamp = block.timestamp
+    
+    // Reactive update
+    watch block_metrics {
+        print("📈 Block metrics updated")
+    }
+}
+
+action get_block_metrics() -> map {
+    return block_metrics
+}
+
+// Dependency injection for block service
+register_dependency("block_service", {
+    "create_genesis_block": create_genesis_block,
+    "create_block": create_block,
+    "validate_block": validate_block,
+    "seal_block": seal_block,
+    "validate_block_batch": validate_block_batch,
+    "get_block_metrics": get_block_metrics
+})
+
+// Test the block system with enhanced features
 action async test_block_system() {
-    print("🧱 Testing Block System...")
-    let genesis = create_genesis_block()
-    print("Genesis Block Created:")
-    print("  Hash: " + genesis.hash.slice(0, 16) + "...")
-    print("  Index: " + string(genesis.index))
-    print("  Valid: " + string(validate_block(genesis, genesis)))
+    print("🧱 Testing Enhanced Block System v2.0...")
+    
+    // Enable error recovery mode for testing
+    continue
+    
+    try {
+        let genesis = create_genesis_block()
+        print("✅ Genesis Block Created:")
+        print("  Hash: " + genesis.hash.slice(0, 16) + "...")
+        print("  Index: " + string(genesis.index))
+        print("  Version: " + genesis.version)
+        print("  Sealed: " + string(genesis.sealed))
+        
+        // Test validation
+        let valid = validate_block(genesis, genesis)
+        print("  Valid: " + string(valid))
+        
+        // Test block sealing
+        let sealed_genesis = seal_block(genesis)
+        print("  After sealing: " + string(sealed_genesis.sealed))
+        
+        // Test metrics
+        let metrics = get_block_metrics()
+        print("📊 Initial metrics: " + string(metrics))
+        
+    } catch (error) {
+        print("❌ Test failed: " + error)
+    }
 }
 
-// Export the functions properly
+// Export the functions properly with enhanced features
 export {
     create_genesis_block,
     create_block, 
     validate_block,
+    seal_block,
+    validate_block_batch,
+    get_block_metrics,
     test_block_system,
     Block,
-    Transaction
+    Transaction,
+    BlockHeader,
+    BLOCK_SECURITY_POLICY
 }
