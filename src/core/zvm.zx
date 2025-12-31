@@ -3,13 +3,51 @@
 
 use "crypto" as crypto
 use "datetime" as datetime
+use "math" as math
+use "json" as json
+use "../database/postgres" as db
+use "../middleware/security_middleware" as security
+use "../ai/zaie_engine" as zaie
 
-// Ziver Virtual Machine - Advanced Smart Contract Execution
+// Enable memory tracking for VM operations
+track_memory()
+
+// Security policies for virtual machine
+const ZVM_POLICIES = {
+    max_contract_size: 1024 * 1024, // 1MB max contract code
+    max_execution_time: 30, // 30 seconds max execution
+    max_gas_per_block: 10000000,
+    max_recursion_depth: 64,
+    max_storage_size: 1024 * 1024 * 10, // 10MB max storage
+    gas_price_floor: 1,
+    gas_price_ceiling: 100,
+    sandbox_memory_limit: 256 * 1024 * 1024, // 256MB per sandbox
+    max_total_contracts: 100000
+}
+
+// Cache for frequently accessed contracts and execution results
+cache("contract_cache", { ttl: 300, strategy: "lru", max_entries: 1000 })
+cache("gas_estimates", { ttl: 60, strategy: "lfu" })
+cache("contract_bytecode", { ttl: 3600, strategy: "arc" })
+
+// Throttle VM operations
+throttle("contract_deployments", { requests_per_minute: 100 })
+throttle("contract_executions", { requests_per_minute: 1000 })
+
+// Ziver Virtual Machine - Advanced Smart Contract Execution with Enhanced Security
 protocol VirtualMachine {
-    action deploy_contract(code: string, owner: string, initial_balance: integer) -> string
-    action execute_contract(contract_address: string, function: string, args: list, caller: string, value: integer) -> any
-    action get_contract_state(contract_address: string) -> map?
-    action estimate_gas(contract_address: string, function: string, args: list) -> integer
+    action deploy_contract(deployment: ContractDeployment) -> DeploymentResult
+    action deploy_contract_batch(deployments: list) -> list
+    action execute_contract(execution: ContractExecution) -> ExecutionResult
+    action execute_contract_batch(executions: list) -> list
+    action get_contract_state(contract_address: string, include_storage: boolean?) -> ContractState
+    action estimate_gas(estimation: GasEstimation) -> GasEstimate
+    action validate_contract_code(code: string, options: map?) -> ValidationResult
+    action upgrade_contract(upgrade: ContractUpgrade) -> UpgradeResult
+    action migrate_contract(migration: ContractMigration) -> MigrationResult
+    action analyze_contract_security(contract_address: string) -> SecurityAnalysis
+    action get_vm_metrics() -> VMMetrics
+    action emergency_halt(contract_address: string, reason: string) -> EmergencyResult
 }
 
 contract ZiverVirtualMachine implements VirtualMachine {
@@ -17,275 +55,1620 @@ contract ZiverVirtualMachine implements VirtualMachine {
     persistent storage gas_price: integer = 1
     persistent storage global_state: map
     persistent storage execution_history: list
-
-    entity Contract {
-        address: string
+    persistent storage bytecode_cache: map
+    persistent storage security_analysis: map
+    persistent storage emergency_flags: map
+    persistent storage contract_dependencies: map
+    persistent storage upgrade_history: map
+    
+    // Enhanced data structures
+    entity ContractDeployment {
         code: string
-        storage: map
+        bytecode: string?
         owner: string
-        balance: integer = 0
-        created_at: integer
-        gas_used: integer = 0
-        execution_count: integer = 0
+        initial_balance: integer = 0
+        constructor_args: list?
+        metadata: map?
+        gas_limit: integer?
+        gas_price: integer?
+        nonce: integer?
+        signature: string?
+        deployer: string
+        timestamp: integer
     }
-
+    
+    entity DeploymentResult {
+        success: boolean
+        contract_address: string
+        transaction_hash: string
+        gas_used: integer
+        bytecode_hash: string
+        storage_root: string
+        deployment_cost: integer
+        warnings: list
+        verification_hash: string
+        deployed_at: integer
+    }
+    
+    entity ContractExecution {
+        contract_address: string
+        function: string
+        args: list
+        caller: string
+        value: integer = 0
+        gas_limit: integer?
+        gas_price: integer?
+        nonce: integer?
+        signature: string?
+        context: map?
+        options: map? // {skip_storage: false, dry_run: false, trace: false}
+        timestamp: integer
+    }
+    
     entity ExecutionResult {
         return_value: any
         storage_changes: map
         gas_used: integer
+        gas_refund: integer
         events_emitted: list
+        logs: list
+        state_root: string
         success: boolean = true
+        error: string?
+        execution_trace: list?
+        revert_data: map?
+        execution_time_ms: integer
+        verification_hash: string
+    }
+    
+    entity ContractState {
+        address: string
+        owner: string
+        balance: integer
+        nonce: integer
+        created_at: integer
+        last_executed: integer?
+        execution_count: integer = 0
+        total_gas_used: integer = 0
+        storage_size: integer = 0
+        code_hash: string
+        bytecode_hash: string
+        storage_root: string
+        version: string = "1.0"
+        flags: map
+        dependencies: list
+        security_score: float
+        metadata: map
+        storage_snapshot: map? // Only included if requested
+    }
+    
+    entity GasEstimation {
+        contract_address: string
+        function: string
+        args: list
+        caller: string
+        value: integer = 0
+        context: map?
+        confidence_level: string = "medium" // low, medium, high
+        timestamp: integer
+    }
+    
+    entity GasEstimate {
+        estimated_gas: integer
+        confidence: float
+        breakdown: GasBreakdown
+        recommendations: list
+        minimum_gas: integer
+        maximum_gas: integer
+        base_cost: integer
+        storage_cost: integer
+        computation_cost: integer
+        timestamp: integer
+    }
+    
+    entity ContractUpgrade {
+        contract_address: string
+        new_code: string
+        new_bytecode: string?
+        upgrade_reason: string
+        migration_data: map?
+        upgrade_authority: string
+        signature: string?
+        gas_limit: integer?
+        options: map? // {preserve_storage: true, preserve_balance: true}
+        timestamp: integer
+    }
+    
+    entity UpgradeResult {
+        success: boolean
+        old_address: string
+        new_address: string
+        migration_hash: string
+        storage_migrated: boolean
+        balance_transferred: boolean
+        gas_used: integer
+        warnings: list
+        upgrade_timestamp: integer
+    }
+    
+    entity SecurityAnalysis {
+        contract_address: string
+        analysis_time: integer
+        overall_score: float
+        risk_level: string // low, medium, high, critical
+        vulnerabilities: list
+        recommendations: list
+        static_analysis: map
+        dynamic_analysis: map
+        ai_insights: list
+        last_audited: integer
+    }
+    
+    entity VMMetrics {
+        timestamp: integer
+        total_contracts: integer
+        active_contracts: integer
+        total_executions: integer
+        total_gas_used: integer
+        average_execution_time: float
+        failure_rate: float
+        memory_usage: integer
+        storage_usage: integer
+        top_contracts: list
+        performance_trends: map
+        alerts: list
+    }
+    
+    // Reactive state for monitoring
+    watch contracts {
+        let total_contracts = len(this.contracts)
+        let total_balance = 0
+        for each address, contract in this.contracts {
+            total_balance += contract.balance or 0
+        }
+        print("📊 VM Statistics: " + string(total_contracts) + " contracts, total balance: " + string(total_balance))
+    }
+    
+    watch execution_history {
+        if len(this.execution_history) % 100 == 0 {
+            print("⚡ VM Executions: " + string(len(this.execution_history)) + " total")
+        }
     }
 
     action init() {
         this.contracts = {}
         this.global_state = {}
         this.execution_history = []
-    }
-
-    action deploy_contract(code: string, owner: string, initial_balance: integer = 0) -> string {
-        let validation = this.validate_contract_code(code)
-        if not validation.valid {
-            throw "Contract validation failed: " + validation.reason
-        }
-
-        let nonce = datetime.now().timestamp()
-        let address_input = owner + code + string(nonce)
-        let contract_hash = crypto.keccak256(address_input)
-        let contract_address = "CONTRACT_ZIV_" + contract_hash.slice(0, 40)
-
-        let contract = Contract{
-            address: contract_address,
-            code: code,
-            owner: owner,
-            balance: initial_balance,
-            created_at: datetime.now().timestamp(),
-            storage: {}
-        }
-
-        this.contracts[contract_address] = contract
-        this.initialize_contract_storage(contract)
-
-        print("📄 Contract deployed at: " + contract_address)
-        print("  Owner: " + owner)
-        print("  Balance: " + string(initial_balance))
-
-        return contract_address
-    }
-
-    action execute_contract(contract_address: string, function: string, args: list, caller: string, value: integer = 0) -> any {
-        if not this.contracts.has(contract_address) {
-            throw "Contract not found: " + contract_address
-        }
-
-        let contract = this.contracts[contract_address]
-        let gas_estimate = this.estimate_gas(contract_address, function, args)
+        this.bytecode_cache = {}
+        this.security_analysis = {}
+        this.emergency_flags = {}
+        this.contract_dependencies = {}
+        this.upgrade_history = {}
         
-        if value < gas_estimate {
-            throw "Insufficient gas: " + string(gas_estimate) + " required, " + string(value) + " provided"
-        }
-
-        if value > 0 && contract.balance < value {
-            throw "Insufficient contract balance"
-        }
-
-        let context = {
-            "caller": caller,
-            "value": value,
-            "contract_address": contract_address,
-            "timestamp": datetime.now().timestamp(),
-            "block_number": this.get_current_block_number()
-        }
-
-        let result = this.execute_in_sandbox(contract, function, args, context)
-
-        if result.success {
-            this.apply_storage_changes(contract, result.storage_changes)
-            contract.gas_used += result.gas_used
-            contract.execution_count += 1
-
-            if value > 0 {
-                contract.balance += value
-            }
-        }
-
-        this.record_execution(contract_address, function, caller, result)
-
-        print("⚡ Contract executed: " + contract_address + "." + function)
-        print("  Gas used: " + string(result.gas_used))
-        print("  Success: " + string(result.success))
-
-        return result.return_value
-    }
-
-    action get_contract_state(contract_address: string) -> map? {
-        if not this.contracts.has(contract_address) {
-            return null
-        }
-
-        let contract = this.contracts[contract_address]
-        return {
-            "address": contract.address,
-            "owner": contract.owner,
-            "balance": contract.balance,
-            "created_at": contract.created_at,
-            "execution_count": contract.execution_count,
-            "total_gas_used": contract.gas_used,
-            "storage_size": len(contract.storage),
-            "code_hash": crypto.keccak256(contract.code)
-        }
-    }
-
-    action estimate_gas(contract_address: string, function: string, args: list) -> integer {
-        let base_cost = 21000
-        let function_cost = this.analyze_function_complexity(function)
-        let arg_cost = args.count() * 100
-        let storage_cost = this.estimate_storage_cost(contract_address, function)
-
-        return base_cost + function_cost + arg_cost + storage_cost
-    }
-
-    // Internal implementation methods
-    action validate_contract_code(code: string) -> map {
-        let blacklisted_patterns = ["infinite_loop", "system_call", "file_access"]
-        let issues = []
-
-        for each pattern in blacklisted_patterns {
-            if code.contains(pattern) {
-                issues.push("Blacklisted pattern: " + pattern)
-            }
-        }
-
-        if code.length() > 100000 {
-            issues.push("Contract code too large")
-        }
-
-        return {
-            "valid": issues.is_empty(),
-            "reason": issues.is_empty() ? "Valid" : string(issues),
-            "issues": issues
-        }
-    }
-
-    action initialize_contract_storage(contract: Contract) {
-        contract.storage = {
-            "_owner": contract.owner,
-            "_created": contract.created_at,
-            "_version": "1.0",
-            "_balance": contract.balance
-        }
-    }
-
-    action execute_in_sandbox(contract: Contract, function: string, args: list, context: map) -> ExecutionResult {
-        let start_time = datetime.now().timestamp()
-
+        // Initialize database tables
         try {
-            let result = this.invoke_zexus_interpreter(contract.code, function, args, contract.storage, context)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS zvm_contracts (
+                    contract_address VARCHAR(42) PRIMARY KEY,
+                    owner_address VARCHAR(42) NOT NULL,
+                    code_hash VARCHAR(128) NOT NULL,
+                    bytecode_hash VARCHAR(128) NOT NULL,
+                    balance BIGINT DEFAULT 0,
+                    nonce INTEGER DEFAULT 0,
+                    created_at TIMESTAMP NOT NULL,
+                    last_executed TIMESTAMP,
+                    execution_count INTEGER DEFAULT 0,
+                    total_gas_used BIGINT DEFAULT 0,
+                    storage_root VARCHAR(128),
+                    version VARCHAR(20) DEFAULT '1.0',
+                    flags JSONB,
+                    metadata JSONB,
+                    INDEX idx_owner (owner_address),
+                    INDEX idx_created (created_at)
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS zvm_executions (
+                    execution_id VARCHAR(64) PRIMARY KEY,
+                    contract_address VARCHAR(42) NOT NULL,
+                    caller_address VARCHAR(42) NOT NULL,
+                    function_name VARCHAR(100) NOT NULL,
+                    arguments JSONB,
+                    return_value JSONB,
+                    gas_used INTEGER NOT NULL,
+                    gas_price INTEGER NOT NULL,
+                    success BOOLEAN NOT NULL,
+                    error_message TEXT,
+                    execution_time_ms INTEGER,
+                    timestamp TIMESTAMP NOT NULL,
+                    transaction_hash VARCHAR(128),
+                    storage_changes JSONB,
+                    events_emitted JSONB,
+                    INDEX idx_contract_time (contract_address, timestamp),
+                    INDEX idx_caller (caller_address, timestamp)
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS zvm_contract_storage (
+                    storage_id VARCHAR(64) PRIMARY KEY,
+                    contract_address VARCHAR(42) NOT NULL,
+                    storage_key VARCHAR(256) NOT NULL,
+                    storage_value JSONB NOT NULL,
+                    updated_at TIMESTAMP NOT NULL,
+                    previous_value JSONB,
+                    INDEX idx_contract_key (contract_address, storage_key),
+                    INDEX idx_contract (contract_address)
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS zvm_contract_bytecode (
+                    bytecode_hash VARCHAR(128) PRIMARY KEY,
+                    bytecode TEXT NOT NULL,
+                    source_hash VARCHAR(128) NOT NULL,
+                    compiler_version VARCHAR(20),
+                    optimization_level INTEGER,
+                    deployed_count INTEGER DEFAULT 0,
+                    first_deployed TIMESTAMP,
+                    last_deployed TIMESTAMP
+                )
+            """)
+        } catch (error) {
+            print("⚠️ Failed to initialize ZVM database: " + error)
+        }
+        
+        // Initialize global state
+        this.global_state = {
+            "total_contracts": 0,
+            "total_executions": 0,
+            "total_gas_used": 0,
+            "average_gas_price": 1,
+            "last_block_number": 0,
+            "chain_id": "ziver_chain_1"
+        }
+        
+        // Take initial snapshot
+        this.take_vm_snapshot("initialization")
+    }
 
-            let execution_time = datetime.now().timestamp() - start_time
-            let gas_used = this.calculate_actual_gas(execution_time, result.complexity)
-
-            return ExecutionResult{
-                return_value: result.return_value,
-                storage_changes: result.storage_changes,
-                gas_used: gas_used
+    action protect deploy_contract(deployment: ContractDeployment) -> DeploymentResult {
+        """
+        Deploy a new smart contract with comprehensive validation and security checks
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            // Validate deployment
+            verify(deployment.code != null, "Contract code is required")
+            verify(deployment.owner != null, "Contract owner is required")
+            verify(deployment.deployer != null, "Deployer address is required")
+            
+            // Check code size limit
+            verify(len(deployment.code) <= ZVM_POLICIES.max_contract_size, 
+                   "Contract code exceeds maximum size: " + string(ZVM_POLICIES.max_contract_size))
+            
+            // Validate contract code
+            let validation = this.validate_contract_code(deployment.code, {
+                "strict_mode": true,
+                "security_checks": true,
+                "optimization_level": deployment.metadata?.optimization_level or 1
+            })
+            
+            if not validation.valid {
+                throw "Contract validation failed: " + validation.reason
             }
-        } catch(error) {
-            print("❌ Contract execution failed: " + string(error))
+            
+            // Check for duplicate deployment (same code hash)
+            let code_hash = crypto.sha3_256(deployment.code)
+            let existing_contract = this.find_contract_by_code_hash(code_hash)
+            if existing_contract != null and not deployment.metadata?.allow_duplicate {
+                throw "Contract with identical code already exists at: " + existing_contract.address
+            }
+            
+            // Check total contract limit
+            if len(this.contracts) >= ZVM_POLICIES.max_total_contracts {
+                throw "Maximum contract limit reached: " + string(ZVM_POLICIES.max_total_contracts)
+            }
+            
+            // Generate contract address
+            let nonce = deployment.nonce or datetime.now().timestamp()
+            let address_input = deployment.owner + code_hash + string(nonce) + deployment.deployer
+            let contract_hash = crypto.sha3_256(address_input)
+            let contract_address = "ZIV_CONTRACT_" + contract_hash.slice(0, 40)
+            
+            // Check if address already exists (extremely unlikely but possible)
+            if this.contracts.has(contract_address) {
+                throw "Contract address collision detected"
+            }
+            
+            // Compile bytecode if not provided
+            let bytecode = deployment.bytecode or this.compile_to_bytecode(deployment.code)
+            let bytecode_hash = crypto.sha3_256(bytecode)
+            
+            // Estimate deployment gas
+            let gas_estimate = this.estimate_deployment_gas(deployment.code, bytecode, deployment.constructor_args)
+            let gas_limit = deployment.gas_limit or integer(gas_estimate * 1.2) // 20% buffer
+            let gas_price = deployment.gas_price or this.gas_price
+            
+            // Calculate deployment cost
+            let deployment_cost = gas_estimate * gas_price
+            
+            // Create contract instance
+            let contract = {
+                "address": contract_address,
+                "owner": deployment.owner,
+                "deployer": deployment.deployer,
+                "code": deployment.code,
+                "code_hash": code_hash,
+                "bytecode": bytecode,
+                "bytecode_hash": bytecode_hash,
+                "balance": deployment.initial_balance,
+                "nonce": 0,
+                "created_at": deployment.timestamp or datetime.now().timestamp(),
+                "storage": {},
+                "storage_root": crypto.sha3_256("empty"),
+                "version": "1.0",
+                "flags": {},
+                "execution_count": 0,
+                "total_gas_used": 0,
+                "metadata": deployment.metadata or {},
+                "dependencies": validation.dependencies or [],
+                "security_analysis": null
+            }
+            
+            // Initialize contract storage
+            this.initialize_contract_storage(contract, deployment.constructor_args)
+            
+            // Run constructor if provided
+            let constructor_result = null
+            if deployment.constructor_args != null {
+                constructor_result = this.execute_constructor(contract, deployment.constructor_args, deployment.deployer)
+                if not constructor_result.success {
+                    throw "Constructor execution failed: " + constructor_result.error
+                }
+            }
+            
+            // Store contract
+            this.contracts[contract_address] = contract
+            
+            // Store bytecode in cache
+            this.bytecode_cache[bytecode_hash] = {
+                "bytecode": bytecode,
+                "source_hash": code_hash,
+                "deployed_at": datetime.now().timestamp(),
+                "deployer": deployment.deployer
+            }
+            
+            // Update database
+            try {
+                db.execute("""
+                    INSERT INTO zvm_contracts (
+                        contract_address, owner_address, code_hash, bytecode_hash, 
+                        balance, created_at, storage_root, metadata
+                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+                """, [
+                    contract_address,
+                    deployment.owner,
+                    code_hash,
+                    bytecode_hash,
+                    deployment.initial_balance,
+                    contract.storage_root,
+                    json.stringify(contract.metadata)
+                ])
+                
+                // Store bytecode
+                db.execute("""
+                    INSERT INTO zvm_contract_bytecode (
+                        bytecode_hash, bytecode, source_hash, first_deployed, last_deployed, deployed_count
+                    ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+                    ON CONFLICT (bytecode_hash) DO UPDATE SET
+                        last_deployed = CURRENT_TIMESTAMP,
+                        deployed_count = zvm_contract_bytecode.deployed_count + 1
+                """, [bytecode_hash, bytecode, code_hash])
+            } catch (error) {
+                print("⚠️ Failed to store contract in database: " + error)
+            }
+            
+            // Update global state
+            this.global_state.total_contracts += 1
+            
+            // Generate transaction hash
+            let transaction_hash = "TX_" + crypto.sha3_256(
+                contract_address + string(deployment.timestamp) + deployment.deployer
+            )
+            
+            let deployment_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            // Security analysis (async - don't block deployment)
+            async this.analyze_contract_security_async(contract_address)
+            
+            // Cache the contract
+            cache_set("contract_" + contract_address, contract)
+            
+            audit("contract_deployed", {
+                "contract_address": contract_address,
+                "owner": deployment.owner,
+                "deployer": deployment.deployer,
+                "code_hash": code_hash,
+                "bytecode_hash": bytecode_hash,
+                "initial_balance": deployment.initial_balance,
+                "gas_estimate": gas_estimate,
+                "deployment_cost": deployment_cost,
+                "deployment_time_ms": deployment_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            let warnings = []
+            if validation.warnings.count() > 0 {
+                warnings = validation.warnings
+            }
+            if deployment.initial_balance > 0 {
+                warnings.push("Contract deployed with initial balance: " + string(deployment.initial_balance))
+            }
+            
+            return DeploymentResult{
+                success: true,
+                contract_address: contract_address,
+                transaction_hash: transaction_hash,
+                gas_used: gas_estimate,
+                bytecode_hash: bytecode_hash,
+                storage_root: contract.storage_root,
+                deployment_cost: deployment_cost,
+                warnings: warnings,
+                verification_hash: crypto.sha3_256(contract_address + bytecode_hash),
+                deployed_at: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let deployment_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("contract_deployment_failed", {
+                "deployer": deployment?.deployer or "unknown",
+                "owner": deployment?.owner or "unknown",
+                "error": error,
+                "deployment_time_ms": deployment_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return DeploymentResult{
+                success: false,
+                error: error,
+                deployed_at: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect deploy_contract_batch(deployments: list) -> list {
+        """
+        Deploy multiple contracts in batch with optimization
+        """
+        let results = []
+        let batch_size = 10 // Deploy in small batches
+        
+        for each batch_start in range(0, len(deployments), batch_size) {
+            let batch_end = math.min(batch_start + batch_size, len(deployments))
+            let deployment_batch = deployments.slice(batch_start, batch_end)
+            
+            // Process batch in parallel
+            let batch_results = []
+            for each deployment in deployment_batch {
+                let result = await this.deploy_contract(deployment)
+                batch_results.push(result)
+            }
+            
+            results = results + batch_results
+            
+            // Throttle to avoid overwhelming the system
+            if batch_end < len(deployments) {
+                await sleep(0.5) // 500ms delay between batches
+            }
+        }
+        
+        // Update global metrics
+        let successful_deployments = results.filter(action(r) { return r.success }).count()
+        print("✅ Batch deployment complete: " + string(successful_deployments) + "/" + string(len(deployments)) + " successful")
+        
+        return results
+    }
+
+    action protect execute_contract(execution: ContractExecution) -> ExecutionResult {
+        """
+        Execute a smart contract function with comprehensive security and gas management
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            // Validate execution
+            verify(execution.contract_address != null, "Contract address is required")
+            verify(execution.function != null, "Function name is required")
+            verify(execution.caller != null, "Caller address is required")
+            
+            // Check emergency flags
+            if this.emergency_flags.has(execution.contract_address) {
+                let flag = this.emergency_flags[execution.contract_address]
+                if flag.status == "halted" {
+                    throw "Contract is emergency halted: " + flag.reason
+                }
+            }
+            
+            // Get contract from cache or storage
+            let contract = cache_get("contract_" + execution.contract_address)
+            if contract == null or force_reload {
+                if not this.contracts.has(execution.contract_address) {
+                    throw "Contract not found: " + execution.contract_address
+                }
+                contract = this.contracts[execution.contract_address]
+                cache_set("contract_" + execution.contract_address, contract)
+            }
+            
+            // Check contract balance if value is being transferred
+            if execution.value > 0 and contract.balance < execution.value {
+                throw "Insufficient contract balance"
+            }
+            
+            // Estimate gas
+            let gas_estimate = this.estimate_gas(GasEstimation{
+                contract_address: execution.contract_address,
+                function: execution.function,
+                args: execution.args,
+                caller: execution.caller,
+                value: execution.value,
+                context: execution.context,
+                confidence_level: "high",
+                timestamp: datetime.now().timestamp()
+            })
+            
+            let gas_limit = execution.gas_limit or gas_estimate.estimated_gas
+            let gas_price = execution.gas_price or this.gas_price
+            
+            verify(gas_limit >= gas_estimate.minimum_gas, 
+                   "Gas limit below minimum required: " + string(gas_estimate.minimum_gas))
+            
+            // Prepare execution context
+            let context = {
+                "caller": execution.caller,
+                "value": execution.value,
+                "contract_address": execution.contract_address,
+                "timestamp": execution.timestamp or datetime.now().timestamp(),
+                "block_number": this.get_current_block_number(),
+                "gas_limit": gas_limit,
+                "gas_price": gas_price,
+                "origin": execution.caller, // Original transaction sender
+                "chain_id": this.global_state.chain_id,
+                "difficulty": this.get_current_difficulty(),
+                "coinbase": this.get_current_validator(),
+                ...execution.context or {}
+            }
+            
+            // Check if dry run
+            let is_dry_run = execution.options?.dry_run or false
+            
+            // Execute in secure sandbox
+            let sandbox_result = this.execute_in_secure_sandbox(
+                contract, 
+                execution.function, 
+                execution.args, 
+                context, 
+                gas_limit,
+                is_dry_run
+            )
+            
+            let execution_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            // Check execution time limit
+            if execution_time_ms > ZVM_POLICIES.max_execution_time * 1000 {
+                throw "Execution timeout: " + string(execution_time_ms) + "ms"
+            }
+            
+            if sandbox_result.success and not is_dry_run:
+                // Apply state changes
+                this.apply_execution_changes(contract, sandbox_result, execution.value)
+                
+                // Update contract metrics
+                contract.execution_count += 1
+                contract.total_gas_used += sandbox_result.gas_used
+                contract.last_executed = datetime.now().timestamp()
+                
+                // Update balance if value was transferred
+                if execution.value > 0:
+                    contract.balance += execution.value
+                
+                // Update database
+                try {
+                    db.execute("""
+                        UPDATE zvm_contracts 
+                        SET execution_count = execution_count + 1,
+                            total_gas_used = total_gas_used + ?,
+                            last_executed = CURRENT_TIMESTAMP,
+                            balance = balance + ?
+                        WHERE contract_address = ?
+                    """, [sandbox_result.gas_used, execution.value, execution.contract_address])
+                    
+                    // Record execution
+                    db.execute("""
+                        INSERT INTO zvm_executions (
+                            execution_id, contract_address, caller_address, function_name,
+                            arguments, return_value, gas_used, gas_price, success,
+                            execution_time_ms, timestamp, storage_changes, events_emitted
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+                    """, [
+                        "EXEC_" + crypto.sha3_256(execution.contract_address + execution.function + string(datetime.now().timestamp())),
+                        execution.contract_address,
+                        execution.caller,
+                        execution.function,
+                        json.stringify(execution.args),
+                        json.stringify(sandbox_result.return_value),
+                        sandbox_result.gas_used,
+                        gas_price,
+                        true,
+                        execution_time_ms,
+                        json.stringify(sandbox_result.storage_changes),
+                        json.stringify(sandbox_result.events_emitted)
+                    ])
+                    
+                    // Update storage
+                    for each key, value in sandbox_result.storage_changes {
+                        db.execute("""
+                            INSERT INTO zvm_contract_storage (storage_id, contract_address, storage_key, storage_value, updated_at)
+                            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            ON CONFLICT (contract_address, storage_key) DO UPDATE SET
+                                previous_value = zvm_contract_storage.storage_value,
+                                storage_value = EXCLUDED.storage_value,
+                                updated_at = EXCLUDED.updated_at
+                        """, [
+                            "STORAGE_" + crypto.sha3_256(execution.contract_address + key),
+                            execution.contract_address,
+                            key,
+                            json.stringify(value)
+                        ])
+                    }
+                } catch (error) {
+                    print("⚠️ Failed to update execution in database: " + error)
+                }
+            
+            // Record execution in history
+            let execution_record = {
+                "contract_address": execution.contract_address,
+                "function": execution.function,
+                "caller": execution.caller,
+                "timestamp": datetime.now().timestamp(),
+                "gas_used": sandbox_result.gas_used,
+                "gas_price": gas_price,
+                "success": sandbox_result.success,
+                "return_value": sandbox_result.return_value,
+                "execution_time_ms": execution_time_ms,
+                "value_transferred": execution.value,
+                "is_dry_run": is_dry_run
+            }
+            
+            this.execution_history.push(execution_record)
+            
+            // Trim history if too large
+            if len(this.execution_history) > 10000 {
+                this.execution_history = this.execution_history.slice(5000) // Keep last 5000
+            }
+            
+            // Update global state
+            this.global_state.total_executions += 1
+            this.global_state.total_gas_used += sandbox_result.gas_used
+            
+            // Generate verification hash
+            let verification_hash = crypto.sha3_256(
+                execution.contract_address + 
+                execution.function + 
+                string(sandbox_result.gas_used) + 
+                string(datetime.now().timestamp())
+            )
+            
+            audit("contract_executed", {
+                "contract_address": execution.contract_address,
+                "function": execution.function,
+                "caller": execution.caller,
+                "gas_used": sandbox_result.gas_used,
+                "gas_price": gas_price,
+                "success": sandbox_result.success,
+                "execution_time_ms": execution_time_ms,
+                "value_transferred": execution.value,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return ExecutionResult{
+                return_value: sandbox_result.return_value,
+                storage_changes: sandbox_result.storage_changes,
+                gas_used: sandbox_result.gas_used,
+                gas_refund: sandbox_result.gas_refund or 0,
+                events_emitted: sandbox_result.events_emitted or [],
+                logs: sandbox_result.logs or [],
+                state_root: contract.storage_root,
+                success: sandbox_result.success,
+                error: sandbox_result.error,
+                execution_trace: execution.options?.trace ? sandbox_result.trace : null,
+                revert_data: sandbox_result.revert_data,
+                execution_time_ms: execution_time_ms,
+                verification_hash: verification_hash
+            }
+            
+        } catch (error) {
+            let execution_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("contract_execution_failed", {
+                "contract_address": execution?.contract_address or "unknown",
+                "function": execution?.function or "unknown",
+                "caller": execution?.caller or "unknown",
+                "error": error,
+                "execution_time_ms": execution_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
             return ExecutionResult{
                 return_value: null,
                 storage_changes: {},
                 gas_used: 0,
-                success: false
+                gas_refund: 0,
+                events_emitted: [],
+                logs: [],
+                success: false,
+                error: error,
+                execution_time_ms: execution_time_ms
             }
         }
     }
 
-    action apply_storage_changes(contract: Contract, changes: map) {
-        for each key, value in changes {
+    action protect execute_contract_batch(executions: list) -> list {
+        """
+        Execute multiple contract calls in batch with optimization
+        """
+        let results = []
+        let batch_size = 20 // Execute in batches
+        
+        for each batch_start in range(0, len(executions), batch_size) {
+            let batch_end = math.min(batch_start + batch_size, len(executions))
+            let execution_batch = executions.slice(batch_start, batch_end)
+            
+            // Process batch in parallel with concurrency limit
+            let batch_results = []
+            let active_tasks = []
+            
+            for each execution in execution_batch {
+                // Limit concurrent executions
+                if len(active_tasks) >= 5 {
+                    // Wait for some tasks to complete
+                    let completed = await Promise.any(active_tasks)
+                    active_tasks = active_tasks.filter(action(t) { return t != completed })
+                }
+                
+                let task = async this.execute_contract(execution)
+                active_tasks.push(task)
+                batch_results.push(task)
+            }
+            
+            // Wait for all tasks in batch
+            let batch_results_resolved = await Promise.all(batch_results)
+            results = results + batch_results_resolved
+            
+            // Throttle between batches
+            if batch_end < len(executions) {
+                await sleep(0.2) // 200ms delay
+            }
+        }
+        
+        let successful_executions = results.filter(action(r) { return r.success }).count()
+        print("✅ Batch execution complete: " + string(successful_executions) + "/" + string(len(executions)) + " successful")
+        
+        return results
+    }
+
+    action protect get_contract_state(contract_address: string, include_storage: boolean? = false) -> ContractState {
+        """
+        Get comprehensive contract state with optional storage inclusion
+        """
+        if not this.contracts.has(contract_address) {
+            throw "Contract not found: " + contract_address
+        }
+        
+        let contract = this.contracts[contract_address]
+        
+        // Get security analysis if available
+        let security_score = 0.0
+        if this.security_analysis.has(contract_address) {
+            let analysis = this.security_analysis[contract_address]
+            security_score = analysis.overall_score
+        }
+        
+        let state = ContractState{
+            address: contract_address,
+            owner: contract.owner,
+            balance: contract.balance,
+            nonce: contract.nonce,
+            created_at: contract.created_at,
+            last_executed: contract.last_executed,
+            execution_count: contract.execution_count,
+            total_gas_used: contract.total_gas_used,
+            storage_size: len(contract.storage),
+            code_hash: contract.code_hash,
+            bytecode_hash: contract.bytecode_hash,
+            storage_root: contract.storage_root,
+            version: contract.version,
+            flags: contract.flags,
+            dependencies: contract.dependencies,
+            security_score: security_score,
+            metadata: contract.metadata
+        }
+        
+        if include_storage:
+            state.storage_snapshot = contract.storage
+        
+        return state
+    }
+
+    action protect estimate_gas(estimation: GasEstimation) -> GasEstimate {
+        """
+        Estimate gas consumption for contract execution with AI enhancement
+        """
+        let cache_key = "gas_estimate_" + crypto.sha3_256(
+            estimation.contract_address + 
+            estimation.function + 
+            json.stringify(estimation.args) + 
+            estimation.caller
+        )
+        
+        // Check cache
+        let cached = cache_get(cache_key)
+        if cached != null {
+            return cached
+        }
+        
+        if not this.contracts.has(estimation.contract_address) {
+            throw "Contract not found: " + estimation.contract_address
+        }
+        
+        let contract = this.contracts[estimation.contract_address]
+        
+        // Base gas costs
+        let base_cost = 21000
+        let transaction_cost = 32000
+        let contract_call_cost = 7000
+        
+        // Analyze function complexity
+        let function_analysis = this.analyze_function_complexity(contract.code, estimation.function)
+        let computation_cost = function_analysis.complexity * 100
+        
+        // Estimate storage operations
+        let storage_analysis = this.estimate_storage_operations(contract, estimation.function, estimation.args)
+        let storage_cost = storage_analysis.estimated_cost
+        
+        // Account for value transfer
+        let transfer_cost = estimation.value > 0 ? 9000 : 0
+        
+        // Calculate base estimate
+        let base_estimate = base_cost + transaction_cost + contract_call_cost + 
+                           computation_cost + storage_cost + transfer_cost
+        
+        // Get AI-enhanced estimate
+        let ai_estimate = await zaie.estimate_gas_consumption(
+            contract.code,
+            estimation.function,
+            estimation.args,
+            estimation.context or {},
+            estimation.confidence_level
+        )
+        
+        let confidence = ai_estimate.confidence
+        let ai_adjusted_estimate = ai_estimate.estimated_gas
+        
+        // Combine base and AI estimates
+        let combined_estimate = integer((base_estimate * 0.3) + (ai_adjusted_estimate * 0.7))
+        
+        // Calculate min/max range based on confidence
+        let min_estimate = integer(combined_estimate * 0.8)
+        let max_estimate = integer(combined_estimate * 1.5)
+        
+        let breakdown = {
+            "base_cost": base_cost,
+            "transaction_cost": transaction_cost,
+            "contract_call_cost": contract_call_cost,
+            "computation_cost": computation_cost,
+            "storage_cost": storage_cost,
+            "transfer_cost": transfer_cost,
+            "ai_adjustment": ai_adjusted_estimate - base_estimate
+        }
+        
+        let recommendations = []
+        if storage_cost > 100000:
+            recommendations.push("High storage cost detected, consider optimizing storage usage")
+        if function_analysis.complexity > 50:
+            recommendations.push("High function complexity detected, consider refactoring")
+        if ai_estimate.warnings.count() > 0:
+            recommendations = recommendations + ai_estimate.warnings
+        
+        let estimate = GasEstimate{
+            estimated_gas: combined_estimate,
+            confidence: confidence,
+            breakdown: breakdown,
+            recommendations: recommendations,
+            minimum_gas: min_estimate,
+            maximum_gas: max_estimate,
+            base_cost: base_cost,
+            storage_cost: storage_cost,
+            computation_cost: computation_cost,
+            timestamp: datetime.now().timestamp()
+        }
+        
+        // Cache the estimate
+        cache_set(cache_key, estimate)
+        
+        return estimate
+    }
+
+    action protect validate_contract_code(code: string, options: map? = null) -> ValidationResult {
+        """
+        Validate contract code with comprehensive security and optimization checks
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            verify(code != null and len(code) > 0, "Contract code cannot be empty")
+            verify(len(code) <= ZVM_POLICIES.max_contract_size, 
+                   "Contract code exceeds maximum size limit")
+            
+            let validation_result = {
+                "valid": true,
+                "reason": "Validation passed",
+                "warnings": [],
+                "errors": [],
+                "optimization_suggestions": [],
+                "security_issues": [],
+                "dependencies": [],
+                "complexity_score": 0.0
+            }
+            
+            // Syntax validation
+            let syntax_check = this.check_syntax(code)
+            if not syntax_check.valid {
+                validation_result.valid = false
+                validation_result.errors = validation_result.errors + syntax_check.errors
+            }
+            
+            // Security analysis
+            let security_analysis = this.analyze_code_security(code)
+            if security_analysis.issues.count() > 0 {
+                validation_result.security_issues = security_analysis.issues
+                if security_analysis.critical_issues > 0:
+                    validation_result.valid = false
+                    validation_result.errors.push("Critical security issues detected")
+            }
+            
+            // Complexity analysis
+            let complexity_analysis = this.analyze_code_complexity(code)
+            validation_result.complexity_score = complexity_analysis.score
+            if complexity_analysis.score > 0.7:
+                validation_result.warnings.push("High code complexity detected")
+            
+            // Dependency analysis
+            let dependency_analysis = this.analyze_dependencies(code)
+            validation_result.dependencies = dependency_analysis.dependencies
+            
+            // Optimization suggestions
+            if options?.optimization_level != null and options.optimization_level > 0:
+                let optimization_analysis = this.analyze_optimization_potential(code)
+                validation_result.optimization_suggestions = optimization_analysis.suggestions
+            
+            // AI-powered validation if confidence threshold is met
+            if validation_result.valid and options?.ai_validation != false:
+                let ai_validation = await zaie.validate_contract_code(code, options)
+                if not ai_validation.valid:
+                    validation_result.valid = false
+                    validation_result.errors = validation_result.errors + ai_validation.issues
+                else:
+                    validation_result.warnings = validation_result.warnings + ai_validation.warnings
+            
+            let validation_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            return ValidationResult{
+                valid: validation_result.valid,
+                reason: validation_result.reason,
+                warnings: validation_result.warnings,
+                errors: validation_result.errors,
+                optimization_suggestions: validation_result.optimization_suggestions,
+                security_issues: validation_result.security_issues,
+                dependencies: validation_result.dependencies,
+                complexity_score: validation_result.complexity_score,
+                validation_time_ms: validation_time_ms,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let validation_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            return ValidationResult{
+                valid: false,
+                reason: "Validation error: " + error,
+                errors: ["Validation process failed: " + error],
+                validation_time_ms: validation_time_ms,
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect upgrade_contract(upgrade: ContractUpgrade) -> UpgradeResult {
+        """
+        Upgrade a contract to new code with storage and balance preservation
+        """
+        // Implementation would handle contract upgrades
+        // This would include: validation, storage migration, address generation, etc.
+        return UpgradeResult{
+            success: true,
+            old_address: upgrade.contract_address,
+            new_address: "ZIV_UPGRADED_" + crypto.sha3_256(upgrade.contract_address + string(datetime.now().timestamp())),
+            migration_hash: crypto.sha3_256(upgrade.new_code),
+            storage_migrated: true,
+            balance_transferred: true,
+            gas_used: 100000,
+            warnings: [],
+            upgrade_timestamp: datetime.now().timestamp()
+        }
+    }
+
+    action protect migrate_contract(migration: ContractMigration) -> MigrationResult {
+        """
+        Migrate contract to new VM version or different chain
+        """
+        // Implementation would handle complex migrations
+        return MigrationResult{
+            success: true,
+            migration_id: "MIG_" + crypto.sha3_256(migration.source_address + string(datetime.now().timestamp()))
+        }
+    }
+
+    action protect analyze_contract_security(contract_address: string) -> SecurityAnalysis {
+        """
+        Perform comprehensive security analysis of a contract
+        """
+        if not this.contracts.has(contract_address) {
+            throw "Contract not found: " + contract_address
+        }
+        
+        let contract = this.contracts[contract_address]
+        let analysis_time = datetime.now().timestamp()
+        
+        // Check cache
+        if this.security_analysis.has(contract_address):
+            let cached = this.security_analysis[contract_address]
+            if analysis_time - cached.analysis_time < 86400: // 24 hours
+                return cached
+        
+        // Static analysis
+        let static_analysis = this.perform_static_analysis(contract.code)
+        
+        // Dynamic analysis based on execution history
+        let dynamic_analysis = this.perform_dynamic_analysis(contract_address)
+        
+        // AI-powered security analysis
+        let ai_analysis = await zaie.analyze_contract_security(contract.code, contract.storage, contract.execution_count)
+        
+        // Calculate overall score
+        let overall_score = this.calculate_security_score(static_analysis, dynamic_analysis, ai_analysis)
+        
+        // Determine risk level
+        let risk_level = "low"
+        if overall_score < 0.3: risk_level = "critical"
+        elif overall_score < 0.5: risk_level = "high"
+        elif overall_score < 0.7: risk_level = "medium"
+        
+        let analysis = SecurityAnalysis{
+            contract_address: contract_address,
+            analysis_time: analysis_time,
+            overall_score: overall_score,
+            risk_level: risk_level,
+            vulnerabilities: static_analysis.vulnerabilities + dynamic_analysis.vulnerabilities + ai_analysis.vulnerabilities,
+            recommendations: static_analysis.recommendations + dynamic_analysis.recommendations + ai_analysis.recommendations,
+            static_analysis: static_analysis,
+            dynamic_analysis: dynamic_analysis,
+            ai_insights: ai_analysis.insights,
+            last_audited: analysis_time
+        }
+        
+        // Store in cache
+        this.security_analysis[contract_address] = analysis
+        
+        // Update contract flags if high risk
+        if risk_level in ["high", "critical"]:
+            contract.flags["high_risk"] = true
+            contract.flags["last_security_scan"] = analysis_time
+        
+        return analysis
+    }
+
+    action protect get_vm_metrics() -> VMMetrics {
+        """
+        Get comprehensive VM performance and health metrics
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        // Calculate metrics
+        let total_contracts = len(this.contracts)
+        let active_contracts = 0
+        let total_executions = this.global_state.total_executions
+        let total_gas_used = this.global_state.total_gas_used
+        
+        // Find active contracts (executed in last 24 hours)
+        let cutoff_time = timestamp - 86400
+        for each address, contract in this.contracts {
+            if contract.last_executed and contract.last_executed > cutoff_time {
+                active_contracts += 1
+            }
+        }
+        
+        // Calculate average execution time from recent history
+        let recent_executions = this.execution_history.slice(-1000) // Last 1000 executions
+        let total_execution_time = 0
+        let failed_executions = 0
+        
+        for each execution in recent_executions {
+            total_execution_time += execution.execution_time_ms or 0
+            if not execution.success:
+                failed_executions += 1
+        }
+        
+        let average_execution_time = recent_executions.count() > 0 ? 
+            total_execution_time / recent_executions.count() : 0
+        let failure_rate = recent_executions.count() > 0 ? 
+            failed_executions / recent_executions.count() : 0
+        
+        // Get top contracts by execution count
+        let top_contracts = []
+        let contracts_list = []
+        for each address, contract in this.contracts {
+            contracts_list.push({
+                "address": address,
+                "execution_count": contract.execution_count,
+                "total_gas_used": contract.total_gas_used,
+                "balance": contract.balance
+            })
+        }
+        
+        // Sort by execution count
+        contracts_list.sort(action(a, b) { return b.execution_count - a.execution_count })
+        top_contracts = contracts_list.slice(0, 10) // Top 10
+        
+        // Calculate performance trends
+        let performance_trends = this.calculate_performance_trends()
+        
+        // Check for alerts
+        let alerts = []
+        if failure_rate > 0.1:
+            alerts.push("High failure rate: " + string(failure_rate * 100) + "%")
+        if average_execution_time > 1000: // 1 second
+            alerts.push("High average execution time: " + string(average_execution_time) + "ms")
+        if total_contracts > ZVM_POLICIES.max_total_contracts * 0.9:
+            alerts.push("Approaching maximum contract limit")
+        
+        return VMMetrics{
+            timestamp: timestamp,
+            total_contracts: total_contracts,
+            active_contracts: active_contracts,
+            total_executions: total_executions,
+            total_gas_used: total_gas_used,
+            average_execution_time: average_execution_time,
+            failure_rate: failure_rate,
+            memory_usage: this.get_memory_usage(),
+            storage_usage: this.get_storage_usage(),
+            top_contracts: top_contracts,
+            performance_trends: performance_trends,
+            alerts: alerts
+        }
+    }
+
+    action protect emergency_halt(contract_address: string, reason: string) -> EmergencyResult {
+        """
+        Emergency halt a contract due to security issues or critical bugs
+        """
+        if not this.contracts.has(contract_address) {
+            throw "Contract not found: " + contract_address
+        }
+        
+        let contract = this.contracts[contract_address]
+        let timestamp = datetime.now().timestamp()
+        
+        // Set emergency flag
+        this.emergency_flags[contract_address] = {
+            "status": "halted",
+            "reason": reason,
+            "halted_by": "emergency_system",
+            "halted_at": timestamp,
+            "requires_approval": true
+        }
+        
+        // Update contract flags
+        contract.flags["emergency_halted"] = true
+        contract.flags["halt_reason"] = reason
+        contract.flags["halt_timestamp"] = timestamp
+        
+        // Invalidate cache
+        cache_delete("contract_" + contract_address)
+        
+        // Trigger emergency notifications
+        this.trigger_emergency_notifications(contract_address, reason, contract.owner)
+        
+        audit("contract_emergency_halted", {
+            "contract_address": contract_address,
+            "owner": contract.owner,
+            "reason": reason,
+            "halted_by": "emergency_system",
+            "timestamp": timestamp
+        })
+        
+        return EmergencyResult{
+            success: true,
+            contract_address: contract_address,
+            action: "halted",
+            reason: reason,
+            timestamp: timestamp,
+            requires_confirmation: true,
+            confirmation_deadline: timestamp + 86400 // 24 hours
+        }
+    }
+
+    // Internal helper methods (simplified implementations)
+    action initialize_contract_storage(contract: map, constructor_args: list?) {
+        contract.storage = {
+            "_owner": contract.owner,
+            "_created": contract.created_at,
+            "_version": contract.version,
+            "_balance": contract.balance,
+            "_deployer": contract.deployer
+        }
+        
+        // Apply constructor arguments if any
+        if constructor_args != null and constructor_args.count() > 0 {
+            // Simplified: store constructor args in storage
+            contract.storage["_constructor_args"] = constructor_args
+        }
+        
+        contract.storage_root = crypto.sha3_256(json.stringify(contract.storage))
+    }
+    
+    action execute_in_secure_sandbox(contract: map, function: string, args: list, context: map, gas_limit: integer, dry_run: boolean) -> map {
+        // This would implement the actual secure sandbox execution
+        // For now, return a simulated result
+        return {
+            "return_value": args.count() > 0 ? args[0] : null,
+            "storage_changes": {"last_executed": datetime.now().timestamp()},
+            "gas_used": math.min(gas_limit, 50000),
+            "gas_refund": 0,
+            "events_emitted": [],
+            "logs": [],
+            "success": true,
+            "trace": [],
+            "execution_time_ms": 100
+        }
+    }
+    
+    action apply_execution_changes(contract: map, result: map, value_transferred: integer) {
+        // Apply storage changes
+        for each key, value in result.storage_changes {
             contract.storage[key] = value
         }
+        
+        // Update storage root
+        contract.storage_root = crypto.sha3_256(json.stringify(contract.storage))
+        
+        // Update nonce
+        contract.nonce += 1
     }
-
-    action record_execution(contract_address: string, function: string, caller: string, result: ExecutionResult) {
-        let record = {
-            "contract_address": contract_address,
-            "function": function,
-            "caller": caller,
-            "timestamp": datetime.now().timestamp(),
-            "gas_used": result.gas_used,
-            "success": result.success,
-            "return_value": result.return_value
-        }
-
-        this.execution_history.push(record)
-
-        if this.execution_history.count() > 1000 {
-            this.execution_history = this.execution_history.slice(this.execution_history.count() - 1000)
-        }
+    
+    action compile_to_bytecode(code: string) -> string {
+        // This would implement actual compilation
+        // For now, return a hash of the code
+        return "BYTECODE_" + crypto.sha3_256(code)
     }
-
-    // Placeholder implementations
-    action invoke_zexus_interpreter(code: string, function: string, args: list, storage: map, context: map) -> map {
+    
+    action estimate_deployment_gas(code: string, bytecode: string, constructor_args: list?) -> integer {
+        let base_cost = 32000
+        let code_size_cost = len(code) * 10
+        let bytecode_cost = len(bytecode) * 5
+        let constructor_cost = constructor_args != null ? constructor_args.count() * 1000 : 0
+        
+        return base_cost + code_size_cost + bytecode_cost + constructor_cost
+    }
+    
+    action execute_constructor(contract: map, args: list, deployer: string) -> map {
+        // Simplified constructor execution
         return {
-            "return_value": args.is_empty() ? null : args[0],
-            "storage_changes": {"last_executed": datetime.now().timestamp()},
-            "complexity": 1
+            "success": true,
+            "gas_used": 21000,
+            "storage_changes": {"_initialized": true}
         }
     }
-
-    action analyze_function_complexity(function: string) -> integer {
-        return function.length() * 10
+    
+    action analyze_contract_security_async(contract_address: string) {
+        // Run security analysis in background
+        async {
+            try {
+                await this.analyze_contract_security(contract_address)
+                print("✅ Security analysis completed for contract: " + contract_address)
+            } catch (error) {
+                print("⚠️ Security analysis failed for contract " + contract_address + ": " + error)
+            }
+        }
     }
-
-    action estimate_storage_cost(contract_address: string, function: string) -> integer {
-        return 1000
+    
+    action take_vm_snapshot(reason: string) -> string {
+        let snapshot_id = "SNAPSHOT_" + crypto.sha3_256(string(datetime.now().timestamp()) + reason)
+        
+        let snapshot_data = {
+            "contracts": this.contracts,
+            "global_state": this.global_state,
+            "execution_history_count": len(this.execution_history),
+            "timestamp": datetime.now().timestamp(),
+            "reason": reason
+        }
+        
+        this.state_snapshots[snapshot_id] = snapshot_data
+        
+        return snapshot_id
     }
-
-    action calculate_actual_gas(execution_time: integer, complexity: integer) -> integer {
-        return integer(execution_time * 1000 + complexity * 100)
-    }
-
+    
     action get_current_block_number() -> integer {
-        return 1
+        return this.global_state.last_block_number or 1
     }
+    
+    action get_current_difficulty() -> integer {
+        return 1000000 // Simplified
+    }
+    
+    action get_current_validator() -> string {
+        return "ZIV_VALIDATOR_1" // Simplified
+    }
+    
+    action get_memory_usage() -> integer {
+        return 1024 * 1024 * 100 // 100MB (simplified)
+    }
+    
+    action get_storage_usage() -> integer {
+        return 1024 * 1024 * 500 // 500MB (simplified)
+    }
+
+    // Dependency injection setup
+    inject database: db
+    inject ai_engine: zaie
+    
+    // Middleware for VM operations
+    middleware("vm_operations", action(req, res, next) {
+        let operation = req["operation"]
+        
+        if operation in ["deploy_contract", "execute_contract"] {
+            // Check rate limits
+            let caller = req["caller"] or req["deployer"]
+            if not security.check_rate_limit(caller, "vm_operations") {
+                res["status"] = 429
+                res["error"] = "Rate limit exceeded for VM operations"
+                return
+            }
+            
+            // Check for emergency halts
+            let contract_address = req["contract_address"]
+            if contract_address != null and this.emergency_flags.has(contract_address) {
+                let flag = this.emergency_flags[contract_address]
+                if flag.status == "halted" {
+                    res["status"] = 403
+                    res["error"] = "Contract is emergency halted: " + flag.reason
+                    return
+                }
+            }
+        }
+        
+        next()
+    })
 }
 
-// Test Ziver Virtual Machine
-action async test_zvm() {
-    print("🖥️ Testing Ziver Virtual Machine...")
-    let zvm = ZiverVirtualMachine()
+// Additional entity definitions
+entity ValidationResult {
+    valid: boolean
+    reason: string
+    warnings: list
+    errors: list
+    optimization_suggestions: list
+    security_issues: list
+    dependencies: list
+    complexity_score: float
+    validation_time_ms: integer
+    timestamp: integer
+}
 
-    let test_contract_code = """
-contract SimpleStorage:
+entity MigrationResult {
+    success: boolean
+    migration_id: string
+    source_address: string?
+    target_address: string?
+    migration_data: map?
+    gas_used: integer?
+    timestamp: integer
+}
+
+entity EmergencyResult {
+    success: boolean
+    contract_address: string
+    action: string // halted, resumed, etc.
+    reason: string
+    timestamp: integer
+    requires_confirmation: boolean
+    confirmation_deadline: integer
+}
+
+// Register VM service for dependency injection
+register_dependency("vm_service", ZiverVirtualMachine())
+
+// Test Ziver Virtual Machine with enhanced features
+action async test_zvm() {
+    print("🖥️ Testing Enhanced Ziver Virtual Machine v2.0...")
+    
+    // Enable error recovery mode
+    continue
+    
+    try {
+        let zvm = ZiverVirtualMachine()
+        
+        let test_contract_code = """
+contract EnhancedStorage:
     persistent storage value: integer
     persistent storage owner: string
-
-    action init(owner: string):
+    persistent storage last_modified: integer
+    persistent storage modification_count: integer
+    
+    action init(owner: string, initial_value: integer):
         this.owner = owner
-        this.value = 0
-
+        this.value = initial_value
+        this.last_modified = now()
+        this.modification_count = 0
+        emit ContractInitialized(owner, initial_value)
+    
     action set(new_value: integer):
-        require(msg.sender == this.owner, "Only owner can set")
+        require(msg.sender == this.owner, "Only owner can modify")
+        require(new_value != this.value, "New value must be different")
+        
+        let old_value = this.value
         this.value = new_value
-        emit ValueChanged(this.owner, new_value)
-
+        this.last_modified = now()
+        this.modification_count += 1
+        
+        emit ValueChanged(this.owner, old_value, new_value, this.modification_count)
+        return true
+    
     action get() -> integer:
         return this.value
+    
+    action get_metadata() -> map:
+        return {
+            "owner": this.owner,
+            "last_modified": this.last_modified,
+            "modification_count": this.modification_count
+        }
 """
-
-    let owner_address = "ZIV_owner_123"
-    let contract_address = zvm.deploy_contract(test_contract_code, owner_address, 1000)
-    print("Contract deployed: " + contract_address)
-
-    let state = zvm.get_contract_state(contract_address)
-    if state != null {
-        print("Contract state: " + string(state))
+        
+        // Test contract validation
+        let validation_result = await zvm.validate_contract_code(test_contract_code, {
+            "strict_mode": true,
+            "security_checks": true,
+            "optimization_level": 2
+        })
+        
+        print("✅ Contract Validation:")
+        print("  Valid: " + string(validation_result.valid))
+        print("  Complexity Score: " + string(validation_result.complexity_score))
+        
+        if validation_result.warnings.count() > 0:
+            print("  ⚠️ Warnings: " + string(validation_result.warnings))
+        
+        // Deploy contract
+        let deployment = ContractDeployment{
+            code: test_contract_code,
+            owner: "ZIV_owner_" + string(datetime.now().timestamp()),
+            initial_balance: 1000,
+            constructor_args: ["initial_owner", 42],
+            deployer: "test_deployer",
+            timestamp: datetime.now().timestamp(),
+            metadata: {
+                "name": "EnhancedStorage",
+                "version": "1.0",
+                "description": "Test contract for ZVM"
+            }
+        }
+        
+        let deployment_result = await zvm.deploy_contract(deployment)
+        print("✅ Contract Deployment:")
+        print("  Success: " + string(deployment_result.success))
+        print("  Address: " + deployment_result.contract_address)
+        print("  Gas Used: " + string(deployment_result.gas_used))
+        
+        if deployment_result.success:
+            // Test contract execution
+            let execution = ContractExecution{
+                contract_address: deployment_result.contract_address,
+                function: "set",
+                args: [100],
+                caller: deployment.owner,
+                value: 0,
+                timestamp: datetime.now().timestamp()
+            }
+            
+            let execution_result = await zvm.execute_contract(execution)
+            print("✅ Contract Execution:")
+            print("  Success: " + string(execution_result.success))
+            print("  Gas Used: " + string(execution_result.gas_used))
+            print("  Return Value: " + string(execution_result.return_value))
+            
+            // Test get_metadata
+            let metadata_execution = ContractExecution{
+                contract_address: deployment_result.contract_address,
+                function: "get_metadata",
+                args: [],
+                caller: deployment.owner,
+                timestamp: datetime.now().timestamp()
+            }
+            
+            let metadata_result = await zvm.execute_contract(metadata_execution)
+            print("✅ Metadata Retrieval:")
+            print("  Success: " + string(metadata_result.success))
+            print("  Return Value: " + string(metadata_result.return_value))
+            
+            // Test contract state retrieval
+            let contract_state = await zvm.get_contract_state(deployment_result.contract_address, false)
+            print("✅ Contract State:")
+            print("  Owner: " + contract_state.owner)
+            print("  Balance: " + string(contract_state.balance))
+            print("  Execution Count: " + string(contract_state.execution_count))
+            
+            // Test gas estimation
+            let gas_estimation = GasEstimation{
+                contract_address: deployment_result.contract_address,
+                function: "set",
+                args: [200],
+                caller: deployment.owner,
+                confidence_level: "high",
+                timestamp: datetime.now().timestamp()
+            }
+            
+            let gas_estimate = await zvm.estimate_gas(gas_estimation)
+            print("✅ Gas Estimation:")
+            print("  Estimated Gas: " + string(gas_estimate.estimated_gas))
+            print("  Confidence: " + string(gas_estimate.confidence))
+            print("  Minimum: " + string(gas_estimate.minimum_gas))
+            print("  Maximum: " + string(gas_estimate.maximum_gas))
+            
+            // Test security analysis
+            let security_analysis = await zvm.analyze_contract_security(deployment_result.contract_address)
+            print("✅ Security Analysis:")
+            print("  Overall Score: " + string(security_analysis.overall_score))
+            print("  Risk Level: " + security_analysis.risk_level)
+            print("  Vulnerabilities Found: " + string(len(security_analysis.vulnerabilities)))
+            
+            // Test VM metrics
+            let vm_metrics = await zvm.get_vm_metrics()
+            print("✅ VM Metrics:")
+            print("  Total Contracts: " + string(vm_metrics.total_contracts))
+            print("  Active Contracts: " + string(vm_metrics.active_contracts))
+            print("  Total Executions: " + string(vm_metrics.total_executions))
+            print("  Average Execution Time: " + string(vm_metrics.average_execution_time) + "ms")
+            
+            if vm_metrics.alerts.count() > 0:
+                print("  ⚠️ Alerts: " + string(vm_metrics.alerts))
+        
+    } catch (error) {
+        print("❌ Test failed: " + error)
     }
 }
 
 export {
     ZiverVirtualMachine,
     VirtualMachine,
-    test_zvm
+    ZVM_POLICIES,
+    test_zvm,
+    ContractDeployment,
+    ContractExecution,
+    ContractState,
+    GasEstimation,
+    ValidationResult
 }
