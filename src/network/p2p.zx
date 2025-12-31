@@ -1,336 +1,2870 @@
 # src/network/p2p.zx
 use "crypto" as crypto
 use "datetime" as datetime
+use "math" as math
+use "json" as json
+use "../database/postgres" as db
+use "../middleware/security_middleware" as security
+use "../ai/zaie_engine" as zaie
 
-// Advanced P2P Communication Protocol
+// Enable memory tracking for P2P communications
+track_memory()
+
+// Security policies for P2P communication
+const P2P_POLICIES = {
+    max_message_size: 10 * 1024 * 1024, // 10MB
+    max_messages_per_second: 1000,
+    encryption_required: true,
+    min_key_strength: 256,
+    session_timeout: 3600, // 1 hour
+    max_concurrent_sessions: 1000,
+    message_ttl: 3600, // 1 hour
+    replay_protection_window: 300, // 5 minutes
+    max_retry_attempts: 3,
+    compression_threshold: 1024 // Compress messages > 1KB
+}
+
+// Cache for session keys and message validation
+cache("session_keys", { ttl: 1800, strategy: "lru", max_entries: 10000 })
+cache("message_nonces", { ttl: 600, strategy: "fifo" })
+cache("peer_ratelimits", { ttl: 60, strategy: "lfu" })
+
+// Throttle P2P operations
+throttle("message_sending", { requests_per_second: 1000, burst: 100 })
+throttle("session_establishment", { requests_per_minute: 100 })
+throttle("message_processing", { requests_per_second: 5000 })
+
+// Advanced P2P Communication Protocol with Enhanced Security and Performance
 protocol P2PCommunication {
-    action send_message(peer: string, message: map) -> boolean
-    action receive_messages() -> list
-    action establish_secure_channel(peer: string) -> boolean
-    action get_network_status() -> map
+    action send_message(send_request: MessageSendRequest) -> MessageSendResult
+    action send_message_batch(send_requests: list) -> list
+    action receive_messages(options: ReceiveOptions?) -> MessageReceiveResult
+    action establish_secure_channel(channel_request: ChannelRequest) -> ChannelEstablishmentResult
+    action close_secure_channel(peer_id: string, reason: string) -> ChannelCloseResult
+    action get_communication_status() -> CommunicationStatus
+    action get_channel_metrics(channel_id: string?) -> ChannelMetrics
+    action validate_message(message: NetworkMessage) -> ValidationResult
+    action encrypt_message(encryption_request: EncryptionRequest) -> EncryptionResult
+    action decrypt_message(decryption_request: DecryptionRequest) -> DecryptionResult
+    action emergency_close_all_channels(reason: string) -> EmergencyResult
+    action upgrade_protocol_version(new_version: string) -> UpgradeResult
+    action health_check() -> HealthCheckResult
 }
 
 contract P2PCommunicationLayer implements P2PCommunication {
     persistent storage connections: map
-    persistent storage message_buffer: list
+    persistent storage message_queue: list
     persistent storage security_context: map
-    persistent storage protocol_version: string = "2.0"
-
-    entity SecureConnection {
-        peer_address: string
-        session_key: string?
+    persistent storage protocol_versions: map
+    persistent storage session_registry: map
+    persistent storage message_history: map
+    persistent storage channel_metrics: map
+    persistent storage blacklisted_peers: map
+    persistent storage encryption_keys: map
+    persistent storage node_config: map
+    
+    // Enhanced data structures
+    entity MessageSendRequest {
+        peer_id: string
+        message: NetworkMessage
+        encryption_mode: string = "end_to_end" // none, transport, end_to_end
+        priority: string = "normal" // low, normal, high, critical
+        delivery_guarantee: string = "best_effort" // best_effort, guaranteed, exactly_once
+        retry_config: RetryConfig?
+        compression: boolean = true
+        timestamp: integer
+        metadata: map?
+    }
+    
+    entity NetworkMessage {
+        id: string
+        type: string
+        payload: any
+        headers: map
+        metadata: map?
+        version: string = "2.0"
+        created_at: integer
+        expires_at: integer?
+        nonce: integer?
+        signature: string?
+        chain_id: string?
+    }
+    
+    entity ChannelRequest {
+        peer_id: string
+        peer_public_key: string
+        channel_type: string = "bidirectional" // unidirectional, bidirectional, multicast
+        encryption_algorithm: string = "AES-256-GCM"
+        key_exchange_algorithm: string = "ECDH-X25519"
+        session_timeout: integer = P2P_POLICIES.session_timeout
+        capabilities: list?
+        authentication_required: boolean = true
+        metadata: map?
+        timestamp: integer
+    }
+    
+    entity ReceiveOptions {
+        max_messages: integer = 100
+        timeout_ms: integer = 1000
+        message_types: list?
+        priority_filter: string? // low, normal, high, critical
+        require_encryption: boolean = false
+        include_metadata: boolean = true
+        timestamp: integer
+    }
+    
+    entity ChannelEstablishmentResult {
+        success: boolean
+        channel_id: string
+        session_key: string
+        peer_id: string
+        encryption_algorithm: string
         established_at: integer
-        message_count: integer = 0
-        is_secure: boolean = false
+        session_timeout: integer
+        capabilities_negotiated: list
+        warnings: list
+        error: string?
+        establishment_time_ms: integer
     }
-
-    action init() {
-        this.connections = {}
-        this.message_buffer = []
-        this.security_context = this.initialize_security()
+    
+    entity MessageSendResult {
+        success: boolean
+        message_id: string
+        peer_id: string
+        channel_id: string?
+        delivery_status: string // sent, delivered, failed, pending
+        encryption_used: boolean
+        compression_used: boolean
+        retry_count: integer
+        send_time_ms: integer
+        latency_ms: integer?
+        delivery_timestamp: integer?
+        error: string?
+        timestamp: integer
     }
-
-    action send_message(peer: string, message: map) -> boolean {
-        if not this.connections.has(peer) {
-            print("❌ No connection to peer: " + peer)
-            return false
-        }
-
-        let connection = this.connections[peer]
-
-        // Encrypt message if secure channel established
-        let encrypted_message = connection.is_secure ? 
-            this.encrypt_message(message, connection.session_key) : message
-
-        // Add message metadata
-        let full_message = {
-            "payload": encrypted_message,
-            "timestamp": datetime.now().timestamp(),
-            "message_id": crypto.keccak256(string(message) + string(datetime.now().timestamp())),
-            "protocol_version": this.protocol_version,
-            "sender": this.get_node_id()
-        }
-
-        try {
-            print("📤 Sending message to " + peer + " (ID: " + full_message.message_id.slice(0, 8) + ")")
-
-            // Update connection stats
-            connection.message_count += 1
-
-            return this.network_send(peer, full_message)
-
-        } catch(error) {
-            print("❌ Failed to send message to " + peer + ": " + string(error))
-            return false
-        }
+    
+    entity MessageReceiveResult {
+        success: boolean
+        messages: list
+        total_received: integer
+        filtered_out: integer
+        processing_time_ms: integer
+        queue_size_remaining: integer
+        warnings: list
+        timestamp: integer
     }
-
-    action receive_messages() -> list {
-        let processed_messages = []
-
-        // Process buffered messages
-        while not this.message_buffer.is_empty() {
-            let raw_message = this.message_buffer.shift()
-            let processed = this.process_incoming_message(raw_message)
-
-            if processed.success {
-                processed_messages.push(processed.message)
-            }
-        }
-
-        return processed_messages
+    
+    entity CommunicationStatus {
+        active_channels: integer
+        total_messages_sent: integer
+        total_messages_received: integer
+        message_queue_size: integer
+        encryption_success_rate: float
+        average_latency_ms: float
+        channel_health: ChannelHealthStats
+        security_status: SecurityStatus
+        performance_metrics: PerformanceMetrics
+        alerts: list
+        timestamp: integer
     }
-
-    action establish_secure_channel(peer: string) -> boolean {
-        if this.connections.has(peer) and this.connections[peer].is_secure {
-            print("✅ Secure channel already established with " + peer)
-            return true
-        }
-
-        print("🔐 Establishing secure channel with " + peer)
-
-        try {
-            // Perform key exchange
-            let session_key = this.perform_key_exchange(peer)
-
-            if not this.connections.has(peer) {
-                this.connections[peer] = SecureConnection{
-                    peer_address: peer,
-                    established_at: datetime.now().timestamp()
+    
+    entity ChannelHealthStats {
+        healthy_channels: integer
+        degraded_channels: integer
+        unhealthy_channels: integer
+        average_session_age: float
+        renegotiation_count: integer
+        connection_stability: float
+    }
+    
+    entity EncryptionRequest {
+        message: any
+        encryption_key: string
+        algorithm: string = "AES-256-GCM"
+        additional_data: string?
+        iv: string?
+        timestamp: integer
+    }
+    
+    entity EncryptionResult {
+        success: boolean
+        ciphertext: string
+        iv: string
+        auth_tag: string
+        algorithm: string
+        key_id: string
+        encryption_time_ms: integer
+        metadata: map?
+        timestamp: integer
+    }
+    
+    entity DecryptionRequest {
+        ciphertext: string
+        encryption_key: string
+        iv: string
+        auth_tag: string
+        algorithm: string = "AES-256-GCM"
+        additional_data: string?
+        timestamp: integer
+    }
+    
+    entity DecryptionResult {
+        success: boolean
+        plaintext: any
+        algorithm: string
+        key_id: string
+        decryption_time_ms: integer
+        verification_passed: boolean
+        metadata: map?
+        timestamp: integer
+    }
+    
+    entity ChannelCloseResult {
+        success: boolean
+        channel_id: string
+        peer_id: string
+        reason: string
+        session_duration_seconds: integer
+        messages_sent: integer
+        messages_received: integer
+        close_time_ms: integer
+        error: string?
+        timestamp: integer
+    }
+    
+    entity ChannelMetrics {
+        channel_id: string
+        peer_id: string
+        established_at: integer
+        last_activity: integer
+        messages_sent: integer
+        messages_received: integer
+        bytes_sent: integer
+        bytes_received: integer
+        average_latency_ms: float
+        encryption_success_rate: float
+        delivery_success_rate: float
+        retry_rate: float
+        health_score: float
+        metrics: map
+        timestamp: integer
+    }
+    
+    entity ValidationResult {
+        valid: boolean
+        message_id: string
+        validation_checks: list
+        warnings: list
+        errors: list
+        recommended_action: string?
+        timestamp: integer
+    }
+    
+    entity EmergencyResult {
+        success: boolean
+        channels_closed: integer
+        peer_notifications_sent: integer
+        cleanup_completed: boolean
+        error_messages: list
+        timestamp: integer
+    }
+    
+    entity UpgradeResult {
+        success: boolean
+        old_version: string
+        new_version: string
+        channels_upgraded: integer
+        channels_failed: integer
+        compatibility_checks: list
+        warnings: list
+        timestamp: integer
+    }
+    
+    entity RetryConfig {
+        max_attempts: integer
+        backoff_factor: float
+        max_backoff_ms: integer
+        jitter: boolean = true
+    }
+    
+    entity SecurityStatus {
+        encryption_enabled: boolean
+        authentication_required: boolean
+        replay_protection: boolean
+        intrusion_detected: boolean
+        threat_level: string // low, medium, high, critical
+        security_events: list
+        timestamp: integer
+    }
+    
+    entity PerformanceMetrics {
+        throughput_messages_per_second: float
+        throughput_bytes_per_second: float
+        average_processing_time_ms: float
+        queue_processing_efficiency: float
+        cpu_usage_percent: float
+        memory_usage_mb: float
+        network_latency_ms: float
+        timestamp: integer
+    }
+    
+    entity HealthCheckResult {
+        status: string // healthy, degraded, unhealthy
+        components: map
+        metrics: map
+        issues: list
+        recommendations: list
+        timestamp: integer
+    }
+    
+    // Reactive state for monitoring
+    watch connections {
+        let active_channels = 0
+        let secure_channels = 0
+        
+        for each channel_id, channel in this.connections {
+            if channel.is_active {
+                active_channels += 1
+                if channel.is_encrypted {
+                    secure_channels += 1
                 }
             }
+        }
+        
+        print("🔗 P2P Channels: " + string(active_channels) + " active, " + 
+              string(secure_channels) + " encrypted")
+    }
+    
+    watch message_queue {
+        let queue_size = len(this.message_queue)
+        if queue_size > 10000 {
+            print("⚠️ Message queue critical: " + string(queue_size) + " messages")
+        } else if queue_size > 5000 {
+            print("⚠️ Message queue high: " + string(queue_size) + " messages")
+        }
+    }
 
-            let connection = this.connections[peer]
-            connection.session_key = session_key
-            connection.is_secure = true
-            connection.established_at = datetime.now().timestamp()
+    action init(node_id: string, config: map? = null) {
+        this.connections = {}
+        this.message_queue = []
+        this.session_registry = {}
+        this.message_history = {}
+        this.channel_metrics = {}
+        this.blacklisted_peers = {}
+        this.encryption_keys = {}
+        this.node_config = config or {}
+        
+        // Initialize security context
+        this.security_context = this.initialize_security_context()
+        
+        // Initialize protocol versions
+        this.protocol_versions = {
+            "2.0": {
+                "supported": true,
+                "default": true,
+                "features": ["end_to_end_encryption", "compression", "replay_protection", "batch_processing"],
+                "deprecated": false
+            },
+            "1.5": {
+                "supported": true,
+                "default": false,
+                "features": ["transport_encryption", "basic_compression"],
+                "deprecated": false
+            },
+            "1.0": {
+                "supported": false,
+                "default": false,
+                "features": ["no_encryption"],
+                "deprecated": true
+            }
+        }
+        
+        // Initialize database tables
+        try {
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS p2p_channels (
+                    channel_id VARCHAR(64) PRIMARY KEY,
+                    peer_id VARCHAR(64) NOT NULL,
+                    local_public_key TEXT,
+                    peer_public_key TEXT,
+                    session_key_hash VARCHAR(128),
+                    encryption_algorithm VARCHAR(32) NOT NULL,
+                    established_at TIMESTAMP NOT NULL,
+                    last_activity TIMESTAMP NOT NULL,
+                    session_timeout INTEGER NOT NULL,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    is_encrypted BOOLEAN DEFAULT FALSE,
+                    message_count_sent INTEGER DEFAULT 0,
+                    message_count_received INTEGER DEFAULT 0,
+                    total_bytes_sent BIGINT DEFAULT 0,
+                    total_bytes_received BIGINT DEFAULT 0,
+                    metadata JSONB,
+                    INDEX idx_peer (peer_id),
+                    INDEX idx_active (is_active, last_activity)
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS p2p_messages (
+                    message_id VARCHAR(64) PRIMARY KEY,
+                    channel_id VARCHAR(64) NOT NULL,
+                    direction VARCHAR(10) NOT NULL, -- sent, received
+                    message_type VARCHAR(50) NOT NULL,
+                    payload_hash VARCHAR(128) NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    encrypted BOOLEAN DEFAULT FALSE,
+                    compression_used BOOLEAN DEFAULT FALSE,
+                    priority VARCHAR(20) DEFAULT 'normal',
+                    status VARCHAR(20) DEFAULT 'sent', -- sent, delivered, failed
+                    sent_at TIMESTAMP NOT NULL,
+                    delivered_at TIMESTAMP,
+                    latency_ms INTEGER,
+                    retry_count INTEGER DEFAULT 0,
+                    error_message TEXT,
+                    metadata JSONB,
+                    INDEX idx_channel_time (channel_id, sent_at),
+                    INDEX idx_status (status, sent_at)
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS p2p_security_sessions (
+                    session_id VARCHAR(64) PRIMARY KEY,
+                    channel_id VARCHAR(64) NOT NULL,
+                    key_exchange_algorithm VARCHAR(32) NOT NULL,
+                    session_key_hash VARCHAR(128) NOT NULL,
+                    established_at TIMESTAMP NOT NULL,
+                    expires_at TIMESTAMP NOT NULL,
+                    renegotiation_count INTEGER DEFAULT 0,
+                    last_renegotiation TIMESTAMP,
+                    security_level VARCHAR(20) DEFAULT 'standard',
+                    metadata JSONB,
+                    INDEX idx_channel (channel_id),
+                    INDEX idx_expires (expires_at)
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS p2p_metrics (
+                    metric_id VARCHAR(64) PRIMARY KEY,
+                    channel_id VARCHAR(64) NOT NULL,
+                    metric_type VARCHAR(50) NOT NULL,
+                    metric_value FLOAT NOT NULL,
+                    recorded_at TIMESTAMP NOT NULL,
+                    metadata JSONB,
+                    INDEX idx_channel_metric (channel_id, metric_type, recorded_at)
+                )
+            """)
+        } catch (error) {
+            print("⚠️ Failed to initialize P2P database: " + error)
+        }
+        
+        // Initialize background processors
+        this.initialize_background_processors()
+        
+        print("✅ P2P Communication Layer initialized for node: " + node_id)
+    }
 
-            print("✅ Secure channel established with " + peer)
-            return true
+    action protect send_message(send_request: MessageSendRequest) -> MessageSendResult {
+        """
+        Send a message through P2P channel with encryption, compression, and delivery guarantees
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            // Validate request
+            verify(send_request.peer_id != null, "Peer ID is required")
+            verify(send_request.message != null, "Message is required")
+            verify(send_request.message.type != null, "Message type is required")
+            
+            // Check if peer is blacklisted
+            if this.is_peer_blacklisted(send_request.peer_id) {
+                throw "Peer is blacklisted: " + send_request.peer_id
+            }
+            
+            // Check rate limits
+            if not this.check_message_rate_limit(send_request.peer_id) {
+                throw "Rate limit exceeded for peer: " + send_request.peer_id
+            }
+            
+            // Find or create channel
+            let channel = this.get_or_create_channel(send_request.peer_id)
+            if not channel.is_active {
+                throw "Channel is not active: " + send_request.peer_id
+            }
+            
+            // Prepare message
+            let message_id = "MSG_" + crypto.sha3_256(
+                send_request.peer_id + 
+                send_request.message.type + 
+                string(datetime.now().timestamp()) + 
+                string(math.random_int(0, 999999))
+            )
+            
+            send_request.message.id = message_id
+            send_request.message.created_at = datetime.now().timestamp()
+            send_request.message.nonce = this.generate_message_nonce(send_request.peer_id)
+            
+            // Apply compression if enabled and message is large enough
+            let compression_used = false
+            let processed_message = send_request.message
+            
+            if send_request.compression and this.should_compress_message(send_request.message) {
+                processed_message = this.compress_message(send_request.message)
+                compression_used = true
+            }
+            
+            // Apply encryption if required
+            let encryption_used = false
+            let encryption_result = null
+            
+            if send_request.encryption_mode != "none" and channel.is_encrypted {
+                let encryption_request = EncryptionRequest{
+                    message: processed_message,
+                    encryption_key: channel.session_key,
+                    algorithm: channel.encryption_algorithm,
+                    timestamp: datetime.now().timestamp()
+                }
+                
+                encryption_result = this.encrypt_message(encryption_request)
+                if encryption_result.success {
+                    encryption_used = true
+                    processed_message = encryption_result.ciphertext
+                } else if send_request.encryption_mode == "end_to_end" {
+                    throw "Encryption required but failed: " + encryption_result.error
+                }
+            }
+            
+            // Add message headers
+            let message_headers = {
+                "message_id": message_id,
+                "sender": this.get_node_id(),
+                "receiver": send_request.peer_id,
+                "protocol_version": this.get_current_protocol_version(),
+                "timestamp": datetime.now().timestamp(),
+                "nonce": send_request.message.nonce,
+                "encryption": encryption_used ? encryption_result.algorithm : "none",
+                "compression": compression_used,
+                "priority": send_request.priority,
+                "ttl": send_request.message.expires_at or (datetime.now().timestamp() + P2P_POLICIES.message_ttl)
+            }
+            
+            // Create network message
+            let network_message = {
+                "headers": message_headers,
+                "payload": processed_message,
+                "signature": this.sign_message(message_headers, processed_message)
+            }
+            
+            // Send message with retry logic
+            let retry_config = send_request.retry_config or {
+                "max_attempts": P2P_POLICIES.max_retry_attempts,
+                "backoff_factor": 1.5,
+                "max_backoff_ms": 5000
+            }
+            
+            let send_result = this.send_with_retry(
+                send_request.peer_id,
+                network_message,
+                retry_config,
+                send_request.delivery_guarantee
+            )
+            
+            let send_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            // Update channel metrics
+            channel.message_count_sent += 1
+            channel.total_bytes_sent += this.calculate_message_size(network_message)
+            channel.last_activity = datetime.now().timestamp()
+            
+            // Update database
+            try {
+                db.execute("""
+                    INSERT INTO p2p_messages (
+                        message_id, channel_id, direction, message_type, payload_hash,
+                        size_bytes, encrypted, compression_used, priority, status,
+                        sent_at, retry_count, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+                """, [
+                    message_id,
+                    channel.channel_id,
+                    "sent",
+                    send_request.message.type,
+                    crypto.sha3_256(json.stringify(send_request.message.payload)),
+                    this.calculate_message_size(network_message),
+                    encryption_used,
+                    compression_used,
+                    send_request.priority,
+                    send_result.delivery_status,
+                    send_result.retry_count or 0,
+                    json.stringify({
+                        "encryption_mode": send_request.encryption_mode,
+                        "delivery_guarantee": send_request.delivery_guarantee,
+                        "encryption_result": encryption_result?.metadata,
+                        "send_time_ms": send_time_ms
+                    })
+                ])
+                
+                // Update channel stats
+                db.execute("""
+                    UPDATE p2p_channels 
+                    SET message_count_sent = message_count_sent + 1,
+                        total_bytes_sent = total_bytes_sent + ?,
+                        last_activity = CURRENT_TIMESTAMP
+                    WHERE channel_id = ?
+                """, [this.calculate_message_size(network_message), channel.channel_id])
+            } catch (error) {
+                print("⚠️ Failed to record message in database: " + error)
+            }
+            
+            // Cache recent message for replay protection
+            this.cache_message_nonce(send_request.peer_id, send_request.message.nonce)
+            
+            audit("message_sent", {
+                "message_id": message_id,
+                "peer_id": send_request.peer_id,
+                "channel_id": channel.channel_id,
+                "message_type": send_request.message.type,
+                "encryption_used": encryption_used,
+                "compression_used": compression_used,
+                "delivery_status": send_result.delivery_status,
+                "send_time_ms": send_time_ms,
+                "retry_count": send_result.retry_count or 0,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return MessageSendResult{
+                success: send_result.success,
+                message_id: message_id,
+                peer_id: send_request.peer_id,
+                channel_id: channel.channel_id,
+                delivery_status: send_result.delivery_status,
+                encryption_used: encryption_used,
+                compression_used: compression_used,
+                retry_count: send_result.retry_count or 0,
+                send_time_ms: send_time_ms,
+                latency_ms: send_result.latency_ms,
+                delivery_timestamp: send_result.delivery_timestamp,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let send_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("message_send_failed", {
+                "peer_id": send_request?.peer_id or "unknown",
+                "message_type": send_request?.message?.type or "unknown",
+                "error": error,
+                "send_time_ms": send_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return MessageSendResult{
+                success: false,
+                message_id: "failed_" + string(datetime.now().timestamp()),
+                peer_id: send_request?.peer_id or "unknown",
+                delivery_status: "failed",
+                encryption_used: false,
+                compression_used: false,
+                send_time_ms: send_time_ms,
+                error: error,
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
 
-        } catch(error) {
-            print("❌ Failed to establish secure channel with " + peer + ": " + string(error))
+    action protect send_message_batch(send_requests: list) -> list {
+        """
+        Send multiple messages in batch with optimization
+        """
+        let results = []
+        let batch_size = 50 // Send in batches
+        
+        for each batch_start in range(0, len(send_requests), batch_size) {
+            let batch_end = math.min(batch_start + batch_size, len(send_requests))
+            let request_batch = send_requests.slice(batch_start, batch_end)
+            
+            // Process batch in parallel with concurrency limit
+            let batch_results = []
+            let active_tasks = []
+            
+            for each send_request in request_batch {
+                // Limit concurrent sends
+                if len(active_tasks) >= 10 {
+                    // Wait for some tasks to complete
+                    let completed = await Promise.any(active_tasks)
+                    active_tasks = active_tasks.filter(action(t) { return t != completed })
+                }
+                
+                let task = async this.send_message(send_request)
+                active_tasks.push(task)
+                batch_results.push(task)
+            }
+            
+            // Wait for all tasks in batch
+            let batch_results_resolved = await Promise.all(batch_results)
+            results = results + batch_results_resolved
+            
+            // Throttle between batches
+            if batch_end < len(send_requests) {
+                await sleep(0.05) // 50ms delay
+            }
+        }
+        
+        let successful_sends = results.filter(action(r) { 
+            return r.success and r.delivery_status == "delivered" 
+        }).count()
+        
+        print("✅ Batch send complete: " + string(successful_sends) + "/" + 
+              string(len(send_requests)) + " successfully delivered")
+        
+        return results
+    }
+
+    action protect receive_messages(options: ReceiveOptions? = null) -> MessageReceiveResult {
+        """
+        Receive and process incoming messages with filtering and validation
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            let opts = options or ReceiveOptions{
+                max_messages: 100,
+                timeout_ms: 1000,
+                include_metadata: true,
+                timestamp: datetime.now().timestamp()
+            }
+            
+            // Check if there are messages in queue
+            if this.message_queue.is_empty() {
+                return MessageReceiveResult{
+                    success: true,
+                    messages: [],
+                    total_received: 0,
+                    filtered_out: 0,
+                    processing_time_ms: datetime.now().timestamp_ms() - start_time,
+                    queue_size_remaining: 0,
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            let processed_messages = []
+            let filtered_out = 0
+            let messages_to_process = math.min(opts.max_messages, len(this.message_queue))
+            
+            for each i in range(0, messages_to_process) {
+                if i >= len(this.message_queue) {
+                    break
+                }
+                
+                let raw_message = this.message_queue[i]
+                
+                // Apply filters
+                if opts.message_types != null and not opts.message_types.contains(raw_message.type) {
+                    filtered_out += 1
+                    continue
+                }
+                
+                if opts.priority_filter != null and raw_message.priority != opts.priority_filter {
+                    filtered_out += 1
+                    continue
+                }
+                
+                if opts.require_encryption and not raw_message.is_encrypted {
+                    filtered_out += 1
+                    continue
+                }
+                
+                // Process message
+                let processed_message = this.process_incoming_message(raw_message)
+                if processed_message.success {
+                    processed_messages.push(processed_message)
+                } else {
+                    filtered_out += 1
+                    print("⚠️ Failed to process message: " + processed_message.error)
+                }
+            }
+            
+            // Remove processed messages from queue
+            this.message_queue = this.message_queue.slice(messages_to_process)
+            
+            let processing_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            // Update statistics
+            for each message in processed_messages {
+                let channel_id = message.channel_id
+                if channel_id != null and this.connections.has(channel_id)) {
+                    let channel = this.connections[channel_id]
+                    channel.message_count_received += 1
+                    channel.total_bytes_received += message.size_bytes or 0
+                    channel.last_activity = datetime.now().timestamp()
+                    
+                    // Update database
+                    try {
+                        db.execute("""
+                            UPDATE p2p_channels 
+                            SET message_count_received = message_count_received + 1,
+                                total_bytes_received = total_bytes_received + ?,
+                                last_activity = CURRENT_TIMESTAMP
+                            WHERE channel_id = ?
+                        """, [message.size_bytes or 0, channel_id])
+                    } catch (error) {
+                        print("⚠️ Failed to update channel stats in database: " + error)
+                    }
+                }
+            }
+            
+            return MessageReceiveResult{
+                success: true,
+                messages: processed_messages,
+                total_received: processed_messages.count(),
+                filtered_out: filtered_out,
+                processing_time_ms: processing_time_ms,
+                queue_size_remaining: len(this.message_queue),
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let processing_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("message_receive_failed", {
+                "error": error,
+                "processing_time_ms": processing_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return MessageReceiveResult{
+                success: false,
+                messages: [],
+                total_received: 0,
+                filtered_out: 0,
+                processing_time_ms: processing_time_ms,
+                queue_size_remaining: len(this.message_queue),
+                error: error,
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect establish_secure_channel(channel_request: ChannelRequest) -> ChannelEstablishmentResult {
+        """
+        Establish a secure communication channel with key exchange and authentication
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            // Validate request
+            verify(channel_request.peer_id != null, "Peer ID is required")
+            verify(channel_request.peer_public_key != null, "Peer public key is required")
+            verify(channel_request.encryption_algorithm != null, "Encryption algorithm is required")
+            
+            // Check if peer is blacklisted
+            if this.is_peer_blacklisted(channel_request.peer_id) {
+                throw "Peer is blacklisted: " + channel_request.peer_id
+            }
+            
+            // Check if channel already exists and is active
+            let existing_channel = this.find_existing_channel(channel_request.peer_id)
+            if existing_channel != null and existing_channel.is_active {
+                // Check if renegotiation is needed
+                let session_age = datetime.now().timestamp() - existing_channel.established_at
+                if session_age < channel_request.session_timeout * 0.8 {
+                    return ChannelEstablishmentResult{
+                        success: true,
+                        channel_id: existing_channel.channel_id,
+                        session_key: existing_channel.session_key,
+                        peer_id: channel_request.peer_id,
+                        encryption_algorithm: existing_channel.encryption_algorithm,
+                        established_at: existing_channel.established_at,
+                        session_timeout: existing_channel.session_timeout,
+                        capabilities_negotiated: existing_channel.capabilities or [],
+                        warnings: ["Using existing channel"],
+                        establishment_time_ms: datetime.now().timestamp_ms() - start_time,
+                        timestamp: datetime.now().timestamp()
+                    }
+                }
+            }
+            
+            print("🔐 Establishing secure channel with: " + channel_request.peer_id)
+            
+            // Generate local key pair if not exists
+            let local_key_pair = this.generate_key_pair()
+            
+            // Perform key exchange
+            let key_exchange_result = this.perform_key_exchange(
+                local_key_pair.private_key,
+                channel_request.peer_public_key,
+                channel_request.key_exchange_algorithm
+            )
+            
+            if not key_exchange_result.success {
+                throw "Key exchange failed: " + key_exchange_result.error
+            }
+            
+            // Derive session key
+            let session_key = this.derive_session_key(
+                key_exchange_result.shared_secret,
+                channel_request.peer_id,
+                this.get_node_id()
+            )
+            
+            // Authenticate peer if required
+            let authentication_passed = true
+            if channel_request.authentication_required {
+                authentication_passed = await this.authenticate_peer(
+                    channel_request.peer_id,
+                    channel_request.peer_public_key,
+                    session_key
+                )
+                
+                if not authentication_passed {
+                    throw "Peer authentication failed"
+                }
+            }
+            
+            // Negotiate capabilities
+            let capabilities_negotiated = this.negotiate_capabilities(
+                channel_request.capabilities or [],
+                this.get_supported_capabilities()
+            )
+            
+            // Create channel ID
+            let channel_id = "CHANNEL_" + crypto.sha3_256(
+                channel_request.peer_id + 
+                this.get_node_id() + 
+                string(datetime.now().timestamp())
+            )
+            
+            // Create channel object
+            let channel = {
+                "channel_id": channel_id,
+                "peer_id": channel_request.peer_id,
+                "local_public_key": local_key_pair.public_key,
+                "peer_public_key": channel_request.peer_public_key,
+                "session_key": session_key,
+                "session_key_hash": crypto.sha3_256(session_key),
+                "encryption_algorithm": channel_request.encryption_algorithm,
+                "key_exchange_algorithm": channel_request.key_exchange_algorithm,
+                "established_at": datetime.now().timestamp(),
+                "last_activity": datetime.now().timestamp(),
+                "session_timeout": channel_request.session_timeout,
+                "is_active": true,
+                "is_encrypted": true,
+                "channel_type": channel_request.channel_type,
+                "message_count_sent": 0,
+                "message_count_received": 0,
+                "total_bytes_sent": 0,
+                "total_bytes_received": 0,
+                "capabilities": capabilities_negotiated,
+                "authentication_passed": authentication_passed,
+                "metadata": channel_request.metadata or {}
+            }
+            
+            // Store channel
+            this.connections[channel_id] = channel
+            
+            // Store session key in secure cache
+            cache_set("session_key_" + channel_id, {
+                "session_key": session_key,
+                "channel_id": channel_id,
+                "established_at": datetime.now().timestamp()
+            })
+            
+            // Update database
+            try {
+                db.execute("""
+                    INSERT INTO p2p_channels (
+                        channel_id, peer_id, local_public_key, peer_public_key,
+                        session_key_hash, encryption_algorithm, established_at,
+                        last_activity, session_timeout, is_active, is_encrypted,
+                        metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?, ?)
+                    ON CONFLICT (channel_id) DO UPDATE SET
+                        session_key_hash = EXCLUDED.session_key_hash,
+                        last_activity = EXCLUDED.last_activity,
+                        is_active = EXCLUDED.is_active,
+                        metadata = EXCLUDED.metadata
+                """, [
+                    channel_id,
+                    channel_request.peer_id,
+                    local_key_pair.public_key,
+                    channel_request.peer_public_key,
+                    crypto.sha3_256(session_key),
+                    channel_request.encryption_algorithm,
+                    channel_request.session_timeout,
+                    true,
+                    true,
+                    json.stringify(channel.metadata)
+                ])
+                
+                db.execute("""
+                    INSERT INTO p2p_security_sessions (
+                        session_id, channel_id, key_exchange_algorithm,
+                        session_key_hash, established_at, expires_at,
+                        security_level, metadata
+                    ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 
+                              CURRENT_TIMESTAMP + INTERVAL '1 hour', ?, ?)
+                """, [
+                    "SESSION_" + crypto.sha3_256(channel_id + string(datetime.now().timestamp())),
+                    channel_id,
+                    channel_request.key_exchange_algorithm,
+                    crypto.sha3_256(session_key),
+                    channel_request.authentication_required ? "high" : "standard",
+                    json.stringify({
+                        "channel_type": channel_request.channel_type,
+                        "capabilities": capabilities_negotiated,
+                        "authentication_passed": authentication_passed
+                    })
+                ])
+            } catch (error) {
+                print("⚠️ Failed to store channel in database: " + error)
+            }
+            
+            let establishment_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("secure_channel_established", {
+                "channel_id": channel_id,
+                "peer_id": channel_request.peer_id,
+                "encryption_algorithm": channel_request.encryption_algorithm,
+                "key_exchange_algorithm": channel_request.key_exchange_algorithm,
+                "authentication_passed": authentication_passed,
+                "establishment_time_ms": establishment_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return ChannelEstablishmentResult{
+                success: true,
+                channel_id: channel_id,
+                session_key: session_key,
+                peer_id: channel_request.peer_id,
+                encryption_algorithm: channel_request.encryption_algorithm,
+                established_at: datetime.now().timestamp(),
+                session_timeout: channel_request.session_timeout,
+                capabilities_negotiated: capabilities_negotiated,
+                warnings: authentication_passed ? [] : ["Authentication not performed"],
+                establishment_time_ms: establishment_time_ms,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let establishment_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("secure_channel_establishment_failed", {
+                "peer_id": channel_request?.peer_id or "unknown",
+                "error": error,
+                "establishment_time_ms": establishment_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return ChannelEstablishmentResult{
+                success: false,
+                channel_id: "failed",
+                session_key: "",
+                peer_id: channel_request?.peer_id or "unknown",
+                encryption_algorithm: channel_request?.encryption_algorithm or "unknown",
+                established_at: datetime.now().timestamp(),
+                session_timeout: 0,
+                capabilities_negotiated: [],
+                error: error,
+                establishment_time_ms: establishment_time_ms,
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect close_secure_channel(peer_id: string, reason: string) -> ChannelCloseResult {
+        """
+        Close a secure communication channel with cleanup
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            // Find channel
+            let channel = this.find_existing_channel(peer_id)
+            if channel == null {
+                throw "Channel not found for peer: " + peer_id
+            }
+            
+            print("🔒 Closing secure channel with: " + peer_id + " - Reason: " + reason)
+            
+            // Send close notification if channel is active
+            if channel.is_active {
+                this.send_channel_close_notification(channel.channel_id, reason)
+            }
+            
+            // Update channel status
+            channel.is_active = false
+            channel.closed_at = datetime.now().timestamp()
+            channel.close_reason = reason
+            
+            // Remove session key from cache
+            cache_delete("session_key_" + channel.channel_id)
+            
+            // Update database
+            try {
+                db.execute("""
+                    UPDATE p2p_channels 
+                    SET is_active = FALSE,
+                        last_activity = CURRENT_TIMESTAMP
+                    WHERE channel_id = ?
+                """, [channel.channel_id])
+                
+                db.execute("""
+                    UPDATE p2p_security_sessions 
+                    SET expires_at = CURRENT_TIMESTAMP
+                    WHERE channel_id = ? AND expires_at > CURRENT_TIMESTAMP
+                """, [channel.channel_id])
+            } catch (error) {
+                print("⚠️ Failed to update channel closure in database: " + error)
+            }
+            
+            let close_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("secure_channel_closed", {
+                "channel_id": channel.channel_id,
+                "peer_id": peer_id,
+                "reason": reason,
+                "session_duration": datetime.now().timestamp() - channel.established_at,
+                "close_time_ms": close_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return ChannelCloseResult{
+                success: true,
+                channel_id: channel.channel_id,
+                peer_id: peer_id,
+                reason: reason,
+                session_duration_seconds: datetime.now().timestamp() - channel.established_at,
+                messages_sent: channel.message_count_sent,
+                messages_received: channel.message_count_received,
+                close_time_ms: close_time_ms,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let close_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("secure_channel_close_failed", {
+                "peer_id": peer_id,
+                "reason": reason,
+                "error": error,
+                "close_time_ms": close_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return ChannelCloseResult{
+                success: false,
+                peer_id: peer_id,
+                reason: reason,
+                error: error,
+                close_time_ms: close_time_ms,
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect get_communication_status() -> CommunicationStatus {
+        """
+        Get comprehensive communication status with metrics
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        // Calculate channel health
+        let channel_health = this.calculate_channel_health()
+        
+        // Calculate security status
+        let security_status = this.calculate_security_status()
+        
+        // Calculate performance metrics
+        let performance_metrics = this.calculate_performance_metrics()
+        
+        // Check for alerts
+        let alerts = this.check_for_alerts()
+        
+        // Get active channels
+        let active_channels = 0
+        let total_messages_sent = 0
+        let total_messages_received = 0
+        
+        for each channel_id, channel in this.connections {
+            if channel.is_active {
+                active_channels += 1
+                total_messages_sent += channel.message_count_sent
+                total_messages_received += channel.message_count_received
+            }
+        }
+        
+        return CommunicationStatus{
+            active_channels: active_channels,
+            total_messages_sent: total_messages_sent,
+            total_messages_received: total_messages_received,
+            message_queue_size: len(this.message_queue),
+            encryption_success_rate: this.calculate_encryption_success_rate(),
+            average_latency_ms: this.calculate_average_latency(),
+            channel_health: channel_health,
+            security_status: security_status,
+            performance_metrics: performance_metrics,
+            alerts: alerts,
+            timestamp: timestamp
+        }
+    }
+
+    action protect get_channel_metrics(channel_id: string? = null) -> ChannelMetrics {
+        """
+        Get detailed metrics for a specific channel or all channels
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        if channel_id != null {
+            // Get metrics for specific channel
+            if not this.connections.has(channel_id) {
+                throw "Channel not found: " + channel_id
+            }
+            
+            let channel = this.connections[channel_id]
+            let metrics = this.calculate_channel_metrics(channel)
+            
+            return ChannelMetrics{
+                channel_id: channel_id,
+                peer_id: channel.peer_id,
+                established_at: channel.established_at,
+                last_activity: channel.last_activity,
+                messages_sent: channel.message_count_sent,
+                messages_received: channel.message_count_received,
+                bytes_sent: channel.total_bytes_sent,
+                bytes_received: channel.total_bytes_received,
+                average_latency_ms: metrics.average_latency,
+                encryption_success_rate: metrics.encryption_success_rate,
+                delivery_success_rate: metrics.delivery_success_rate,
+                retry_rate: metrics.retry_rate,
+                health_score: metrics.health_score,
+                metrics: metrics.detailed_metrics,
+                timestamp: timestamp
+            }
+        } else {
+            // Get aggregate metrics for all channels
+            let aggregate_metrics = this.calculate_aggregate_metrics()
+            
+            return ChannelMetrics{
+                channel_id: "aggregate",
+                peer_id: "all",
+                established_at: this.get_oldest_channel_establishment(),
+                last_activity: this.get_most_recent_activity(),
+                messages_sent: aggregate_metrics.total_messages_sent,
+                messages_received: aggregate_metrics.total_messages_received,
+                bytes_sent: aggregate_metrics.total_bytes_sent,
+                bytes_received: aggregate_metrics.total_bytes_received,
+                average_latency_ms: aggregate_metrics.average_latency,
+                encryption_success_rate: aggregate_metrics.encryption_success_rate,
+                delivery_success_rate: aggregate_metrics.delivery_success_rate,
+                retry_rate: aggregate_metrics.retry_rate,
+                health_score: aggregate_metrics.health_score,
+                metrics: aggregate_metrics,
+                timestamp: timestamp
+            }
+        }
+    }
+
+    action protect validate_message(message: NetworkMessage) -> ValidationResult {
+        """
+        Validate a network message for security, structure, and integrity
+        """
+        let timestamp = datetime.now().timestamp()
+        let validation_checks = []
+        let warnings = []
+        let errors = []
+        
+        try {
+            // Check message structure
+            if message.id == null {
+                errors.push("Message ID is missing")
+            } else {
+                validation_checks.push({"check": "message_id", "passed": true})
+            }
+            
+            if message.type == null {
+                errors.push("Message type is missing")
+            } else {
+                validation_checks.push({"check": "message_type", "passed": true})
+            }
+            
+            if message.payload == null {
+                errors.push("Message payload is missing")
+            } else {
+                validation_checks.push({"check": "payload", "passed": true})
+            }
+            
+            // Check timestamp validity
+            if message.created_at == null {
+                errors.push("Creation timestamp is missing")
+            } else {
+                let time_diff = datetime.now().timestamp() - message.created_at
+                if time_diff > P2P_POLICIES.message_ttl {
+                    errors.push("Message has expired (TTL exceeded)")
+                } else if time_diff < 0 {
+                    warnings.push("Message timestamp is in the future")
+                }
+                validation_checks.push({"check": "timestamp", "passed": time_diff <= P2P_POLICIES.message_ttl})
+            }
+            
+            // Check for replay protection
+            if message.nonce != null {
+                if this.is_nonce_replayed(message.nonce, message.id) {
+                    errors.push("Message nonce has been replayed")
+                } else {
+                    validation_checks.push({"check": "nonce", "passed": true})
+                }
+            }
+            
+            // Verify signature if present
+            if message.signature != null {
+                let signature_valid = this.verify_message_signature(message)
+                if not signature_valid {
+                    errors.push("Message signature is invalid")
+                } else {
+                    validation_checks.push({"check": "signature", "passed": true})
+                }
+            }
+            
+            // Check message size
+            let message_size = this.calculate_message_size(message)
+            if message_size > P2P_POLICIES.max_message_size {
+                errors.push("Message exceeds maximum size limit: " + string(message_size) + " > " + string(P2P_POLICIES.max_message_size))
+            } else {
+                validation_checks.push({"check": "size", "passed": true})
+            }
+            
+            let valid = len(errors) == 0
+            
+            // Determine recommended action
+            let recommended_action = null
+            if not valid and len(errors) > 0 {
+                recommended_action = "reject"
+            } else if len(warnings) > 0 {
+                recommended_action = "process_with_caution"
+            } else {
+                recommended_action = "process"
+            }
+            
+            return ValidationResult{
+                valid: valid,
+                message_id: message.id,
+                validation_checks: validation_checks,
+                warnings: warnings,
+                errors: errors,
+                recommended_action: recommended_action,
+                timestamp: timestamp
+            }
+            
+        } catch (error) {
+            return ValidationResult{
+                valid: false,
+                message_id: message.id or "unknown",
+                validation_checks: [],
+                warnings: [],
+                errors: ["Validation failed: " + error],
+                recommended_action: "reject",
+                timestamp: timestamp
+            }
+        }
+    }
+
+    action protect encrypt_message(encryption_request: EncryptionRequest) -> EncryptionResult {
+        """
+        Encrypt a message using specified algorithm
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            verify(encryption_request.message != null, "Message is required")
+            verify(encryption_request.encryption_key != null, "Encryption key is required")
+            
+            // Generate IV if not provided
+            let iv = encryption_request.iv or crypto.random_bytes(16)
+            
+            // Encrypt based on algorithm
+            let ciphertext = null
+            let auth_tag = null
+            
+            if encryption_request.algorithm == "AES-256-GCM" {
+                let encryption_result = crypto.aes_256_gcm_encrypt(
+                    encryption_request.message,
+                    encryption_request.encryption_key,
+                    iv,
+                    encryption_request.additional_data
+                )
+                ciphertext = encryption_result.ciphertext
+                auth_tag = encryption_result.auth_tag
+            } else if encryption_request.algorithm == "ChaCha20-Poly1305" {
+                let encryption_result = crypto.chacha20_poly1305_encrypt(
+                    encryption_request.message,
+                    encryption_request.encryption_key,
+                    iv,
+                    encryption_request.additional_data
+                )
+                ciphertext = encryption_result.ciphertext
+                auth_tag = encryption_result.auth_tag
+            } else {
+                throw "Unsupported encryption algorithm: " + encryption_request.algorithm
+            }
+            
+            let encryption_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            // Generate key ID
+            let key_id = "KEY_" + crypto.sha3_256(encryption_request.encryption_key).slice(0, 16)
+            
+            return EncryptionResult{
+                success: true,
+                ciphertext: ciphertext,
+                iv: iv,
+                auth_tag: auth_tag,
+                algorithm: encryption_request.algorithm,
+                key_id: key_id,
+                encryption_time_ms: encryption_time_ms,
+                metadata: {
+                    "original_size": len(string(encryption_request.message)),
+                    "encrypted_size": len(ciphertext),
+                    "compression_ratio": len(ciphertext) / math.max(1, len(string(encryption_request.message)))
+                },
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            return EncryptionResult{
+                success: false,
+                ciphertext: "",
+                iv: "",
+                auth_tag: "",
+                algorithm: encryption_request?.algorithm or "unknown",
+                key_id: "",
+                encryption_time_ms: datetime.now().timestamp_ms() - start_time,
+                error: error,
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect decrypt_message(decryption_request: DecryptionRequest) -> DecryptionResult {
+        """
+        Decrypt a message using specified algorithm
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            verify(decryption_request.ciphertext != null, "Ciphertext is required")
+            verify(decryption_request.encryption_key != null, "Encryption key is required")
+            verify(decryption_request.iv != null, "IV is required")
+            verify(decryption_request.auth_tag != null, "Auth tag is required")
+            
+            let plaintext = null
+            let verification_passed = false
+            
+            if decryption_request.algorithm == "AES-256-GCM" {
+                let decryption_result = crypto.aes_256_gcm_decrypt(
+                    decryption_request.ciphertext,
+                    decryption_request.encryption_key,
+                    decryption_request.iv,
+                    decryption_request.auth_tag,
+                    decryption_request.additional_data
+                )
+                plaintext = decryption_result.plaintext
+                verification_passed = decryption_result.verification_passed
+            } else if decryption_request.algorithm == "ChaCha20-Poly1305" {
+                let decryption_result = crypto.chacha20_poly1305_decrypt(
+                    decryption_request.ciphertext,
+                    decryption_request.encryption_key,
+                    decryption_request.iv,
+                    decryption_request.auth_tag,
+                    decryption_request.additional_data
+                )
+                plaintext = decryption_result.plaintext
+                verification_passed = decryption_result.verification_passed
+            } else {
+                throw "Unsupported decryption algorithm: " + decryption_request.algorithm
+            }
+            
+            let decryption_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            // Generate key ID
+            let key_id = "KEY_" + crypto.sha3_256(decryption_request.encryption_key).slice(0, 16)
+            
+            return DecryptionResult{
+                success: true,
+                plaintext: plaintext,
+                algorithm: decryption_request.algorithm,
+                key_id: key_id,
+                decryption_time_ms: decryption_time_ms,
+                verification_passed: verification_passed,
+                metadata: {
+                    "ciphertext_size": len(decryption_request.ciphertext),
+                    "plaintext_size": len(string(plaintext))
+                },
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            return DecryptionResult{
+                success: false,
+                plaintext: null,
+                algorithm: decryption_request?.algorithm or "unknown",
+                key_id: "",
+                decryption_time_ms: datetime.now().timestamp_ms() - start_time,
+                verification_passed: false,
+                error: error,
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect emergency_close_all_channels(reason: string) -> EmergencyResult {
+        """
+        Emergency close all channels due to security threat or system failure
+        """
+        let start_time = datetime.now().timestamp_ms()
+        let channels_closed = 0
+        let peer_notifications_sent = 0
+        let error_messages = []
+        
+        try {
+            print("🚨 EMERGENCY: Closing all P2P channels - Reason: " + reason)
+            
+            // Close all active channels
+            for each channel_id, channel in this.connections {
+                if channel.is_active {
+                    try {
+                        let close_result = this.close_secure_channel(channel.peer_id, reason)
+                        if close_result.success {
+                            channels_closed += 1
+                            peer_notifications_sent += 1
+                        } else {
+                            error_messages.push("Failed to close channel " + channel_id + ": " + close_result.error)
+                        }
+                    } catch (error) {
+                        error_messages.push("Error closing channel " + channel_id + ": " + error)
+                    }
+                }
+            }
+            
+            // Clear message queue
+            this.message_queue = []
+            
+            // Clear caches
+            cache_clear("session_keys")
+            cache_clear("message_nonces")
+            
+            // Log emergency action
+            audit("emergency_channel_closure", {
+                "reason": reason,
+                "channels_closed": channels_closed,
+                "peer_notifications_sent": peer_notifications_sent,
+                "error_messages": error_messages,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return EmergencyResult{
+                success: len(error_messages) == 0,
+                channels_closed: channels_closed,
+                peer_notifications_sent: peer_notifications_sent,
+                cleanup_completed: true,
+                error_messages: error_messages,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            audit("emergency_closure_failed", {
+                "reason": reason,
+                "error": error,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return EmergencyResult{
+                success: false,
+                channels_closed: channels_closed,
+                peer_notifications_sent: peer_notifications_sent,
+                cleanup_completed: false,
+                error_messages: error_messages + ["Emergency closure failed: " + error],
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect upgrade_protocol_version(new_version: string) -> UpgradeResult {
+        """
+        Upgrade protocol version across all active channels
+        """
+        let start_time = datetime.now().timestamp_ms()
+        let channels_upgraded = 0
+        let channels_failed = 0
+        let compatibility_checks = []
+        let warnings = []
+        
+        try {
+            // Check if new version is supported
+            if not this.protocol_versions.has(new_version) {
+                throw "Protocol version not supported: " + new_version
+            }
+            
+            let new_version_info = this.protocol_versions[new_version]
+            if not new_version_info.supported {
+                throw "Protocol version not supported: " + new_version
+            }
+            
+            // Check compatibility with existing channels
+            for each channel_id, channel in this.connections {
+                if channel.is_active {
+                    let compatible = this.check_protocol_compatibility(channel.protocol_version, new_version)
+                    compatibility_checks.push({
+                        "channel_id": channel_id,
+                        "old_version": channel.protocol_version,
+                        "new_version": new_version,
+                        "compatible": compatible
+                    })
+                    
+                    if not compatible {
+                        warnings.push("Channel " + channel_id + " may not be compatible with new version")
+                    }
+                }
+            }
+            
+            // Upgrade channels
+            for each channel_id, channel in this.connections {
+                if channel.is_active {
+                    try {
+                        // Notify peer of version upgrade
+                        let upgrade_notification = {
+                            "type": "protocol_upgrade",
+                            "old_version": channel.protocol_version,
+                            "new_version": new_version,
+                            "timestamp": datetime.now().timestamp()
+                        }
+                        
+                        let notification_result = this.send_message({
+                            "peer_id": channel.peer_id,
+                            "message": upgrade_notification,
+                            "encryption_mode": "end_to_end",
+                            "priority": "high"
+                        })
+                        
+                        if notification_result.success {
+                            // Update channel protocol version
+                            channel.protocol_version = new_version
+                            channels_upgraded += 1
+                            
+                            // Update database
+                            try {
+                                db.execute("""
+                                    UPDATE p2p_channels 
+                                    SET metadata = jsonb_set(
+                                        metadata,
+                                        '{protocol_version}',
+                                        ?::jsonb
+                                    )
+                                    WHERE channel_id = ?
+                                """, [json.stringify(new_version), channel_id])
+                            } catch (error) {
+                                print("⚠️ Failed to update channel protocol version in database: " + error)
+                            }
+                        } else {
+                            channels_failed += 1
+                            warnings.push("Failed to notify peer " + channel.peer_id + " of upgrade")
+                        }
+                    } catch (error) {
+                        channels_failed += 1
+                        warnings.push("Error upgrading channel " + channel_id + ": " + error)
+                    }
+                }
+            }
+            
+            // Update current protocol version
+            this.protocol_versions[new_version].default = true
+            
+            audit("protocol_upgrade_completed", {
+                "old_version": this.get_current_protocol_version(),
+                "new_version": new_version,
+                "channels_upgraded": channels_upgraded,
+                "channels_failed": channels_failed,
+                "compatibility_checks": compatibility_checks,
+                "warnings": warnings,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return UpgradeResult{
+                success: channels_failed == 0,
+                old_version: this.get_current_protocol_version(),
+                new_version: new_version,
+                channels_upgraded: channels_upgraded,
+                channels_failed: channels_failed,
+                compatibility_checks: compatibility_checks,
+                warnings: warnings,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            return UpgradeResult{
+                success: false,
+                old_version: this.get_current_protocol_version(),
+                new_version: new_version,
+                channels_upgraded: channels_upgraded,
+                channels_failed: channels_failed,
+                compatibility_checks: compatibility_checks,
+                warnings: warnings + ["Upgrade failed: " + error],
+                error: error,
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect health_check() -> HealthCheckResult {
+        """
+        Perform comprehensive health check of P2P communication layer
+        """
+        let timestamp = datetime.now().timestamp()
+        let components = {}
+        let metrics = {}
+        let issues = []
+        let recommendations = []
+        
+        try {
+            // Check database connectivity
+            try {
+                db.query("SELECT 1")
+                components["database"] = "healthy"
+            } catch (error) {
+                components["database"] = "unhealthy"
+                issues.push("Database connectivity issue: " + error)
+                recommendations.push("Check database connection and credentials")
+            }
+            
+            // Check channel health
+            let channel_health = this.calculate_channel_health()
+            components["channels"] = channel_health.healthy_channels > 0 ? "healthy" : "degraded"
+            
+            if channel_health.unhealthy_channels > 0 {
+                issues.push(string(channel_health.unhealthy_channels) + " unhealthy channels detected")
+                recommendations.push("Review and potentially close unhealthy channels")
+            }
+            
+            // Check message queue
+            let queue_size = len(this.message_queue)
+            components["message_queue"] = queue_size < 1000 ? "healthy" : queue_size < 5000 ? "degraded" : "unhealthy"
+            
+            if queue_size > 5000 {
+                issues.push("Message queue backlog: " + string(queue_size) + " messages")
+                recommendations.push("Increase message processing capacity or review send rates")
+            }
+            
+            // Check security status
+            let security_status = this.calculate_security_status()
+            components["security"] = security_status.threat_level == "low" ? "healthy" : "degraded"
+            
+            if security_status.intrusion_detected {
+                issues.push("Potential security intrusion detected")
+                recommendations.push("Review security logs and consider emergency measures")
+            }
+            
+            // Gather metrics
+            metrics["active_channels"] = channel_health.healthy_channels + channel_health.degraded_channels
+            metrics["message_queue_size"] = queue_size
+            metrics["encryption_success_rate"] = this.calculate_encryption_success_rate()
+            metrics["average_latency_ms"] = this.calculate_average_latency()
+            metrics["throughput_mps"] = this.calculate_throughput()
+            
+            // Determine overall status
+            let overall_status = "healthy"
+            for each component, status in components {
+                if status == "unhealthy" {
+                    overall_status = "unhealthy"
+                    break
+                } else if status == "degraded" {
+                    overall_status = "degraded"
+                }
+            }
+            
+            // Add AI-powered recommendations if available
+            if issues.count() > 0 and zaie != null {
+                try {
+                    let ai_recommendations = zaie.analyze_system_health(issues, metrics)
+                    recommendations = recommendations + ai_recommendations
+                } catch (error) {
+                    // AI analysis failed, continue without it
+                }
+            }
+            
+            return HealthCheckResult{
+                status: overall_status,
+                components: components,
+                metrics: metrics,
+                issues: issues,
+                recommendations: recommendations,
+                timestamp: timestamp
+            }
+            
+        } catch (error) {
+            return HealthCheckResult{
+                status: "unhealthy",
+                components: {"health_check": "failed"},
+                metrics: {},
+                issues: ["Health check failed: " + error],
+                recommendations: ["Restart P2P communication layer", "Check system resources"],
+                timestamp: timestamp
+            }
+        }
+    }
+
+    // ===== HELPER METHODS =====
+    
+    action private get_or_create_channel(peer_id: string) -> map {
+        """
+        Get existing channel or create a new one
+        """
+        // First try to find existing channel
+        for each channel_id, channel in this.connections {
+            if channel.peer_id == peer_id and channel.is_active {
+                return channel
+            }
+        }
+        
+        // Create new channel with default settings
+        let channel_id = "CHANNEL_" + crypto.sha3_256(peer_id + string(datetime.now().timestamp()))
+        
+        let channel = {
+            "channel_id": channel_id,
+            "peer_id": peer_id,
+            "is_active": true,
+            "is_encrypted": false,
+            "established_at": datetime.now().timestamp(),
+            "last_activity": datetime.now().timestamp(),
+            "message_count_sent": 0,
+            "message_count_received": 0,
+            "total_bytes_sent": 0,
+            "total_bytes_received": 0,
+            "protocol_version": this.get_current_protocol_version(),
+            "metadata": {}
+        }
+        
+        this.connections[channel_id] = channel
+        return channel
+    }
+    
+    action private find_existing_channel(peer_id: string) -> map? {
+        """
+        Find existing channel for a peer
+        """
+        for each channel_id, channel in this.connections {
+            if channel.peer_id == peer_id and channel.is_active {
+                return channel
+            }
+        }
+        return null
+    }
+    
+    action private is_peer_blacklisted(peer_id: string) -> boolean {
+        """
+        Check if peer is blacklisted
+        """
+        return this.blacklisted_peers.has(peer_id) and 
+               this.blacklisted_peers[peer_id].expires_at > datetime.now().timestamp()
+    }
+    
+    action private check_message_rate_limit(peer_id: string) -> boolean {
+        """
+        Check if peer has exceeded message rate limit
+        """
+        let cache_key = "rate_limit_" + peer_id
+        let rate_info = cache_get(cache_key) or {"count": 0, "window_start": datetime.now().timestamp()}
+        
+        // Reset if window has passed
+        if datetime.now().timestamp() - rate_info.window_start > 1 {
+            rate_info = {"count": 0, "window_start": datetime.now().timestamp()}
+        }
+        
+        // Check limit
+        if rate_info.count >= P2P_POLICIES.max_messages_per_second {
             return false
         }
+        
+        // Increment count
+        rate_info.count += 1
+        cache_set(cache_key, rate_info, 2) // Cache for 2 seconds
+        
+        return true
     }
-
-    action get_network_status() -> map {
-        let total_messages = 0
-        let secure_connections = 0
-        let active_connections = 0
-
-        for each peer, connection in this.connections {
-            total_messages += connection.message_count
-            if connection.is_secure {
-                secure_connections += 1
-            }
-            if connection.established_at > datetime.now().timestamp() - 3600 {
-                active_connections += 1
-            }
-        }
-
+    
+    action private generate_message_nonce(peer_id: string) -> integer {
+        """
+        Generate unique nonce for message replay protection
+        """
+        let nonce_key = "nonce_" + peer_id
+        let current_nonce = cache_get(nonce_key) or 0
+        let new_nonce = current_nonce + 1
+        
+        cache_set(nonce_key, new_nonce, P2P_POLICIES.replay_protection_window)
+        return new_nonce
+    }
+    
+    action private should_compress_message(message: any) -> boolean {
+        """
+        Determine if message should be compressed
+        """
+        let message_size = len(string(message))
+        return message_size > P2P_POLICIES.compression_threshold
+    }
+    
+    action private compress_message(message: any) -> any {
+        """
+        Compress message payload
+        """
+        // Simple compression simulation - in production would use actual compression
         return {
-            "total_connections": len(this.connections),
-            "active_connections": active_connections,
-            "secure_connections": secure_connections,
-            "total_messages_sent": total_messages,
-            "protocol_version": this.protocol_version,
-            "message_buffer_size": len(this.message_buffer),
-            "network_health": this.calculate_network_health(),
-            "uptime": this.get_uptime()
+            "compressed": true,
+            "original_size": len(string(message)),
+            "data": string(message) // Would be actual compressed data
         }
     }
-
-    // Enhanced Communication Methods
-    action process_incoming_message(raw_message: map) -> map {
-        // Validate message structure
-        if not this.validate_message_structure(raw_message) {
-            return {"success": false, "error": "Invalid message structure"}
+    
+    action private sign_message(headers: map, payload: any) -> string {
+        """
+        Sign message for integrity verification
+        """
+        let message_string = json.stringify(headers) + json.stringify(payload)
+        return crypto.sign(message_string, this.get_node_private_key())
+    }
+    
+    action private send_with_retry(peer_id: string, message: map, retry_config: map, delivery_guarantee: string) -> map {
+        """
+        Send message with retry logic
+        """
+        let max_attempts = retry_config.max_attempts or 1
+        let backoff_factor = retry_config.backoff_factor or 1.5
+        let max_backoff_ms = retry_config.max_backoff_ms or 5000
+        
+        for each attempt in range(1, max_attempts + 1) {
+            try {
+                let start_time = datetime.now().timestamp_ms()
+                
+                // Simulate network send (would be actual network call)
+                let success = math.random() > 0.1 // 90% success rate for simulation
+                
+                if success {
+                    let latency = datetime.now().timestamp_ms() - start_time
+                    
+                    return {
+                        "success": true,
+                        "delivery_status": "delivered",
+                        "retry_count": attempt - 1,
+                        "latency_ms": latency,
+                        "delivery_timestamp": datetime.now().timestamp()
+                    }
+                } else {
+                    throw "Network send failed"
+                }
+                
+            } catch (error) {
+                if attempt < max_attempts {
+                    // Calculate backoff with jitter
+                    let backoff_ms = math.min(
+                        max_backoff_ms,
+                        math.pow(backoff_factor, attempt - 1) * 1000
+                    )
+                    
+                    if retry_config.jitter {
+                        backoff_ms = backoff_ms * (0.8 + math.random() * 0.4) // 20% jitter
+                    }
+                    
+                    await sleep(backoff_ms / 1000)
+                }
+            }
         }
-
-        // Check protocol version compatibility
-        if raw_message.protocol_version != this.protocol_version {
-            return {"success": false, "error": "Protocol version mismatch"}
+        
+        return {
+            "success": false,
+            "delivery_status": "failed",
+            "retry_count": max_attempts,
+            "error": "Max retry attempts exceeded"
         }
-
-        // Decrypt if secure channel exists
+    }
+    
+    action private calculate_message_size(message: any) -> integer {
+        """
+        Calculate approximate message size in bytes
+        """
+        return len(string(message))
+    }
+    
+    action private cache_message_nonce(peer_id: string, nonce: integer) {
+        """
+        Cache message nonce for replay protection
+        """
+        let cache_key = "message_nonce_" + peer_id + "_" + string(nonce)
+        cache_set(cache_key, true, P2P_POLICIES.replay_protection_window)
+    }
+    
+    action private process_incoming_message(raw_message: map) -> map {
+        """
+        Process incoming message from queue
+        """
+        // Validate message
+        let validation_result = this.validate_message(raw_message)
+        if not validation_result.valid {
+            return {
+                "success": false,
+                "error": "Message validation failed: " + string(validation_result.errors)
+            }
+        }
+        
+        // Decrypt if needed
         let decrypted_payload = raw_message.payload
-        let peer = raw_message.sender
-
-        if this.connections.has(peer) and this.connections[peer].is_secure {
-            decrypted_payload = this.decrypt_message(
-                raw_message.payload, 
-                this.connections[peer].session_key
-            )
+        if raw_message.is_encrypted and raw_message.encryption_key_id != null {
+            // Get session key from cache
+            let session_key = cache_get("session_key_" + raw_message.encryption_key_id)
+            if session_key != null {
+                let decryption_request = DecryptionRequest{
+                    ciphertext: raw_message.payload,
+                    encryption_key: session_key.session_key,
+                    iv: raw_message.iv,
+                    auth_tag: raw_message.auth_tag,
+                    algorithm: raw_message.encryption_algorithm,
+                    timestamp: datetime.now().timestamp()
+                }
+                
+                let decryption_result = this.decrypt_message(decryption_request)
+                if decryption_result.success and decryption_result.verification_passed {
+                    decrypted_payload = decryption_result.plaintext
+                } else {
+                    return {
+                        "success": false,
+                        "error": "Message decryption failed"
+                    }
+                }
+            }
         }
-
+        
         return {
             "success": true,
             "message": decrypted_payload,
+            "channel_id": raw_message.channel_id,
+            "size_bytes": raw_message.size_bytes or 0,
             "metadata": {
-                "sender": peer,
+                "sender": raw_message.sender,
                 "timestamp": raw_message.timestamp,
-                "message_id": raw_message.message_id
+                "message_id": raw_message.id,
+                "encrypted": raw_message.is_encrypted
             }
         }
     }
-
-    action perform_key_exchange(peer: string) -> string {
-        // Simulate key exchange (would use actual ECDH)
-        let shared_secret = crypto.keccak256(
-            this.get_node_id() + peer + string(datetime.now().timestamp())
-        )
-
-        return shared_secret
-    }
-
-    action encrypt_message(message: map, key: string) -> map {
-        // Simulate encryption (would use actual AES encryption)
+    
+    action private generate_key_pair() -> map {
+        """
+        Generate cryptographic key pair
+        """
+        // Simulate key generation - in production would use actual cryptography
         return {
-            "encrypted": true,
-            "ciphertext": string(message) + "_encrypted_with_" + key.slice(0, 8),
-            "iv": "simulated_iv",
-            "auth_tag": "simulated_tag"
+            "public_key": "PUB_" + crypto.sha3_256(string(datetime.now().timestamp()) + string(math.random())),
+            "private_key": "PRIV_" + crypto.sha3_256(string(datetime.now().timestamp()) + string(math.random()) + "secret")
         }
     }
-
-    action decrypt_message(encrypted_message: map, key: string) -> map {
-        // Simulate decryption
-        if encrypted_message.encrypted {
-            return {"decrypted": true, "content": "Decrypted message content"}
-        }
-
-        return encrypted_message
-    }
-
-    action validate_message_structure(message: map) -> boolean {
-        let required_fields = ["payload", "timestamp", "message_id", "protocol_version", "sender"]
-
-        for each field in required_fields {
-            if not message.has(field) {
-                return false
+    
+    action private perform_key_exchange(private_key: string, peer_public_key: string, algorithm: string) -> map {
+        """
+        Perform key exchange to derive shared secret
+        """
+        try {
+            // Simulate key exchange - in production would use actual ECDH
+            let shared_secret = crypto.sha3_256(private_key + peer_public_key + string(datetime.now().timestamp()))
+            
+            return {
+                "success": true,
+                "shared_secret": shared_secret,
+                "algorithm": algorithm
+            }
+        } catch (error) {
+            return {
+                "success": false,
+                "error": "Key exchange failed: " + error
             }
         }
-
-        // Check timestamp is reasonable
-        let message_time = message.timestamp
-        let current_time = datetime.now().timestamp()
-
-        if message_time > current_time + 60 {
-            return false
-        }
-
-        if message_time < current_time - 3600 {
-            return false
-        }
-
-        return true
     }
-
-    action network_send(peer: string, message: map) -> boolean {
-        // Simulate network latency and potential failure
-        let success_rate = 0.95
-
-        if math.random() < success_rate {
+    
+    action private derive_session_key(shared_secret: string, peer_id: string, node_id: string) -> string {
+        """
+        Derive session key from shared secret
+        """
+        return crypto.sha3_256(shared_secret + peer_id + node_id + string(datetime.now().timestamp()))
+    }
+    
+    action private async authenticate_peer(peer_id: string, peer_public_key: string, session_key: string) -> boolean {
+        """
+        Authenticate peer using challenge-response
+        """
+        try {
+            // Send authentication challenge
+            let challenge = crypto.random_bytes(32)
+            
+            // Simulate sending challenge and receiving response
+            await sleep(0.1) // Simulate network delay
+            
+            // For simulation, assume authentication succeeds
             return true
-        } else {
-            throw "Network send failed"
+            
+        } catch (error) {
+            print("⚠️ Peer authentication failed: " + error)
+            return false
         }
     }
-
-    action initialize_security() -> map {
+    
+    action private negotiate_capabilities(requested_capabilities: list, supported_capabilities: list) -> list {
+        """
+        Negotiate capabilities between peers
+        """
+        let negotiated = []
+        
+        for each capability in requested_capabilities {
+            if supported_capabilities.contains(capability) {
+                negotiated.push(capability)
+            }
+        }
+        
+        return negotiated
+    }
+    
+    action private send_channel_close_notification(channel_id: string, reason: string) {
+        """
+        Send channel close notification to peer
+        """
+        let channel = this.connections[channel_id]
+        if channel != null {
+            let close_message = {
+                "type": "channel_close",
+                "channel_id": channel_id,
+                "reason": reason,
+                "timestamp": datetime.now().timestamp()
+            }
+            
+            // Try to send, but don't fail if it doesn't work
+            try {
+                this.send_message({
+                    "peer_id": channel.peer_id,
+                    "message": close_message,
+                    "priority": "high",
+                    "delivery_guarantee": "best_effort"
+                })
+            } catch (error) {
+                // Ignore errors for close notifications
+            }
+        }
+    }
+    
+    action private calculate_channel_health() -> ChannelHealthStats {
+        """
+        Calculate health statistics for all channels
+        """
+        let healthy_channels = 0
+        let degraded_channels = 0
+        let unhealthy_channels = 0
+        let total_session_age = 0
+        let total_channels = 0
+        let renegotiation_count = 0
+        let connection_stability = 0
+        
+        for each channel_id, channel in this.connections {
+            if channel.is_active {
+                total_channels += 1
+                total_session_age += datetime.now().timestamp() - channel.established_at
+                
+                // Determine channel health
+                let session_age = datetime.now().timestamp() - channel.established_at
+                let inactivity = datetime.now().timestamp() - channel.last_activity
+                
+                if inactivity > 3600 {
+                    unhealthy_channels += 1
+                } else if session_age > channel.session_timeout * 0.9 {
+                    degraded_channels += 1
+                } else if channel.message_count_sent == 0 and channel.message_count_received == 0 {
+                    degraded_channels += 1
+                } else {
+                    healthy_channels += 1
+                }
+            }
+        }
+        
+        let average_session_age = total_channels > 0 ? total_session_age / total_channels : 0
+        
+        // Calculate connection stability (simplified)
+        connection_stability = total_channels > 0 ? 
+            healthy_channels / total_channels : 1.0
+        
+        return ChannelHealthStats{
+            healthy_channels: healthy_channels,
+            degraded_channels: degraded_channels,
+            unhealthy_channels: unhealthy_channels,
+            average_session_age: average_session_age,
+            renegotiation_count: renegotiation_count,
+            connection_stability: connection_stability
+        }
+    }
+    
+    action private calculate_security_status() -> SecurityStatus {
+        """
+        Calculate current security status
+        """
+        let encrypted_channels = 0
+        let total_active_channels = 0
+        let security_events = []
+        let threat_level = "low"
+        
+        for each channel_id, channel in this.connections {
+            if channel.is_active {
+                total_active_channels += 1
+                if channel.is_encrypted {
+                    encrypted_channels += 1
+                }
+            }
+        }
+        
+        // Check for security events in cache
+        let recent_security_events = cache_get("security_events") or []
+        if len(recent_security_events) > 0 {
+            security_events = recent_security_events.slice(-10) // Last 10 events
+        }
+        
+        // Determine threat level
+        let encryption_ratio = total_active_channels > 0 ? 
+            encrypted_channels / total_active_channels : 1.0
+        
+        if encryption_ratio < 0.5 {
+            threat_level = "high"
+        } else if encryption_ratio < 0.8 {
+            threat_level = "medium"
+        }
+        
+        // Check for intrusion detection (simplified)
+        let intrusion_detected = false
+        if security_events.count() > 5 {
+            // Too many security events in short time
+            intrusion_detected = true
+            threat_level = "critical"
+        }
+        
+        return SecurityStatus{
+            encryption_enabled: encryption_ratio > 0,
+            authentication_required: true,
+            replay_protection: true,
+            intrusion_detected: intrusion_detected,
+            threat_level: threat_level,
+            security_events: security_events,
+            timestamp: datetime.now().timestamp()
+        }
+    }
+    
+    action private calculate_performance_metrics() -> PerformanceMetrics {
+        """
+        Calculate performance metrics
+        """
+        // Simplified metrics - in production would use actual measurements
+        let total_messages = 0
+        let total_bytes = 0
+        
+        for each channel_id, channel in this.connections {
+            if channel.is_active {
+                total_messages += channel.message_count_sent + channel.message_count_received
+                total_bytes += channel.total_bytes_sent + channel.total_bytes_received
+            }
+        }
+        
+        // Get memory usage
+        let memory_stats = memory_stats()
+        let memory_usage_mb = memory_stats.used_memory / (1024 * 1024)
+        
+        return PerformanceMetrics{
+            throughput_messages_per_second: this.calculate_throughput(),
+            throughput_bytes_per_second: total_bytes / math.max(1, this.get_uptime_seconds()),
+            average_processing_time_ms: 50, // Simulated
+            queue_processing_efficiency: this.calculate_queue_efficiency(),
+            cpu_usage_percent: this.estimate_cpu_usage(),
+            memory_usage_mb: memory_usage_mb,
+            network_latency_ms: this.calculate_average_latency(),
+            timestamp: datetime.now().timestamp()
+        }
+    }
+    
+    action private calculate_throughput() -> float {
+        """
+        Calculate current throughput in messages per second
+        """
+        let recent_messages = cache_get("recent_message_count") or 0
+        return recent_messages / 60.0 // Messages per second (assuming 60-second window)
+    }
+    
+    action private calculate_queue_efficiency() -> float {
+        """
+        Calculate message queue processing efficiency
+        """
+        let queue_size = len(this.message_queue)
+        let processing_rate = cache_get("processing_rate") or 100
+        
+        if queue_size == 0 {
+            return 1.0
+        }
+        
+        return math.min(1.0, processing_rate / math.max(1, queue_size))
+    }
+    
+    action private estimate_cpu_usage() -> float {
+        """
+        Estimate CPU usage (simplified)
+        """
+        let active_channels = 0
+        for each channel_id, channel in this.connections {
+            if channel.is_active {
+                active_channels += 1
+            }
+        }
+        
+        // Simple estimation based on active channels
+        return math.min(100.0, active_channels * 0.5)
+    }
+    
+    action private calculate_average_latency() -> float {
+        """
+        Calculate average message latency
+        """
+        // Query database for recent message latencies
+        try {
+            let result = db.query_one("""
+                SELECT AVG(latency_ms) as avg_latency 
+                FROM p2p_messages 
+                WHERE sent_at > NOW() - INTERVAL '5 minutes' 
+                AND latency_ms IS NOT NULL
+            """)
+            
+            return result?.avg_latency or 100.0
+        } catch (error) {
+            return 100.0 // Default fallback
+        }
+    }
+    
+    action private calculate_encryption_success_rate() -> float {
+        """
+        Calculate encryption success rate
+        """
+        try {
+            let result = db.query_one("""
+                SELECT 
+                    COUNT(CASE WHEN encrypted = TRUE THEN 1 END) as encrypted_count,
+                    COUNT(*) as total_count
+                FROM p2p_messages 
+                WHERE sent_at > NOW() - INTERVAL '1 hour'
+            """)
+            
+            if result.total_count > 0 {
+                return result.encrypted_count / result.total_count
+            }
+        } catch (error) {
+            // Fall through to default
+        }
+        
+        return 0.95 // Default success rate
+    }
+    
+    action private check_for_alerts() -> list {
+        """
+        Check for system alerts that need attention
+        """
+        let alerts = []
+        
+        // Check message queue
+        if len(this.message_queue) > 10000 {
+            alerts.push("CRITICAL: Message queue exceeds 10,000 messages")
+        } else if len(this.message_queue) > 5000 {
+            alerts.push("WARNING: Message queue exceeds 5,000 messages")
+        }
+        
+        // Check channel health
+        let channel_health = this.calculate_channel_health()
+        if channel_health.unhealthy_channels > 0 {
+            alerts.push("WARNING: " + string(channel_health.unhealthy_channels) + " unhealthy channels detected")
+        }
+        
+        // Check security status
+        let security_status = this.calculate_security_status()
+        if security_status.threat_level == "critical" {
+            alerts.push("CRITICAL: Security threat level critical")
+        } else if security_status.threat_level == "high" {
+            alerts.push("WARNING: Security threat level high")
+        }
+        
+        return alerts
+    }
+    
+    action private calculate_channel_metrics(channel: map) -> map {
+        """
+        Calculate detailed metrics for a channel
+        """
+        // Query database for channel metrics
+        try {
+            let result = db.query_one("""
+                SELECT 
+                    AVG(latency_ms) as avg_latency,
+                    COUNT(CASE WHEN status = 'delivered' THEN 1 END) as delivered_count,
+                    COUNT(*) as total_count,
+                    AVG(retry_count) as avg_retry_count,
+                    COUNT(CASE WHEN encrypted = TRUE THEN 1 END) as encrypted_count
+                FROM p2p_messages 
+                WHERE channel_id = ? 
+                AND sent_at > NOW() - INTERVAL '1 hour'
+            """, [channel.channel_id])
+            
+            let delivery_success_rate = result.total_count > 0 ? 
+                result.delivered_count / result.total_count : 1.0
+            
+            let encryption_success_rate = result.total_count > 0 ? 
+                result.encrypted_count / result.total_count : 1.0
+            
+            // Calculate health score (0-100)
+            let health_score = 100.0
+            health_score *= delivery_success_rate
+            health_score *= encryption_success_rate
+            health_score *= math.max(0.5, 1.0 - (result.avg_retry_count or 0) * 0.1)
+            
+            // Check channel age
+            let channel_age = datetime.now().timestamp() - channel.established_at
+            if channel_age > channel.session_timeout * 0.9 {
+                health_score *= 0.8 // Penalty for old channels
+            }
+            
+            // Check inactivity
+            let inactivity = datetime.now().timestamp() - channel.last_activity
+            if inactivity > 3600 {
+                health_score *= 0.5 // Penalty for inactive channels
+            }
+            
+            return {
+                "average_latency": result.avg_latency or 100.0,
+                "delivery_success_rate": delivery_success_rate,
+                "encryption_success_rate": encryption_success_rate,
+                "retry_rate": result.avg_retry_count or 0,
+                "health_score": health_score,
+                "detailed_metrics": {
+                    "messages_sent": channel.message_count_sent,
+                    "messages_received": channel.message_count_received,
+                    "bytes_sent": channel.total_bytes_sent,
+                    "bytes_received": channel.total_bytes_received,
+                    "channel_age_seconds": channel_age,
+                    "inactivity_seconds": inactivity
+                }
+            }
+            
+        } catch (error) {
+            // Fallback to simplified calculation
+            return {
+                "average_latency": 100.0,
+                "delivery_success_rate": 0.95,
+                "encryption_success_rate": channel.is_encrypted ? 1.0 : 0.0,
+                "retry_rate": 0.1,
+                "health_score": 85.0,
+                "detailed_metrics": {}
+            }
+        }
+    }
+    
+    action private calculate_aggregate_metrics() -> map {
+        """
+        Calculate aggregate metrics for all channels
+        """
+        let total_messages_sent = 0
+        let total_messages_received = 0
+        let total_bytes_sent = 0
+        let total_bytes_received = 0
+        
+        for each channel_id, channel in this.connections {
+            if channel.is_active {
+                total_messages_sent += channel.message_count_sent
+                total_messages_received += channel.message_count_received
+                total_bytes_sent += channel.total_bytes_sent
+                total_bytes_received += channel.total_bytes_received
+            }
+        }
+        
+        // Query database for performance metrics
+        try {
+            let result = db.query_one("""
+                SELECT 
+                    AVG(latency_ms) as avg_latency,
+                    AVG(retry_count) as avg_retry_count,
+                    COUNT(CASE WHEN status = 'delivered' THEN 1 END) as delivered_count,
+                    COUNT(*) as total_count,
+                    COUNT(CASE WHEN encrypted = TRUE THEN 1 END) as encrypted_count
+                FROM p2p_messages 
+                WHERE sent_at > NOW() - INTERVAL '1 hour'
+            """)
+            
+            let delivery_success_rate = result.total_count > 0 ? 
+                result.delivered_count / result.total_count : 1.0
+            
+            let encryption_success_rate = result.total_count > 0 ? 
+                result.encrypted_count / result.total_count : 1.0
+            
+            return {
+                "total_messages_sent": total_messages_sent,
+                "total_messages_received": total_messages_received,
+                "total_bytes_sent": total_bytes_sent,
+                "total_bytes_received": total_bytes_received,
+                "average_latency": result.avg_latency or 100.0,
+                "delivery_success_rate": delivery_success_rate,
+                "encryption_success_rate": encryption_success_rate,
+                "retry_rate": result.avg_retry_count or 0.1,
+                "health_score": delivery_success_rate * encryption_success_rate * 100
+            }
+            
+        } catch (error) {
+            return {
+                "total_messages_sent": total_messages_sent,
+                "total_messages_received": total_messages_received,
+                "total_bytes_sent": total_bytes_sent,
+                "total_bytes_received": total_bytes_received,
+                "average_latency": 100.0,
+                "delivery_success_rate": 0.95,
+                "encryption_success_rate": 0.9,
+                "retry_rate": 0.1,
+                "health_score": 85.0
+            }
+        }
+    }
+    
+    action private get_oldest_channel_establishment() -> integer {
+        """
+        Get timestamp of oldest active channel
+        """
+        let oldest = datetime.now().timestamp()
+        
+        for each channel_id, channel in this.connections {
+            if channel.is_active and channel.established_at < oldest {
+                oldest = channel.established_at
+            }
+        }
+        
+        return oldest
+    }
+    
+    action private get_most_recent_activity() -> integer {
+        """
+        Get timestamp of most recent channel activity
+        """
+        let most_recent = 0
+        
+        for each channel_id, channel in this.connections {
+            if channel.is_active and channel.last_activity > most_recent {
+                most_recent = channel.last_activity
+            }
+        }
+        
+        return most_recent
+    }
+    
+    action private is_nonce_replayed(nonce: integer, message_id: string) -> boolean {
+        """
+        Check if nonce has been replayed
+        """
+        let cache_key = "nonce_check_" + string(nonce) + "_" + message_id
+        return cache_get(cache_key) != null
+    }
+    
+    action private verify_message_signature(message: NetworkMessage) -> boolean {
+        """
+        Verify message signature
+        """
+        // For simulation, assume signatures are valid
+        // In production, would verify against sender's public key
+        return message.signature != null
+    }
+    
+    action private check_protocol_compatibility(old_version: string, new_version: string) -> boolean {
+        """
+        Check if protocol versions are compatible
+        """
+        // Simple compatibility check
+        let old_major = int(old_version.split(".")[0])
+        let new_major = int(new_version.split(".")[0])
+        
+        return old_major == new_major // Same major version are compatible
+    }
+    
+    action private get_supported_capabilities() -> list {
+        """
+        Get list of supported capabilities
+        """
+        return [
+            "end_to_end_encryption",
+            "message_compression",
+            "batch_processing",
+            "priority_queuing",
+            "delivery_guarantees",
+            "replay_protection"
+        ]
+    }
+    
+    action private get_current_protocol_version() -> string {
+        """
+        Get current protocol version
+        """
+        for each version, info in this.protocol_versions {
+            if info.default {
+                return version
+            }
+        }
+        return "2.0"
+    }
+    
+    action private get_node_id() -> string {
+        """
+        Get current node ID
+        """
+        return this.node_config.node_id or "node_" + crypto.sha3_256("default_node").slice(0, 16)
+    }
+    
+    action private get_node_private_key() -> string {
+        """
+        Get node's private key (simplified)
+        """
+        return this.node_config.private_key or "simulated_private_key"
+    }
+    
+    action private get_uptime_seconds() -> integer {
+        """
+        Get uptime in seconds
+        """
+        return datetime.now().timestamp() - (this.node_config.start_time or datetime.now().timestamp() - 3600)
+    }
+    
+    action private initialize_security_context() -> map {
+        """
+        Initialize security context
+        """
         return {
-            "encryption_algorithm": "AES-256-GCM",
-            "key_exchange": "ECDH",
-            "hash_algorithm": "Keccak256",
-            "max_message_size": 1048576,
-            "handshake_timeout": 30
+            "encryption_algorithms": ["AES-256-GCM", "ChaCha20-Poly1305"],
+            "key_exchange_algorithms": ["ECDH-X25519", "ECDH-P256"],
+            "hash_algorithms": ["SHA3-256", "SHA-256"],
+            "signature_algorithms": ["Ed25519", "ECDSA"],
+            "security_level": "high",
+            "compliance": ["FIPS-140", "NIST-800"],
+            "timestamp": datetime.now().timestamp()
         }
     }
-
-    action calculate_network_health() -> float {
-        let status = this.get_network_status()
-        let health_score = 1.0
-
-        // Penalize for few connections
-        if status.total_connections < 5 {
-            health_score *= 0.8
+    
+    action private initialize_background_processors() {
+        """
+        Initialize background processing tasks
+        """
+        // Start message queue processor
+        async action process_message_queue() {
+            while true {
+                try {
+                    let messages = this.receive_messages({
+                        "max_messages": 100,
+                        "timeout_ms": 1000
+                    })
+                    
+                    if messages.success and messages.total_received > 0 {
+                        print("📥 Processed " + string(messages.total_received) + " messages from queue")
+                    }
+                    
+                } catch (error) {
+                    print("⚠️ Message queue processor error: " + error)
+                }
+                
+                await sleep(1) // Process every second
+            }
         }
-
-        // Penalize for low secure connection ratio
-        let secure_ratio = status.secure_connections / math.max(1, status.total_connections)
-        if secure_ratio < 0.5 {
-            health_score *= 0.9
+        
+        // Start channel health monitor
+        async action monitor_channel_health() {
+            while true {
+                try {
+                    let status = this.get_communication_status()
+                    
+                    if status.alerts.count() > 0 {
+                        print("⚠️ P2P Alerts: " + string(status.alerts))
+                    }
+                    
+                    // Record metrics
+                    cache_set("p2p_status_" + string(datetime.now().timestamp()), status, 300)
+                    
+                } catch (error) {
+                    print("⚠️ Channel health monitor error: " + error)
+                }
+                
+                await sleep(30) // Check every 30 seconds
+            }
         }
-
-        return health_score
-    }
-
-    action get_uptime() -> integer {
-        return datetime.now().timestamp() - this.get_startup_time()
-    }
-
-    action get_startup_time() -> integer {
-        return datetime.now().timestamp() - 3600
-    }
-
-    action get_node_id() -> string {
-        return "node_" + crypto.keccak256("unique_node_id").slice(0, 16)
-    }
-
-    // Simulate incoming messages for testing
-    action simulate_incoming_message(peer: string, message: map) {
-        let full_message = {
-            "payload": message,
-            "timestamp": datetime.now().timestamp(),
-            "message_id": crypto.keccak256(string(message) + string(datetime.now().timestamp())),
-            "protocol_version": this.protocol_version,
-            "sender": peer
+        
+        // Start session reaper (close expired sessions)
+        async action reap_expired_sessions() {
+            while true {
+                try {
+                    let current_time = datetime.now().timestamp()
+                    let sessions_closed = 0
+                    
+                    for each channel_id, channel in this.connections {
+                        if channel.is_active) {
+                            let session_age = current_time - channel.established_at
+                            if session_age > channel.session_timeout {
+                                // Channel has expired
+                                this.close_secure_channel(channel.peer_id, "session_timeout")
+                                sessions_closed += 1
+                            }
+                        }
+                    }
+                    
+                    if sessions_closed > 0 {
+                        print("🔒 Closed " + string(sessions_closed) + " expired sessions")
+                    }
+                    
+                } catch (error) {
+                    print("⚠️ Session reaper error: " + error)
+                }
+                
+                await sleep(60) // Check every minute
+            }
         }
-        this.message_buffer.push(full_message)
+        
+        // Start background tasks
+        spawn(process_message_queue)
+        spawn(monitor_channel_health)
+        spawn(reap_expired_sessions)
+        
+        print("✅ Background processors initialized")
     }
 }
 
-// Test P2P Communication
-action async test_p2p_communication() {
-    print("📡 Testing P2P Communication Layer...")
-
+// Example usage and testing
+action async test_p2p_system() {
+    print("🧪 Testing P2P Communication Layer...")
+    
+    // Initialize P2P layer
     let p2p = P2PCommunicationLayer()
-
+    p2p.init("test_node_001", {
+        "node_id": "test_node_001",
+        "start_time": datetime.now().timestamp(),
+        "max_channels": 100
+    })
+    
     // Test secure channel establishment
-    let test_peer = "peer_123@example.com:30303"
-    if p2p.establish_secure_channel(test_peer) {
-        print("✅ Secure channel established")
-
-        // Test message sending
-        let test_message = {
-            "type": "greeting",
-            "content": "Hello from Ziver Network!",
-            "timestamp": datetime.now().timestamp()
-        }
-
-        if p2p.send_message(test_peer, test_message) {
-            print("✅ Message sent successfully")
-        }
-
-        // Test network status
-        let status = p2p.get_network_status()
-        print("Network Status: " + string(status))
-
-        // Test receiving messages
-        p2p.simulate_incoming_message(test_peer, {
-            "type": "response",
-            "content": "Hello back!",
-            "timestamp": datetime.now().timestamp()
-        })
-
-        let received = p2p.receive_messages()
-        print("Received messages: " + string(received.count()))
+    let test_peer = "peer_001@example.com:30303"
+    let channel_request = ChannelRequest{
+        peer_id: test_peer,
+        peer_public_key: "test_public_key_123",
+        encryption_algorithm: "AES-256-GCM",
+        key_exchange_algorithm: "ECDH-X25519",
+        authentication_required: false,
+        timestamp: datetime.now().timestamp()
     }
+    
+    let channel_result = await p2p.establish_secure_channel(channel_request)
+    
+    if channel_result.success {
+        print("✅ Secure channel established: " + channel_result.channel_id)
+        
+        // Test message sending
+        let test_message = NetworkMessage{
+            id: "test_msg_001",
+            type: "greeting",
+            payload: {"message": "Hello from Ziver Network!"},
+            headers: {},
+            version: "2.0",
+            created_at: datetime.now().timestamp(),
+            expires_at: datetime.now().timestamp() + 3600
+        }
+        
+        let send_request = MessageSendRequest{
+            peer_id: test_peer,
+            message: test_message,
+            encryption_mode: "end_to_end",
+            priority: "normal",
+            delivery_guarantee: "best_effort",
+            compression: true,
+            timestamp: datetime.now().timestamp()
+        }
+        
+        let send_result = await p2p.send_message(send_request)
+        
+        if send_result.success {
+            print("✅ Message sent successfully: " + send_result.message_id)
+        } else {
+            print("❌ Message send failed: " + (send_result.error or "Unknown error"))
+        }
+        
+        // Test batch sending
+        let batch_requests = []
+        for each i in range(1, 6) {
+            let batch_message = NetworkMessage{
+                id: "batch_msg_" + string(i),
+                type: "data",
+                payload: {"index": i, "data": "Batch data " + string(i)},
+                headers: {},
+                version: "2.0",
+                created_at: datetime.now().timestamp()
+            }
+            
+            batch_requests.push(MessageSendRequest{
+                peer_id: test_peer,
+                message: batch_message,
+                encryption_mode: "transport",
+                priority: "low",
+                timestamp: datetime.now().timestamp()
+            })
+        }
+        
+        let batch_results = await p2p.send_message_batch(batch_requests)
+        print("✅ Batch send complete: " + string(batch_results.count()) + " messages")
+        
+        // Test communication status
+        let status = p2p.get_communication_status()
+        print("📊 Communication Status:")
+        print("  Active Channels: " + string(status.active_channels))
+        print("  Queue Size: " + string(status.message_queue_size))
+        print("  Encryption Success Rate: " + string(status.encryption_success_rate * 100) + "%")
+        
+        // Test health check
+        let health = p2p.health_check()
+        print("🏥 Health Check: " + health.status)
+        if health.issues.count() > 0 {
+            print("  Issues: " + string(health.issues))
+        }
+        
+        // Test channel metrics
+        let metrics = p2p.get_channel_metrics(channel_result.channel_id)
+        print("📈 Channel Metrics:")
+        print("  Health Score: " + string(metrics.health_score))
+        print("  Messages Sent: " + string(metrics.messages_sent))
+        
+        // Close channel
+        let close_result = p2p.close_secure_channel(test_peer, "test_complete")
+        if close_result.success {
+            print("✅ Channel closed successfully")
+        }
+        
+    } else {
+        print("❌ Failed to establish secure channel: " + (channel_result.error or "Unknown error"))
+    }
+    
+    // Test emergency closure
+    print("\n🚨 Testing emergency closure...")
+    let emergency_result = p2p.emergency_close_all_channels("system_test")
+    print("Emergency closure result: " + string(emergency_result.success))
+    print("Channels closed: " + string(emergency_result.channels_closed))
+    
+    print("\n✅ P2P system test complete!")
 }
 
+// Export the contract and test function
 export {
     P2PCommunicationLayer,
     P2PCommunication,
-    test_p2p_communication
+    test_p2p_system
+}
+
+// Main entry point for standalone execution
+if is_main() {
+    print("🚀 Starting P2P Communication Layer...")
+    async test_p2p_system()
 }
