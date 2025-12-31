@@ -1,237 +1,2048 @@
 # src/rpc/server.zx
-# JSON-RPC 2.0 API Server for Ziver Chain
+# Enhanced JSON-RPC 2.0 API Server for Ziver Chain with Modern Features
 
 use "crypto" as crypto
 use "datetime" as datetime
 use "math" as math
+use "json" as json
+use "../database/postgres" as db
+use "../middleware/security_middleware" as security
+use "../ai/zaie_engine" as zaie
+use "../network/p2p" as p2p
+
+// Enable memory tracking for RPC server
+track_memory()
+
+// Security policies for RPC server
+const RPC_POLICIES = {
+    max_requests_per_second: 100,
+    max_request_size: 5 * 1024 * 1024, // 5MB
+    rate_limit_window: 60, // seconds
+    max_concurrent_sessions: 1000,
+    require_authentication: true,
+    allowed_origins: ["*"], // Configure in production
+    session_timeout: 3600, // 1 hour
+    enable_cors: true,
+    enable_compression: true,
+    enable_caching: true,
+    cache_ttl: 300, // 5 minutes
+    enable_websocket: true,
+    websocket_max_connections: 100,
+    enable_batch_requests: true,
+    max_batch_size: 50
+}
+
+// Cache configurations
+cache("rpc_responses", { ttl: RPC_POLICIES.cache_ttl, strategy: "lru", max_entries: 10000 })
+cache("rpc_sessions", { ttl: RPC_POLICIES.session_timeout, strategy: "lfu" })
+cache("rate_limits", { ttl: 60, strategy: "fifo" })
+
+// Throttle RPC endpoints
+throttle("rpc_requests", { 
+    requests_per_second: RPC_POLICIES.max_requests_per_second, 
+    burst: 50 
+})
 
 // JSON-RPC 2.0 API Server for Ziver Chain with Modern Features
 protocol JSONRPCProtocol {
-    action start() -> boolean
+    action start() -> ServerStartResult
+    action stop() -> ServerStopResult
     action handle_request(request: map) -> map
-    action register_method(method_name: string, handler: action) -> boolean
+    action handle_batch_requests(requests: list) -> list
+    action register_method(method_name: string, handler: action, options: map?) -> MethodRegistrationResult
+    action unregister_method(method_name: string) -> boolean
+    action get_server_stats() -> ServerStats
+    action health_check() -> HealthCheckResult
+    action update_config(config: map) -> ConfigUpdateResult
+    action get_method_info(method_name: string) -> MethodInfo
+    action validate_method_params(method_name: string, params: list) -> ValidationResult
 }
 
 contract JSONRPCServer implements JSONRPCProtocol {
     persistent storage port: integer
     persistent storage node: any
     persistent storage methods: map
+    persistent storage method_registry: map
     persistent storage is_running: boolean = false
     persistent storage request_count: integer = 0
     persistent storage method_stats: map
+    persistent storage sessions: map
+    persistent storage config: map
+    persistent storage http_server: any
+    persistent storage websocket_server: any
+    persistent storage middleware_chain: list
+    
+    entity ServerStartResult {
+        success: boolean
+        server_address: string
+        port: integer
+        start_time: integer
+        message: string
+        warnings: list
+        error: string?
+        timestamp: integer
+    }
+    
+    entity ServerStopResult {
+        success: boolean
+        stop_time: integer
+        uptime_seconds: integer
+        active_connections_closed: integer
+        message: string
+        error: string?
+        timestamp: integer
+    }
+    
+    entity MethodRegistrationResult {
+        success: boolean
+        method_name: string
+        handler_type: string
+        options: map
+        message: string
+        error: string?
+        timestamp: integer
+    }
+    
+    entity ServerStats {
+        uptime_seconds: integer
+        total_requests: integer
+        successful_requests: integer
+        failed_requests: integer
+        active_sessions: integer
+        active_connections: integer
+        method_calls: map
+        average_response_time_ms: float
+        memory_usage_mb: float
+        cpu_usage_percent: float
+        queue_size: integer
+        alerts: list
+        timestamp: integer
+    }
+    
+    entity HealthCheckResult {
+        status: string // healthy, degraded, unhealthy
+        components: map
+        metrics: map
+        issues: list
+        recommendations: list
+        timestamp: integer
+    }
+    
+    entity ConfigUpdateResult {
+        success: boolean
+        old_config: map
+        new_config: map
+        changes: list
+        requires_restart: boolean
+        message: string
+        error: string?
+        timestamp: integer
+    }
+    
+    entity MethodInfo {
+        method_name: string
+        description: string
+        parameters: list
+        return_type: string
+        authentication_required: boolean
+        rate_limit: integer
+        cache_enabled: boolean
+        version: string
+        deprecated: boolean
+        timestamp: integer
+    }
+    
+    entity ValidationResult {
+        valid: boolean
+        method_name: string
+        parameters_provided: integer
+        parameters_expected: integer
+        type_errors: list
+        constraint_errors: list
+        suggestions: list
+        timestamp: integer
+    }
+    
+    entity RPCRequest {
+        jsonrpc: string = "2.0"
+        method: string
+        params: list?
+        id: integer?
+        auth_token: string?
+        metadata: map?
+        timestamp: integer
+    }
+    
+    entity RPCResponse {
+        jsonrpc: string = "2.0"
+        result: any?
+        error: map?
+        id: integer?
+        metadata: map
+        timestamp: integer
+    }
+    
+    // Reactive state monitoring
+    watch is_running {
+        if this.is_running {
+            print("✅ JSON-RPC Server is now running")
+        } else {
+            print("⏸️ JSON-RPC Server is stopped")
+        }
+    }
+    
+    watch request_count {
+        if this.request_count % 1000 == 0 {
+            print("📊 RPC Requests milestone: " + string(this.request_count))
+        }
+    }
 
-    action init(node: any, port: integer = 8545) {
+    action init(node: any, port: integer = 8545, config: map? = null) {
         this.node = node
         this.port = port
+        this.config = config or {
+            "name": "Ziver Chain JSON-RPC Server",
+            "version": "3.0.0",
+            "enable_cors": RPC_POLICIES.enable_cors,
+            "enable_compression": RPC_POLICIES.enable_compression,
+            "require_auth": RPC_POLICIES.require_authentication,
+            "rate_limiting": true,
+            "caching": RPC_POLICIES.enable_caching,
+            "websocket": RPC_POLICIES.enable_websocket,
+            "batch_requests": RPC_POLICIES.enable_batch_requests,
+            "max_request_size": RPC_POLICIES.max_request_size,
+            "log_level": "info",
+            "allowed_origins": RPC_POLICIES.allowed_origins
+        }
+        
         this.methods = {}
+        this.method_registry = {}
         this.method_stats = {}
+        this.sessions = {}
+        this.middleware_chain = []
+        this.is_running = false
+        
+        // Initialize middleware
+        this.initialize_middleware()
+        
+        // Register core methods
         this.register_core_methods()
+        
+        // Initialize database tables
+        this.initialize_database()
+        
         print("🔄 JSON-RPC Server initialized on port " + string(port))
-    }
-
-    action start() -> boolean {
-        this.is_running = true
-
-        print("🚀 JSON-RPC Server starting on http://localhost:" + string(this.port))
         print("📚 Available methods: " + string(this.methods.keys().count()))
-
-        // Start HTTP server in background
-        spawn this.start_http_server()
-
-        // Start metrics collection
-        spawn this.collect_metrics()
-
-        return true
+        print("🔧 Configuration: " + string(this.config))
     }
 
-    action handle_request(request: map) -> map {
-        this.request_count += 1
-
-        let method = request.get("method", "")
-        let params = request.get("params", [])
-        let id = request.get("id", 1)
-
-        // Validate request structure
-        let validation = this.validate_request(request)
-        if not validation.valid {
-            return this.error_response(id, -32600, validation.error)
-        }
-
-        print("📨 RPC Request #" + string(this.request_count) + ": " + method + " ID: " + string(id))
-
-        // Update method statistics
-        this.update_method_stats(method)
-
-        if not this.methods.has(method) {
-            return this.error_response(id, -32601, "Method not found: " + method)
-        }
-
+    action protect start() -> ServerStartResult {
+        """
+        Start the JSON-RPC server with HTTP and WebSocket support
+        """
+        let start_time = datetime.now().timestamp()
+        
         try {
-            let start_time = datetime.now().timestamp()
-            let result = this.methods[method](params)
-            let processing_time = datetime.now().timestamp() - start_time
-
-            // Log slow requests
-            if processing_time > 1.0 {
-                print("⚠️ Slow RPC method: " + method + " took " + string(processing_time) + "s")
+            if this.is_running {
+                return ServerStartResult{
+                    success: false,
+                    server_address: "localhost",
+                    port: this.port,
+                    start_time: start_time,
+                    message: "Server is already running",
+                    error: "Server already started",
+                    timestamp: datetime.now().timestamp()
+                }
             }
-
-            return this.success_response(id, result)
-        } catch(error) {
-            print("❌ RPC Error in " + method + ": " + string(error))
-            return this.error_response(id, -32000, "Internal error: " + string(error))
+            
+            this.is_running = true
+            print("🚀 JSON-RPC Server starting on http://localhost:" + string(this.port))
+            
+            // Create HTTP server
+            this.http_server = http_server()
+            
+            // Configure CORS if enabled
+            if this.config.enable_cors {
+                this.configure_cors()
+            }
+            
+            // Configure compression if enabled
+            if this.config.enable_compression {
+                this.configure_compression()
+            }
+            
+            // Register HTTP routes
+            this.register_routes()
+            
+            // Start HTTP server
+            this.http_server.listen(this.port)
+            
+            // Start WebSocket server if enabled
+            if this.config.websocket {
+                spawn this.start_websocket_server()
+            }
+            
+            // Start background tasks
+            spawn this.collect_metrics()
+            spawn this.cleanup_sessions()
+            spawn this.process_request_queue()
+            
+            let start_result = ServerStartResult{
+                success: true,
+                server_address: "http://localhost:" + string(this.port),
+                port: this.port,
+                start_time: start_time,
+                message: "JSON-RPC Server started successfully",
+                warnings: [],
+                timestamp: datetime.now().timestamp()
+            }
+            
+            // Log server start
+            audit("rpc_server_started", {
+                "port": this.port,
+                "config": this.config,
+                "methods_registered": this.methods.keys().count(),
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return start_result
+            
+        } catch (error) {
+            this.is_running = false
+            
+            audit("rpc_server_start_failed", {
+                "port": this.port,
+                "error": error,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return ServerStartResult{
+                success: false,
+                server_address: "localhost",
+                port: this.port,
+                start_time: start_time,
+                message: "Failed to start server",
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
         }
     }
 
-    action register_core_methods() {
-        // Web3 standard methods
-        this.methods["web3_clientVersion"] = action(params: list) -> string {
-            return "ZiverChain/v3.0.0/zexus-quantum"
+    action protect stop() -> ServerStopResult {
+        """
+        Stop the JSON-RPC server gracefully
+        """
+        let stop_time = datetime.now().timestamp()
+        let start_time = this.get_start_time() or stop_time
+        
+        try {
+            if not this.is_running {
+                return ServerStopResult{
+                    success: false,
+                    stop_time: stop_time,
+                    uptime_seconds: 0,
+                    active_connections_closed: 0,
+                    message: "Server is not running",
+                    error: "Server not started",
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            print("🛑 Stopping JSON-RPC Server...")
+            this.is_running = false
+            
+            // Stop HTTP server
+            if this.http_server != null {
+                try {
+                    this.http_server.close()
+                } catch (error) {
+                    print("⚠️ Error stopping HTTP server: " + error)
+                }
+            }
+            
+            // Stop WebSocket server
+            if this.websocket_server != null {
+                try {
+                    this.websocket_server.close()
+                } catch (error) {
+                    print("⚠️ Error stopping WebSocket server: " + error)
+                }
+            }
+            
+            // Close active sessions
+            let active_sessions_closed = this.close_all_sessions()
+            
+            // Clear caches
+            cache_clear("rpc_responses")
+            cache_clear("rpc_sessions")
+            
+            let uptime_seconds = stop_time - start_time
+            
+            audit("rpc_server_stopped", {
+                "port": this.port,
+                "uptime_seconds": uptime_seconds,
+                "total_requests": this.request_count,
+                "sessions_closed": active_sessions_closed,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return ServerStopResult{
+                success: true,
+                stop_time: stop_time,
+                uptime_seconds: uptime_seconds,
+                active_connections_closed: active_sessions_closed,
+                message: "Server stopped gracefully",
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            audit("rpc_server_stop_failed", {
+                "port": this.port,
+                "error": error,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return ServerStopResult{
+                success: false,
+                stop_time: stop_time,
+                uptime_seconds: stop_time - start_time,
+                active_connections_closed: 0,
+                message: "Failed to stop server",
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
         }
+    }
 
-        this.methods["net_version"] = action(params: list) -> string {
+    action protect handle_request(request: map) -> map {
+        """
+        Handle a single JSON-RPC request with full processing pipeline
+        """
+        let start_time = datetime.now().timestamp_ms()
+        this.request_count += 1
+        
+        try {
+            // Validate request structure
+            let validation_result = this.validate_request_structure(request)
+            if not validation_result.valid {
+                return this.create_error_response(
+                    request.id or 1,
+                    -32600,
+                    "Invalid Request",
+                    validation_result.errors
+                )
+            }
+            
+            let method = request.method
+            let params = request.params or []
+            let request_id = request.id or 1
+            let auth_token = request.auth_token
+            let metadata = request.metadata or {}
+            
+            print("📨 RPC Request #" + string(this.request_count) + ": " + method + " ID: " + string(request_id))
+            
+            // Check authentication if required
+            if this.config.require_auth and not this.validate_authentication(auth_token, method) {
+                return this.create_error_response(
+                    request_id,
+                    -32001,
+                    "Authentication required",
+                    {"method": method, "auth_token_provided": auth_token != null}
+                )
+            }
+            
+            // Check rate limits
+            if not this.check_rate_limit(method, auth_token) {
+                return this.create_error_response(
+                    request_id,
+                    -32002,
+                    "Rate limit exceeded",
+                    {"method": method, "retry_after": 60}
+                )
+            }
+            
+            // Check method exists
+            if not this.methods.has(method) {
+                return this.create_error_response(
+                    request_id,
+                    -32601,
+                    "Method not found",
+                    {"method": method, "available_methods": this.methods.keys()}
+                )
+            }
+            
+            // Get method info
+            let method_info = this.method_registry[method] or {}
+            
+            // Validate parameters
+            let param_validation = this.validate_method_params(method, params)
+            if not param_validation.valid {
+                return this.create_error_response(
+                    request_id,
+                    -32602,
+                    "Invalid params",
+                    param_validation
+                )
+            }
+            
+            // Check cache for identical requests
+            let cache_key = this.generate_cache_key(method, params, auth_token)
+            if this.config.caching and method_info.cache_enabled != false {
+                let cached_response = cache_get(cache_key)
+                if cached_response != null {
+                    print("⚡ Serving cached response for: " + method)
+                    
+                    // Update cache stats
+                    let cache_stats = cache_get("cache_stats") or {"hits": 0, "misses": 0}
+                    cache_stats.hits += 1
+                    cache_set("cache_stats", cache_stats, 3600)
+                    
+                    let response_time = datetime.now().timestamp_ms() - start_time
+                    
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": cached_response,
+                        "id": request_id,
+                        "metadata": {
+                            "cached": true,
+                            "response_time_ms": response_time,
+                            "timestamp": datetime.now().timestamp(),
+                            "method": method
+                        }
+                    }
+                }
+            }
+            
+            // Update method statistics
+            this.update_method_stats(method, "call")
+            
+            // Execute method with timeout protection
+            let result = null
+            let error = null
+            let execution_time_ms = 0
+            
+            try {
+                let method_start_time = datetime.now().timestamp_ms()
+                
+                // Apply middleware before execution
+                let middleware_result = this.apply_middleware("before", method, params, metadata)
+                if middleware_result.error != null {
+                    throw middleware_result.error
+                }
+                
+                // Execute the method
+                result = this.methods[method](params)
+                
+                // Apply middleware after execution
+                let post_middleware_result = this.apply_middleware("after", method, params, metadata, result)
+                if post_middleware_result.error != null {
+                    throw post_middleware_result.error
+                }
+                
+                execution_time_ms = datetime.now().timestamp_ms() - method_start_time
+                
+                // Log slow methods
+                if execution_time_ms > 1000 {
+                    print("⚠️ Slow RPC method: " + method + " took " + string(execution_time_ms) + "ms")
+                    
+                    audit("slow_rpc_method", {
+                        "method": method,
+                        "execution_time_ms": execution_time_ms,
+                        "params": params,
+                        "timestamp": datetime.now().timestamp()
+                    })
+                }
+                
+            } catch (method_error) {
+                error = method_error
+                this.update_method_stats(method, "error")
+                
+                print("❌ RPC Error in " + method + ": " + string(method_error))
+                
+                // Apply error middleware
+                this.apply_middleware("error", method, params, metadata, null, method_error)
+            }
+            
+            let total_response_time = datetime.now().timestamp_ms() - start_time
+            
+            // Cache successful responses
+            if error == null and this.config.caching and method_info.cache_enabled != false {
+                cache_set(cache_key, result, method_info.cache_ttl or RPC_POLICIES.cache_ttl)
+                
+                // Update cache stats
+                let cache_stats = cache_get("cache_stats") or {"hits": 0, "misses": 0}
+                cache_stats.misses += 1
+                cache_set("cache_stats", cache_stats, 3600)
+            }
+            
+            // Log request completion
+            this.log_request(method, request_id, error == null, execution_time_ms, total_response_time)
+            
+            // Create response
+            if error != null {
+                return this.create_error_response(
+                    request_id,
+                    -32000,
+                    "Internal error: " + string(error),
+                    {
+                        "method": method,
+                        "execution_time_ms": execution_time_ms,
+                        "response_time_ms": total_response_time
+                    }
+                )
+            } else {
+                return this.create_success_response(
+                    request_id,
+                    result,
+                    {
+                        "method": method,
+                        "execution_time_ms": execution_time_ms,
+                        "response_time_ms": total_response_time,
+                        "cached": false,
+                        "timestamp": datetime.now().timestamp()
+                    }
+                )
+            }
+            
+        } catch (error) {
+            let response_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("rpc_request_processing_failed", {
+                "request": request,
+                "error": error,
+                "response_time_ms": response_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return this.create_error_response(
+                request.id or 1,
+                -32603,
+                "Internal server error",
+                {"processing_time_ms": response_time, "error": string(error)}
+            )
+        }
+    }
+
+    action protect handle_batch_requests(requests: list) -> list {
+        """
+        Handle batch JSON-RPC requests with parallel processing
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            if not this.config.batch_requests {
+                return [this.create_error_response(
+                    null,
+                    -32600,
+                    "Batch requests not supported",
+                    {"max_batch_size": RPC_POLICIES.max_batch_size}
+                )]
+            }
+            
+            // Validate batch size
+            if len(requests) > RPC_POLICIES.max_batch_size {
+                return [this.create_error_response(
+                    null,
+                    -32600,
+                    "Batch size exceeded",
+                    {
+                        "max_batch_size": RPC_POLICIES.max_batch_size,
+                        "requested_size": len(requests)
+                    }
+                )]
+            }
+            
+            print("📦 Processing batch of " + string(len(requests)) + " requests")
+            
+            // Process requests in parallel with concurrency limit
+            let results = []
+            let active_tasks = []
+            
+            for each request in requests {
+                // Limit concurrent processing
+                if len(active_tasks) >= 10 {
+                    // Wait for some tasks to complete
+                    let completed = await Promise.any(active_tasks)
+                    active_tasks = active_tasks.filter(action(t) { return t != completed })
+                }
+                
+                let task = async this.handle_request(request)
+                active_tasks.push(task)
+                results.push(task)
+            }
+            
+            // Wait for all tasks
+            let completed_results = await Promise.all(results)
+            
+            let batch_processing_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("rpc_batch_processed", {
+                "batch_size": len(requests),
+                "processing_time_ms": batch_processing_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return completed_results
+            
+        } catch (error) {
+            let batch_processing_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("rpc_batch_processing_failed", {
+                "batch_size": len(requests),
+                "error": error,
+                "processing_time_ms": batch_processing_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return [this.create_error_response(
+                null,
+                -32603,
+                "Batch processing failed: " + string(error),
+                {"processing_time_ms": batch_processing_time}
+            )]
+        }
+    }
+
+    action protect register_method(method_name: string, handler: action, options: map? = null) -> MethodRegistrationResult {
+        """
+        Register a new RPC method with comprehensive options
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        try {
+            if this.methods.has(method_name) {
+                return MethodRegistrationResult{
+                    success: false,
+                    method_name: method_name,
+                    handler_type: "action",
+                    options: options or {},
+                    message: "Method already registered",
+                    error: "Method " + method_name + " already exists",
+                    timestamp: timestamp
+                }
+            }
+            
+            let method_options = options or {
+                "description": "Custom RPC method",
+                "authentication_required": this.config.require_auth,
+                "rate_limit": RPC_POLICIES.max_requests_per_second,
+                "cache_enabled": this.config.caching,
+                "cache_ttl": RPC_POLICIES.cache_ttl,
+                "deprecated": false,
+                "version": "1.0.0"
+            }
+            
+            // Register method
+            this.methods[method_name] = handler
+            this.method_registry[method_name] = method_options
+            
+            // Initialize stats
+            this.method_stats[method_name] = {
+                "calls": 0,
+                "successes": 0,
+                "errors": 0,
+                "total_time_ms": 0,
+                "last_called": timestamp
+            }
+            
+            audit("rpc_method_registered", {
+                "method_name": method_name,
+                "options": method_options,
+                "timestamp": timestamp
+            })
+            
+            return MethodRegistrationResult{
+                success: true,
+                method_name: method_name,
+                handler_type: "action",
+                options: method_options,
+                message: "Method registered successfully",
+                timestamp: timestamp
+            }
+            
+        } catch (error) {
+            return MethodRegistrationResult{
+                success: false,
+                method_name: method_name,
+                handler_type: "action",
+                options: options or {},
+                message: "Failed to register method",
+                error: string(error),
+                timestamp: timestamp
+            }
+        }
+    }
+
+    action protect unregister_method(method_name: string) -> boolean {
+        """
+        Unregister an RPC method
+        """
+        try {
+            if not this.methods.has(method_name) {
+                return false
+            }
+            
+            // Remove from registries
+            delete this.methods[method_name]
+            delete this.method_registry[method_name]
+            
+            // Keep stats for historical reference
+            audit("rpc_method_unregistered", {
+                "method_name": method_name,
+                "stats": this.method_stats[method_name] or {},
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            print("🗑️ Unregistered method: " + method_name)
+            return true
+            
+        } catch (error) {
+            print("❌ Failed to unregister method " + method_name + ": " + error)
+            return false
+        }
+    }
+
+    action protect get_server_stats() -> ServerStats {
+        """
+        Get comprehensive server statistics
+        """
+        let timestamp = datetime.now().timestamp()
+        let start_time = this.get_start_time() or timestamp
+        
+        // Calculate successful/failed requests
+        let successful_requests = 0
+        let failed_requests = 0
+        let total_method_calls = 0
+        let total_response_time = 0
+        
+        let method_calls = {}
+        for each method, stats in this.method_stats {
+            method_calls[method] = {
+                "calls": stats.calls or 0,
+                "successes": stats.successes or 0,
+                "errors": stats.errors or 0,
+                "average_time_ms": stats.calls > 0 ? (stats.total_time_ms or 0) / stats.calls : 0
+            }
+            
+            total_method_calls += stats.calls or 0
+            successful_requests += stats.successes or 0
+            failed_requests += stats.errors or 0
+            total_response_time += stats.total_time_ms or 0
+        }
+        
+        // Get memory usage
+        let memory_stats = memory_stats()
+        let memory_usage_mb = memory_stats.used_memory / (1024 * 1024)
+        
+        // Get CPU usage (simplified)
+        let cpu_usage_percent = this.estimate_cpu_usage()
+        
+        // Calculate average response time
+        let average_response_time_ms = total_method_calls > 0 ? 
+            total_response_time / total_method_calls : 0
+        
+        // Check for alerts
+        let alerts = this.check_for_alerts()
+        
+        return ServerStats{
+            uptime_seconds: timestamp - start_time,
+            total_requests: this.request_count,
+            successful_requests: successful_requests,
+            failed_requests: failed_requests,
+            active_sessions: this.get_active_sessions_count(),
+            active_connections: this.get_active_connections_count(),
+            method_calls: method_calls,
+            average_response_time_ms: average_response_time_ms,
+            memory_usage_mb: memory_usage_mb,
+            cpu_usage_percent: cpu_usage_percent,
+            queue_size: this.get_request_queue_size(),
+            alerts: alerts,
+            timestamp: timestamp
+        }
+    }
+
+    action protect health_check() -> HealthCheckResult {
+        """
+        Perform comprehensive health check of RPC server
+        """
+        let timestamp = datetime.now().timestamp()
+        let components = {}
+        let metrics = {}
+        let issues = []
+        let recommendations = []
+        
+        try {
+            // Check server status
+            components["server"] = this.is_running ? "healthy" : "stopped"
+            if not this.is_running {
+                issues.push("Server is not running")
+                recommendations.push("Start the server using start() method")
+            }
+            
+            // Check database connectivity
+            try {
+                db.query("SELECT 1")
+                components["database"] = "healthy"
+            } catch (error) {
+                components["database"] = "unhealthy"
+                issues.push("Database connectivity issue: " + error)
+                recommendations.push("Check database connection and credentials")
+            }
+            
+            // Check method registry
+            let method_count = this.methods.keys().count()
+            components["method_registry"] = method_count > 0 ? "healthy" : "degraded"
+            if method_count == 0 {
+                issues.push("No RPC methods registered")
+                recommendations.push("Register core methods or custom methods")
+            }
+            
+            // Check request queue
+            let queue_size = this.get_request_queue_size()
+            components["request_queue"] = queue_size < 100 ? "healthy" : queue_size < 1000 ? "degraded" : "unhealthy"
+            if queue_size > 1000 {
+                issues.push("Request queue backlog: " + string(queue_size) + " requests")
+                recommendations.push("Increase processing capacity or review request rates")
+            }
+            
+            // Check memory usage
+            let memory_stats = memory_stats()
+            let memory_usage_percent = (memory_stats.used_memory / memory_stats.total_memory) * 100
+            components["memory"] = memory_usage_percent < 80 ? "healthy" : memory_usage_percent < 90 ? "degraded" : "unhealthy"
+            
+            if memory_usage_percent > 80 {
+                issues.push("High memory usage: " + string(memory_usage_percent) + "%")
+                recommendations.push("Review memory usage patterns and consider optimization")
+            }
+            
+            // Gather metrics
+            let server_stats = this.get_server_stats()
+            metrics["uptime_seconds"] = server_stats.uptime_seconds
+            metrics["total_requests"] = server_stats.total_requests
+            metrics["average_response_time_ms"] = server_stats.average_response_time_ms
+            metrics["active_sessions"] = server_stats.active_sessions
+            metrics["memory_usage_mb"] = server_stats.memory_usage_mb
+            metrics["method_count"] = method_count
+            
+            // Determine overall status
+            let overall_status = "healthy"
+            for each component, status in components {
+                if status == "unhealthy" {
+                    overall_status = "unhealthy"
+                    break
+                } else if status == "degraded" {
+                    overall_status = "degraded"
+                }
+            }
+            
+            // Add AI-powered recommendations if available
+            if issues.count() > 0 and zaie != null {
+                try {
+                    let ai_recommendations = zaie.analyze_server_health(issues, metrics)
+                    recommendations = recommendations + ai_recommendations
+                } catch (error) {
+                    // AI analysis failed, continue without it
+                }
+            }
+            
+            return HealthCheckResult{
+                status: overall_status,
+                components: components,
+                metrics: metrics,
+                issues: issues,
+                recommendations: recommendations,
+                timestamp: timestamp
+            }
+            
+        } catch (error) {
+            return HealthCheckResult{
+                status: "unhealthy",
+                components: {"health_check": "failed"},
+                metrics: {},
+                issues: ["Health check failed: " + error],
+                recommendations: ["Restart RPC server", "Check system resources"],
+                timestamp: timestamp
+            }
+        }
+    }
+
+    action protect update_config(config: map) -> ConfigUpdateResult {
+        """
+        Update server configuration
+        """
+        let old_config = this.config.copy()
+        let timestamp = datetime.now().timestamp()
+        let changes = []
+        let requires_restart = false
+        
+        try {
+            for each key, value in config {
+                if this.config.has(key) and this.config[key] != value {
+                    changes.push({
+                        "key": key,
+                        "old_value": this.config[key],
+                        "new_value": value
+                    })
+                    
+                    // Check if change requires restart
+                    if this.requires_restart_for_config_change(key) {
+                        requires_restart = true
+                    }
+                    
+                    this.config[key] = value
+                }
+            }
+            
+            // Apply configuration changes that don't require restart
+            this.apply_configuration_changes(config)
+            
+            audit("rpc_config_updated", {
+                "old_config": old_config,
+                "new_config": this.config,
+                "changes": changes,
+                "requires_restart": requires_restart,
+                "timestamp": timestamp
+            })
+            
+            return ConfigUpdateResult{
+                success: true,
+                old_config: old_config,
+                new_config: this.config,
+                changes: changes,
+                requires_restart: requires_restart,
+                message: requires_restart ? 
+                    "Configuration updated - restart required for some changes" :
+                    "Configuration updated successfully",
+                timestamp: timestamp
+            }
+            
+        } catch (error) {
+            return ConfigUpdateResult{
+                success: false,
+                old_config: old_config,
+                new_config: this.config,
+                changes: changes,
+                requires_restart: false,
+                message: "Failed to update configuration",
+                error: string(error),
+                timestamp: timestamp
+            }
+        }
+    }
+
+    action protect get_method_info(method_name: string) -> MethodInfo {
+        """
+        Get detailed information about a registered method
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        if not this.methods.has(method_name) {
+            return MethodInfo{
+                method_name: method_name,
+                description: "Method not found",
+                parameters: [],
+                return_type: "error",
+                authentication_required: false,
+                rate_limit: 0,
+                cache_enabled: false,
+                version: "0.0.0",
+                deprecated: true,
+                timestamp: timestamp
+            }
+        }
+        
+        let method_options = this.method_registry[method_name] or {}
+        let stats = this.method_stats[method_name] or {}
+        
+        return MethodInfo{
+            method_name: method_name,
+            description: method_options.description or "No description available",
+            parameters: method_options.parameters or [],
+            return_type: method_options.return_type or "any",
+            authentication_required: method_options.authentication_required or this.config.require_auth,
+            rate_limit: method_options.rate_limit or RPC_POLICIES.max_requests_per_second,
+            cache_enabled: method_options.cache_enabled or this.config.caching,
+            version: method_options.version or "1.0.0",
+            deprecated: method_options.deprecated or false,
+            timestamp: timestamp
+        }
+    }
+
+    action protect validate_method_params(method_name: string, params: list) -> ValidationResult {
+        """
+        Validate method parameters against expected schema
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        if not this.methods.has(method_name) {
+            return ValidationResult{
+                valid: false,
+                method_name: method_name,
+                parameters_provided: len(params),
+                parameters_expected: 0,
+                type_errors: ["Method not found"],
+                constraint_errors: [],
+                suggestions: ["Check method name"],
+                timestamp: timestamp
+            }
+        }
+        
+        let method_options = this.method_registry[method_name] or {}
+        let expected_params = method_options.parameters or []
+        let param_schema = method_options.param_schema or {}
+        
+        let type_errors = []
+        let constraint_errors = []
+        let suggestions = []
+        
+        // Basic parameter count validation
+        if len(params) != len(expected_params) {
+            suggestions.push("Expected " + string(len(expected_params)) + " parameters, got " + string(len(params)))
+        }
+        
+        // Type validation if schema is available
+        if param_schema != {} {
+            for each i in range(0, math.min(len(params), len(expected_params))) {
+                let param_value = params[i]
+                let param_def = expected_params[i] or {}
+                let schema_rule = param_schema[string(i)] or {}
+                
+                // Type checking
+                if schema_rule.type != null {
+                    let actual_type = type(param_value)
+                    if actual_type != schema_rule.type {
+                        type_errors.push("Parameter " + string(i) + ": expected " + schema_rule.type + ", got " + actual_type)
+                    }
+                }
+                
+                // Constraint checking
+                if schema_rule.min != null and param_value < schema_rule.min {
+                    constraint_errors.push("Parameter " + string(i) + ": value " + string(param_value) + " < minimum " + string(schema_rule.min))
+                }
+                
+                if schema_rule.max != null and param_value > schema_rule.max {
+                    constraint_errors.push("Parameter " + string(i) + ": value " + string(param_value) + " > maximum " + string(schema_rule.max))
+                }
+                
+                if schema_rule.pattern != null and not matches_pattern(string(param_value), schema_rule.pattern) {
+                    constraint_errors.push("Parameter " + string(i) + ": pattern mismatch")
+                }
+            }
+        }
+        
+        let valid = len(type_errors) == 0 and len(constraint_errors) == 0
+        
+        return ValidationResult{
+            valid: valid,
+            method_name: method_name,
+            parameters_provided: len(params),
+            parameters_expected: len(expected_params),
+            type_errors: type_errors,
+            constraint_errors: constraint_errors,
+            suggestions: suggestions,
+            timestamp: timestamp
+        }
+    }
+
+    // ===== CORE RPC METHODS REGISTRATION =====
+    
+    action private register_core_methods() {
+        """
+        Register all core RPC methods with enhanced features
+        """
+        
+        // ===== Web3 Standard Methods =====
+        
+        this.register_method("web3_clientVersion", action(params: list) -> string {
+            return "ZiverChain/v3.0.0/zexus-quantum/rpc-" + this.config.version
+        }, {
+            "description": "Returns the current client version",
+            "parameters": [],
+            "return_type": "string",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 3600,
+            "rate_limit": 100,
+            "version": "1.0.0"
+        })
+        
+        this.register_method("net_version", action(params: list) -> string {
             return "12345"  // Ziver Chain ID
-        }
-
-        this.methods["net_listening"] = action(params: list) -> boolean {
+        }, {
+            "description": "Returns the current network ID",
+            "parameters": [],
+            "return_type": "string",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 3600,
+            "version": "1.0.0"
+        })
+        
+        this.register_method("net_listening", action(params: list) -> boolean {
             return this.node.network != null and this.node.network.is_listening
-        }
-
-        this.methods["net_peerCount"] = action(params: list) -> string {
+        }, {
+            "description": "Returns true if client is actively listening for network connections",
+            "parameters": [],
+            "return_type": "boolean",
+            "authentication_required": false,
+            "cache_enabled": false,
+            "version": "1.0.0"
+        })
+        
+        this.register_method("net_peerCount", action(params: list) -> string {
             let count = this.node.network != null ? this.node.network.get_connected_peers_count() : 0
             return "0x" + math.to_hex_string(count)
-        }
-
-        this.methods["eth_blockNumber"] = action(params: list) -> string {
+        }, {
+            "description": "Returns number of peers currently connected to the client",
+            "parameters": [],
+            "return_type": "string",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 30,
+            "version": "1.0.0"
+        })
+        
+        // ===== Ethereum Compatible Methods =====
+        
+        this.register_method("eth_blockNumber", action(params: list) -> string {
             let block_number = this.node.blockchain != null ? this.node.blockchain.get_latest_block_index() : 0
             return "0x" + math.to_hex_string(block_number)
-        }
-
-        this.methods["eth_getBalance"] = action(params: list) -> string {
+        }, {
+            "description": "Returns the number of most recent block",
+            "parameters": [],
+            "return_type": "string",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 5,
+            "rate_limit": 100,
+            "version": "1.0.0"
+        })
+        
+        this.register_method("eth_getBalance", action(params: list) -> map {
             let address = params.get(0, "")
             let block_tag = params.get(1, "latest")
-
-            // Use SEB-DeFi integration for enhanced balance info
-            let balance = this.node.get_balance_with_social_capital(address)
-            return "0x" + math.to_hex_string(balance.amount)
-        }
-
-        this.methods["eth_getBlockByNumber"] = action(params: list) -> map? {
+            
+            // Enhanced balance with SEB-DeFi integration
+            let balance_info = this.node.get_enhanced_balance(address, block_tag)
+            
+            return {
+                "balance": "0x" + math.to_hex_string(balance_info.amount),
+                "social_capital": balance_info.social_capital or 0.0,
+                "borrowing_power": balance_info.borrowing_power or 0,
+                "timestamp": datetime.now().timestamp()
+            }
+        }, {
+            "description": "Returns the balance of the account of given address with SEB-DeFi enhancements",
+            "parameters": [
+                {"name": "address", "type": "string", "description": "20-byte address"},
+                {"name": "blockTag", "type": "string", "description": "Block number, or 'latest', 'earliest', 'pending'"}
+            ],
+            "return_type": "map",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 30,
+            "param_schema": {
+                "0": {"type": "string", "pattern": "^0x[a-fA-F0-9]{40}$"},
+                "1": {"type": "string", "pattern": "^(latest|earliest|pending|0x[a-fA-F0-9]+)$"}
+            },
+            "version": "2.0.0"
+        })
+        
+        this.register_method("eth_getBlockByNumber", action(params: list) -> map? {
             let block_number_hex = params.get(0, "latest")
             let full_tx = params.get(1, false)
-
+            
             let block_number = 0
             if block_number_hex == "latest" {
                 block_number = this.node.blockchain.get_latest_block_index()
+            } else if block_number_hex == "earliest" {
+                block_number = 0
+            } else if block_number_hex == "pending" {
+                // Get pending block from mempool
+                return this.node.get_pending_block_info(full_tx)
             } else {
                 block_number = math.hex_to_int(block_number_hex)
             }
-
+            
             let block = this.node.blockchain.get_block(block_number)
             if block == null {
                 return null
             }
-
-            return this.format_block(block, full_tx)
-        }
-
-        this.methods["eth_sendTransaction"] = action(params: list) -> string {
+            
+            return this.format_block_with_seb_data(block, full_tx)
+        }, {
+            "description": "Returns information about a block by block number with SEB-DeFi data",
+            "parameters": [
+                {"name": "blockNumber", "type": "string", "description": "Block number in hex or 'latest', 'earliest', 'pending'"},
+                {"name": "fullTransactions", "type": "boolean", "description": "If true returns the full transaction objects, if false only the hashes"}
+            ],
+            "return_type": "map",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 60,
+            "version": "2.0.0"
+        })
+        
+        this.register_method("eth_sendTransaction", action(params: list) -> map {
             let tx_data = params.get(0, {})
-
-            // Enhanced transaction with bounce-back protection
-            let tx = this.create_transaction_with_bounceback(tx_data)
-
-            let success = this.node.add_transaction(tx)
-            if success {
-                // Generate AI explanation for the transaction
-                spawn this.generate_transaction_explanation(tx)
-                return tx.hash
-            } else {
-                throw "Transaction failed - check bounce-back protection"
+            
+            // Enhanced transaction with bounce-back protection and AI optimization
+            let enhanced_tx = this.create_enhanced_transaction(tx_data)
+            
+            // Validate transaction
+            let validation_result = this.validate_transaction(enhanced_tx)
+            if not validation_result.valid {
+                throw "Transaction validation failed: " + string(validation_result.errors)
             }
-        }
-
-        // Ziver-specific advanced methods
-        this.methods["ziver_getWalletInfo"] = action(params: list) -> map {
+            
+            // Submit transaction
+            let submission_result = this.node.submit_transaction(enhanced_tx)
+            
+            // Generate AI explanation in background
+            if submission_result.success {
+                spawn this.generate_transaction_explanation_and_optimization(enhanced_tx)
+            }
+            
+            return {
+                "transactionHash": submission_result.transaction_hash,
+                "status": submission_result.status,
+                "estimatedConfirmationTime": submission_result.estimated_confirmation_time,
+                "bounceBackProtected": enhanced_tx.bounce_back_protection or false,
+                "aiOptimized": enhanced_tx.ai_optimized or false,
+                "gasEstimate": submission_result.gas_estimate,
+                "timestamp": datetime.now().timestamp()
+            }
+        }, {
+            "description": "Creates new message call transaction or a contract creation with bounce-back protection and AI optimization",
+            "parameters": [
+                {"name": "transaction", "type": "map", "description": "Transaction object"}
+            ],
+            "return_type": "map",
+            "authentication_required": true,
+            "cache_enabled": false,
+            "rate_limit": 10,
+            "version": "2.0.0"
+        })
+        
+        // ===== Ziver Chain Enhanced Methods =====
+        
+        this.register_method("ziver_getWalletInfo", action(params: list) -> map {
             let wallet_address = params.get(0, "")
-            return this.node.get_enhanced_wallet_info(wallet_address)
-        }
-
-        this.methods["ziver_createWallet"] = action(params: list) -> string {
+            
+            // Get comprehensive wallet information
+            let wallet_info = this.node.get_enhanced_wallet_info(wallet_address)
+            
+            // Add AI-powered insights if available
+            if zaie != null {
+                try {
+                    let ai_insights = zaie.analyze_wallet_behavior(wallet_info)
+                    wallet_info.ai_insights = ai_insights
+                } catch (error) {
+                    // AI analysis optional
+                }
+            }
+            
+            return wallet_info
+        }, {
+            "description": "Get comprehensive wallet information with SEB-DeFi metrics and AI insights",
+            "parameters": [
+                {"name": "walletAddress", "type": "string", "description": "Wallet address to query"}
+            ],
+            "return_type": "map",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 300,
+            "version": "3.0.0"
+        })
+        
+        this.register_method("ziver_createWallet", action(params: list) -> map {
             let owner_address = params.get(0, "")
-            // Create quantum-resistant wallet
-            return this.node.create_quantum_wallet(owner_address)
-        }
-
-        this.methods["ziver_bridgeAssets"] = action(params: list) -> map {
+            let wallet_type = params.get(1, "quantum")
+            let options = params.get(2, {})
+            
+            // Create quantum-resistant wallet with enhanced security
+            let wallet_result = this.node.create_enhanced_wallet(owner_address, wallet_type, options)
+            
+            return {
+                "walletAddress": wallet_result.address,
+                "publicKey": wallet_result.public_key,
+                "quantumKeys": wallet_result.quantum_keys,
+                "recoveryPhrase": wallet_result.recovery_phrase,
+                "securityLevel": wallet_result.security_level,
+                "creationTimestamp": datetime.now().timestamp(),
+                "estimatedSecurity": wallet_result.estimated_security_years,
+                "aiRecommendations": wallet_result.ai_recommendations
+            }
+        }, {
+            "description": "Create a quantum-resistant wallet with enhanced security features",
+            "parameters": [
+                {"name": "ownerAddress", "type": "string", "description": "Owner's address"},
+                {"name": "walletType", "type": "string", "description": "Wallet type: quantum, multi-sig, social, hardware"},
+                {"name": "options", "type": "map", "description": "Additional wallet options"}
+            ],
+            "return_type": "map",
+            "authentication_required": true,
+            "cache_enabled": false,
+            "rate_limit": 5,
+            "version": "3.0.0"
+        })
+        
+        this.register_method("ziver_bridgeAssets", action(params: list) -> map {
             let wallet_address = params.get(0, "")
             let source_chain = params.get(1, "ZIVER")
             let target_chain = params.get(2, "ETHEREUM")
             let amount = params.get(3, 0)
             let token_address = params.get(4, null)
-
-            return this.node.bridge_assets_with_tracking(
-                wallet_address, source_chain, target_chain, amount, token_address
+            let options = params.get(5, {})
+            
+            // Bridge assets with real-time tracking
+            let bridge_result = this.node.bridge_assets_with_tracking(
+                wallet_address, 
+                source_chain, 
+                target_chain, 
+                amount, 
+                token_address,
+                options
             )
-        }
-
-        this.methods["ziver_deployToken"] = action(params: list) -> string {
+            
+            return {
+                "bridgeId": bridge_result.bridge_id,
+                "status": bridge_result.status,
+                "estimatedCompletionTime": bridge_result.estimated_completion_time,
+                "trackingUrl": bridge_result.tracking_url,
+                "securityChecks": bridge_result.security_checks,
+                "gasEstimate": bridge_result.gas_estimate,
+                "fees": bridge_result.fees,
+                "timestamp": datetime.now().timestamp()
+            }
+        }, {
+            "description": "Bridge assets between chains with real-time tracking and enhanced security",
+            "parameters": [
+                {"name": "walletAddress", "type": "string", "description": "Source wallet address"},
+                {"name": "sourceChain", "type": "string", "description": "Source chain name"},
+                {"name": "targetChain", "type": "string", "description": "Target chain name"},
+                {"name": "amount", "type": "integer", "description": "Amount to bridge"},
+                {"name": "tokenAddress", "type": "string", "description": "Token address (optional)"},
+                {"name": "options", "type": "map", "description": "Bridge options"}
+            ],
+            "return_type": "map",
+            "authentication_required": true,
+            "cache_enabled": false,
+            "rate_limit": 2,
+            "version": "3.0.0"
+        })
+        
+        this.register_method("ziver_deployToken", action(params: list) -> map {
             let name = params.get(0, "")
             let symbol = params.get(1, "")
             let supply = params.get(2, 0)
             let owner = params.get(3, "")
-
-            return this.node.deploy_token_with_seb_features(name, symbol, supply, owner)
-        }
-
-        // SEB-DeFi specific methods
-        this.methods["ziver_getSocialCapital"] = action(params: list) -> map {
+            let token_type = params.get(4, "standard")
+            let features = params.get(5, {})
+            
+            // Deploy token with SEB-DeFi features
+            let deployment_result = this.node.deploy_token_with_seb_features(
+                name, symbol, supply, owner, token_type, features
+            )
+            
+            return {
+                "tokenAddress": deployment_result.address,
+                "transactionHash": deployment_result.transaction_hash,
+                "verificationStatus": deployment_result.verification_status,
+                "socialFeaturesEnabled": deployment_result.social_features_enabled,
+                "defiFeaturesEnabled": deployment_result.defi_features_enabled,
+                "aiOptimizationApplied": deployment_result.ai_optimization_applied,
+                "estimatedGasUsed": deployment_result.gas_used,
+                "timestamp": datetime.now().timestamp()
+            }
+        }, {
+            "description": "Deploy a new token with SEB-DeFi features and AI optimization",
+            "parameters": [
+                {"name": "name", "type": "string", "description": "Token name"},
+                {"name": "symbol", "type": "string", "description": "Token symbol"},
+                {"name": "totalSupply", "type": "integer", "description": "Total token supply"},
+                {"name": "owner", "type": "string", "description": "Token owner address"},
+                {"name": "tokenType", "type": "string", "description": "Token type: standard, social, defi, governance"},
+                {"name": "features", "type": "map", "description": "Additional token features"}
+            ],
+            "return_type": "map",
+            "authentication_required": true,
+            "cache_enabled": false,
+            "rate_limit": 1,
+            "version": "3.0.0"
+        })
+        
+        // ===== SEB-DeFi Specific Methods =====
+        
+        this.register_method("ziver_getSocialCapital", action(params: list) -> map {
             let user_address = params.get(0, "")
-            return this.node.get_social_capital_score(user_address)
-        }
-
-        this.methods["ziver_getBorrowingPower"] = action(params: list) -> string {
+            let timeframe = params.get(1, "all_time")
+            
+            let social_capital = this.node.get_social_capital_score(user_address, timeframe)
+            
+            // Add AI-powered improvement suggestions
+            if zaie != null {
+                try {
+                    let improvement_suggestions = zaie.generate_social_capital_improvements(social_capital)
+                    social_capital.improvement_suggestions = improvement_suggestions
+                } catch (error) {
+                    // AI suggestions optional
+                }
+            }
+            
+            return social_capital
+        }, {
+            "description": "Get comprehensive social capital score with improvement suggestions",
+            "parameters": [
+                {"name": "userAddress", "type": "string", "description": "User address to analyze"},
+                {"name": "timeframe", "type": "string", "description": "Timeframe: daily, weekly, monthly, all_time"}
+            ],
+            "return_type": "map",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 3600,
+            "version": "2.0.0"
+        })
+        
+        this.register_method("ziver_getBorrowingPower", action(params: list) -> map {
             let user_address = params.get(0, "")
-            let power = this.node.get_borrowing_power(user_address)
-            return "0x" + math.to_hex_string(power)
-        }
-
-        this.methods["ziver_explainTransaction"] = action(params: list) -> string {
+            let collateral_type = params.get(1, "mixed")
+            let amount = params.get(2, 0)
+            
+            let borrowing_power = this.node.get_borrowing_power_with_collateral(
+                user_address, collateral_type, amount
+            )
+            
+            return {
+                "borrowingPower": "0x" + math.to_hex_string(borrowing_power.amount),
+                "collateralValue": "0x" + math.to_hex_string(borrowing_power.collateral_value),
+                "loanToValueRatio": borrowing_power.ltv_ratio,
+                "healthFactor": borrowing_power.health_factor,
+                "availableProtocols": borrowing_power.available_protocols,
+                "recommendedProtocol": borrowing_power.recommended_protocol,
+                "estimatedAPY": borrowing_power.estimated_apy,
+                "riskLevel": borrowing_power.risk_level,
+                "timestamp": datetime.now().timestamp()
+            }
+        }, {
+            "description": "Calculate borrowing power based on social capital and collateral",
+            "parameters": [
+                {"name": "userAddress", "type": "string", "description": "User address"},
+                {"name": "collateralType", "type": "string", "description": "Collateral type: social, tokens, nft, mixed"},
+                {"name": "collateralAmount", "type": "integer", "description": "Collateral amount (optional)"}
+            ],
+            "return_type": "map",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 300,
+            "version": "2.0.0"
+        })
+        
+        this.register_method("ziver_explainTransaction", action(params: list) -> string {
             let tx_hash = params.get(0, "")
-            return this.node.get_transaction_explanation(tx_hash)
-        }
-
-        // AI and Quantum methods
-        this.methods["ziver_aiOptimize"] = action(params: list) -> map {
-            return this.node.run_ai_optimization()
-        }
-
-        this.methods["ziver_getQuantumKeys"] = action(params: list) -> map {
+            let detail_level = params.get(1, "standard")
+            
+            // Get AI-generated transaction explanation
+            let explanation = this.node.get_transaction_explanation(tx_hash, detail_level)
+            
+            return explanation
+        }, {
+            "description": "Get AI-generated explanation of a transaction",
+            "parameters": [
+                {"name": "transactionHash", "type": "string", "description": "Transaction hash to explain"},
+                {"name": "detailLevel", "type": "string", "description": "Detail level: simple, standard, detailed"}
+            ],
+            "return_type": "string",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 86400, // 24 hours
+            "version": "2.0.0"
+        })
+        
+        // ===== AI and Quantum Methods =====
+        
+        this.register_method("ziver_aiOptimize", action(params: list) -> map {
+            let optimization_type = params.get(0, "portfolio")
+            let parameters = params.get(1, {})
+            
+            // Run AI optimization
+            let optimization_result = this.node.run_ai_optimization(optimization_type, parameters)
+            
+            return {
+                "optimizationType": optimization_type,
+                "result": optimization_result.result,
+                "confidenceScore": optimization_result.confidence_score,
+                "executionTimeMs": optimization_result.execution_time_ms,
+                "recommendations": optimization_result.recommendations,
+                "alternativeOptions": optimization_result.alternative_options,
+                "timestamp": datetime.now().timestamp()
+            }
+        }, {
+            "description": "Run AI-powered optimization for portfolio, gas, or transactions",
+            "parameters": [
+                {"name": "optimizationType", "type": "string", "description": "Type: portfolio, gas, transaction, yield"},
+                {"name": "parameters", "type": "map", "description": "Optimization parameters"}
+            ],
+            "return_type": "map",
+            "authentication_required": true,
+            "cache_enabled": false,
+            "rate_limit": 5,
+            "version": "2.0.0"
+        })
+        
+        this.register_method("ziver_getQuantumKeys", action(params: list) -> map {
             let address = params.get(0, "")
-            return this.node.get_quantum_key_info(address)
-        }
-
+            let key_type = params.get(1, "all")
+            
+            // Get quantum key information
+            let key_info = this.node.get_quantum_key_info(address, key_type)
+            
+            return {
+                "address": address,
+                "quantumKeys": key_info.keys,
+                "securityLevel": key_info.security_level,
+                "expirationTimestamp": key_info.expiration_timestamp,
+                "rotationSchedule": key_info.rotation_schedule,
+                "backupStatus": key_info.backup_status,
+                "timestamp": datetime.now().timestamp()
+            }
+        }, {
+            "description": "Get quantum key information for an address",
+            "parameters": [
+                {"name": "address", "type": "string", "description": "Address to query"},
+                {"name": "keyType", "type": "string", "description": "Key type: signing, encryption, all"}
+            ],
+            "return_type": "map",
+            "authentication_required": true,
+            "cache_enabled": true,
+            "cache_ttl": 600,
+            "version": "2.0.0"
+        })
+        
+        // ===== System Methods =====
+        
+        this.register_method("rpc_methods", action(params: list) -> list {
+            // Return all registered methods with their info
+            let methods_info = []
+            
+            for each method_name, handler in this.methods {
+                let method_info = this.get_method_info(method_name)
+                methods_info.push({
+                    "name": method_name,
+                    "description": method_info.description,
+                    "parameters": method_info.parameters,
+                    "authentication_required": method_info.authentication_required,
+                    "rate_limit": method_info.rate_limit,
+                    "version": method_info.version
+                })
+            }
+            
+            return methods_info
+        }, {
+            "description": "List all available RPC methods with their information",
+            "parameters": [],
+            "return_type": "list",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 300,
+            "version": "1.0.0"
+        })
+        
+        this.register_method("rpc_stats", action(params: list) -> map {
+            return this.get_server_stats()
+        }, {
+            "description": "Get RPC server statistics and metrics",
+            "parameters": [],
+            "return_type": "map",
+            "authentication_required": false,
+            "cache_enabled": true,
+            "cache_ttl": 30,
+            "version": "1.0.0"
+        })
+        
         print("✅ Registered " + string(this.methods.keys().count()) + " RPC methods")
     }
 
-    action register_method(method_name: string, handler: action) -> boolean {
-        if this.methods.has(method_name) {
-            print("⚠️ Method already registered: " + method_name)
+    // ===== HELPER METHODS =====
+    
+    action private create_success_response(id: integer, result: any, metadata: map) -> map {
+        """
+        Create a successful JSON-RPC response
+        """
+        return {
+            "jsonrpc": "2.0",
+            "result": result,
+            "id": id,
+            "metadata": {
+                "timestamp": datetime.now().timestamp(),
+                "version": this.config.version,
+                "quantum_secure": true,
+                "node_id": this.node.node_id or "unknown"
+            }.merge(metadata)
+        }
+    }
+    
+    action private create_error_response(id: integer, code: integer, message: string, data: any = null) -> map {
+        """
+        Create an error JSON-RPC response
+        """
+        return {
+            "jsonrpc": "2.0",
+            "error": {
+                "code": code,
+                "message": message,
+                "data": data or this.get_error_suggestions(code)
+            },
+            "id": id,
+            "metadata": {
+                "timestamp": datetime.now().timestamp(),
+                "version": this.config.version,
+                "error_type": this.get_error_type(code)
+            }
+        }
+    }
+    
+    action private validate_request_structure(request: map) -> map {
+        """
+        Validate JSON-RPC request structure
+        """
+        let errors = []
+        
+        if request.get("jsonrpc", "") != "2.0" {
+            errors.push("Invalid JSON-RPC version, must be '2.0'")
+        }
+        
+        if not request.has("method") or request.method == "" {
+            errors.push("Missing or empty 'method' field")
+        }
+        
+        if request.has("params") and type(request.params) != "list" {
+            errors.push("'params' must be an array")
+        }
+        
+        // Check request size
+        let request_size = len(string(request))
+        if request_size > RPC_POLICIES.max_request_size {
+            errors.push("Request size " + string(request_size) + " exceeds maximum " + string(RPC_POLICIES.max_request_size))
+        }
+        
+        return {
+            "valid": len(errors) == 0,
+            "errors": errors
+        }
+    }
+    
+    action private validate_authentication(auth_token: string?, method: string) -> boolean {
+        """
+        Validate authentication token for method
+        """
+        // Check if authentication is required for this method
+        let method_info = this.method_registry[method] or {}
+        let auth_required = method_info.authentication_required or this.config.require_auth
+        
+        if not auth_required {
+            return true
+        }
+        
+        if auth_token == null {
             return false
         }
-
-        this.methods[method_name] = handler
-        print("✅ Registered custom method: " + method_name)
+        
+        // Validate token (simplified - would use JWT or similar in production)
+        return this.sessions.has(auth_token) and 
+               this.sessions[auth_token].expires_at > datetime.now().timestamp()
+    }
+    
+    action private check_rate_limit(method: string, auth_token: string?) -> boolean {
+        """
+        Check rate limit for method and token
+        """
+        let limit_key = "rate_limit_" + method + "_" + (auth_token or "anonymous")
+        let rate_info = cache_get(limit_key) or {"count": 0, "window_start": datetime.now().timestamp()}
+        
+        // Reset if window has passed
+        if datetime.now().timestamp() - rate_info.window_start > RPC_POLICIES.rate_limit_window {
+            rate_info = {"count": 0, "window_start": datetime.now().timestamp()}
+        }
+        
+        // Get method-specific rate limit
+        let method_info = this.method_registry[method] or {}
+        let method_rate_limit = method_info.rate_limit or RPC_POLICIES.max_requests_per_second
+        
+        // Check limit
+        if rate_info.count >= method_rate_limit {
+            return false
+        }
+        
+        // Increment count
+        rate_info.count += 1
+        cache_set(limit_key, rate_info, RPC_POLICIES.rate_limit_window + 10)
+        
         return true
     }
-
-    // Enhanced Helper Methods
-    action format_block(block: any, full_tx: boolean) -> map {
+    
+    action private generate_cache_key(method: string, params: list, auth_token: string?) -> string {
+        """
+        Generate cache key for request
+        """
+        return "rpc_cache_" + crypto.sha3_256(
+            method + 
+            json.stringify(params) + 
+            (auth_token or "") + 
+            string(datetime.now().timestamp() // 60) // Cache for same minute
+        )
+    }
+    
+    action private update_method_stats(method: string, event_type: string) {
+        """
+        Update method statistics
+        """
+        if not this.method_stats.has(method) {
+            this.method_stats[method] = {
+                "calls": 0,
+                "successes": 0,
+                "errors": 0,
+                "total_time_ms": 0,
+                "last_called": datetime.now().timestamp()
+            }
+        }
+        
+        let stats = this.method_stats[method]
+        stats.last_called = datetime.now().timestamp()
+        
+        if event_type == "call" {
+            stats.calls += 1
+        } else if event_type == "success" {
+            stats.successes += 1
+        } else if event_type == "error" {
+            stats.errors += 1
+        }
+    }
+    
+    action private apply_middleware(phase: string, method: string, params: list, metadata: map, result: any = null, error: any = null) -> map {
+        """
+        Apply middleware chain
+        """
+        let middleware_result = {"continue": true, "result": result, "error": error}
+        
+        for each middleware in this.middleware_chain {
+            try {
+                if phase == "before" {
+                    middleware_result = middleware.before(method, params, metadata)
+                } else if phase == "after" {
+                    middleware_result = middleware.after(method, params, metadata, result)
+                } else if phase == "error" {
+                    middleware_result = middleware.error(method, params, metadata, error)
+                }
+                
+                if not middleware_result.continue {
+                    break
+                }
+            } catch (middleware_error) {
+                print("⚠️ Middleware error: " + string(middleware_error))
+            }
+        }
+        
+        return middleware_result
+    }
+    
+    action private log_request(method: string, request_id: integer, success: boolean, execution_time_ms: integer, total_time_ms: integer) {
+        """
+        Log request to database
+        """
+        try {
+            db.execute("""
+                INSERT INTO rpc_request_logs (
+                    request_id, method, success, execution_time_ms, 
+                    total_time_ms, timestamp, node_id
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            """, [
+                request_id,
+                method,
+                success,
+                execution_time_ms,
+                total_time_ms,
+                this.node.node_id or "unknown"
+            ])
+        } catch (error) {
+            // Logging errors shouldn't break the request
+            print("⚠️ Failed to log RPC request: " + error)
+        }
+    }
+    
+    action private get_error_suggestions(code: integer) -> string {
+        """
+        Get error code specific suggestions
+        """
+        match code {
+            case -32600: return "Check request structure and JSON-RPC version"
+            case -32601: return "Method not found. Use rpc_methods to see available methods"
+            case -32602: return "Invalid parameters. Use get_method_info to see expected parameters"
+            case -32603: return "Internal server error. Try again or contact support"
+            case -32001: return "Authentication required. Provide valid auth_token"
+            case -32002: return "Rate limit exceeded. Wait and try again"
+            case -32000: return "Transaction may have bounce-back protection or validation failed"
+            default: return "Check documentation at docs.ziver.io/rpc"
+        }
+    }
+    
+    action private get_error_type(code: integer) -> string {
+        """
+        Get error type from code
+        """
+        if code >= -32768 and code <= -32000 {
+            return "server_error"
+        } else if code >= -31999 and code <= -32000 {
+            return "application_error"
+        } else {
+            return "unknown_error"
+        }
+    }
+    
+    action private get_active_sessions_count() -> integer {
+        """
+        Get count of active sessions
+        """
+        let active_count = 0
+        let current_time = datetime.now().timestamp()
+        
+        for each token, session in this.sessions {
+            if session.expires_at > current_time {
+                active_count += 1
+            }
+        }
+        
+        return active_count
+    }
+    
+    action private get_active_connections_count() -> integer {
+        """
+        Get count of active connections (simplified)
+        """
+        return 0 // Would track actual connections in production
+    }
+    
+    action private get_request_queue_size() -> integer {
+        """
+        Get current request queue size
+        """
+        return 0 // Would track actual queue in production
+    }
+    
+    action private estimate_cpu_usage() -> float {
+        """
+        Estimate CPU usage (simplified)
+        """
+        return 10.0 // Would use actual metrics in production
+    }
+    
+    action private check_for_alerts() -> list {
+        """
+        Check for system alerts
+        """
+        let alerts = []
+        
+        // Check memory usage
+        let memory_stats = memory_stats()
+        let memory_usage_percent = (memory_stats.used_memory / memory_stats.total_memory) * 100
+        
+        if memory_usage_percent > 90 {
+            alerts.push("CRITICAL: Memory usage at " + string(memory_usage_percent) + "%")
+        } else if memory_usage_percent > 80 {
+            alerts.push("WARNING: Memory usage at " + string(memory_usage_percent) + "%")
+        }
+        
+        // Check error rate
+        let total_requests = this.request_count
+        if total_requests > 100 {
+            let error_rate = this.calculate_error_rate()
+            if error_rate > 10 {
+                alerts.push("HIGH: Error rate at " + string(error_rate) + "%")
+            }
+        }
+        
+        return alerts
+    }
+    
+    action private calculate_error_rate() -> float {
+        """
+        Calculate current error rate
+        """
+        let total_errors = 0
+        let total_calls = 0
+        
+        for each method, stats in this.method_stats {
+            total_errors += stats.errors or 0
+            total_calls += stats.calls or 0
+        }
+        
+        return total_calls > 0 ? (total_errors / total_calls) * 100 : 0
+    }
+    
+    action private requires_restart_for_config_change(key: string) -> boolean {
+        """
+        Check if config change requires server restart
+        """
+        let restart_required_keys = ["port", "websocket", "batch_requests", "max_request_size"]
+        return restart_required_keys.contains(key)
+    }
+    
+    action private apply_configuration_changes(config: map) {
+        """
+        Apply configuration changes that don't require restart
+        """
+        // Update rate limiting if changed
+        if config.has("rate_limiting") {
+            throttle("rpc_requests", { 
+                requests_per_second: RPC_POLICIES.max_requests_per_second, 
+                burst: 50 
+            })
+        }
+        
+        // Update caching if changed
+        if config.has("caching") {
+            let cache_config = {
+                ttl: config.cache_ttl or RPC_POLICIES.cache_ttl,
+                strategy: "lru",
+                max_entries: 10000
+            }
+            cache("rpc_responses", cache_config)
+        }
+    }
+    
+    action private close_all_sessions() -> integer {
+        """
+        Close all active sessions
+        """
+        let closed_count = 0
+        let current_time = datetime.now().timestamp()
+        
+        for each token, session in this.sessions {
+            if session.expires_at > current_time {
+                session.expires_at = current_time
+                closed_count += 1
+            }
+        }
+        
+        return closed_count
+    }
+    
+    action private get_start_time() -> integer? {
+        """
+        Get server start time
+        """
+        return null // Would track actual start time
+    }
+    
+    action private format_block_with_seb_data(block: any, full_tx: boolean) -> map {
+        """
+        Format block with SEB-DeFi data
+        """
         let transactions = []
 
         if full_tx {
             for each tx in block.transactions {
-                transactions.push(this.format_transaction(tx))
+                transactions.push(this.format_transaction_with_ai(tx))
             }
         } else {
             for each tx in block.transactions {
@@ -254,11 +2065,20 @@ contract JSONRPCServer implements JSONRPCProtocol {
             "gasLimit": "0x" + math.to_hex_string(1000000),
             "gasUsed": "0x" + math.to_hex_string(50000),
             "extraData": "0x" + crypto.keccak256("ziver_chain"),
-            "sebDefiData": this.get_seb_defi_block_data(block)
+            "sebDefiData": {
+                "social_capital_min": 0.0,
+                "social_capital_max": 1.0,
+                "defi_activity": 0.5,
+                "ai_optimization_score": block.ai_score or 0.0,
+                "quantum_secure": true
+            }
         }
     }
-
-    action format_transaction(tx: any) -> map {
+    
+    action private format_transaction_with_ai(tx: any) -> map {
+        """
+        Format transaction with AI insights
+        """
         return {
             "hash": tx.hash,
             "from": tx.from_addr,
@@ -268,182 +2088,666 @@ contract JSONRPCServer implements JSONRPCProtocol {
             "gas": "0x" + math.to_hex_string(tx.gas_limit),
             "gasUsed": "0x" + math.to_hex_string(tx.gas_used),
             "nonce": "0x" + math.to_hex_string(tx.nonce),
-            "bounceBackProtected": this.is_bounceback_protected(tx),
-            "aiExplanation": this.get_cached_explanation(tx.hash)
+            "bounceBackProtected": tx.bounce_back_protection or false,
+            "aiExplanation": this.get_cached_ai_explanation(tx.hash),
+            "socialImpact": tx.social_impact or 0.0,
+            "defiScore": tx.defi_score or 0.0
         }
     }
-
-    action create_transaction_with_bounceback(tx_data: map) -> any {
+    
+    action private create_enhanced_transaction(tx_data: map) -> any {
+        """
+        Create enhanced transaction with bounce-back protection and AI optimization
+        """
         // Check if recipient address is valid
         let to_address = tx_data.get("to", "")
-        if not this.node.is_valid_address(to_address) {
-            // Enable bounce-back protection
-            tx_data["bounceBack"] = true
-            tx_data["bounceBackAddress"] = tx_data.get("from", "")
-        }
-
-        return {
+        let from_address = tx_data.get("from", "")
+        
+        let enhanced_tx = {
             "hash": crypto.keccak256(string(tx_data) + string(datetime.now().timestamp())),
-            "from_addr": tx_data.get("from", ""),
-            "to_addr": tx_data.get("to", ""),
+            "from_addr": from_address,
+            "to_addr": to_address,
             "value": math.hex_to_int(tx_data.get("value", "0x0")),
             "data": tx_data.get("data", ""),
             "gas_limit": math.hex_to_int(tx_data.get("gas", "0x5208")),
             "gas_used": 0,
             "nonce": math.hex_to_int(tx_data.get("nonce", "0x0")),
             "signature": tx_data.get("signature", ""),
-            "status": "pending",
-            "bounce_back_protection": tx_data.get("bounceBack", false)
+            "status": "pending"
         }
-    }
-
-    action success_response(id: integer, result: any) -> map {
-        return {
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": result,
-            "ziver_metadata": {
-                "timestamp": datetime.now().timestamp(),
-                "version": "3.0.0",
-                "quantum_secure": true
+        
+        // Enable bounce-back protection if recipient is invalid
+        if to_address != "" and not this.node.is_valid_address(to_address) {
+            enhanced_tx["bounce_back_protection"] = true
+            enhanced_tx["bounce_back_address"] = from_address
+        }
+        
+        // Apply AI optimization if available
+        if zaie != null {
+            try {
+                let ai_optimization = zaie.optimize_transaction(enhanced_tx)
+                enhanced_tx = enhanced_tx.merge(ai_optimization)
+                enhanced_tx["ai_optimized"] = true
+            } catch (error) {
+                // AI optimization optional
             }
         }
+        
+        return enhanced_tx
     }
-
-    action error_response(id: integer, code: integer, message: string) -> map {
+    
+    action private validate_transaction(tx: any) -> map {
+        """
+        Validate transaction
+        """
+        let errors = []
+        
+        if tx.value < 0 {
+            errors.push("Transaction value cannot be negative")
+        }
+        
+        if tx.gas_limit <= 0 {
+            errors.push("Gas limit must be positive")
+        }
+        
+        if tx.from_addr == "" {
+            errors.push("Sender address is required")
+        }
+        
         return {
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {
-                "code": code,
-                "message": message,
-                "data": this.get_error_suggestions(code)
+            "valid": len(errors) == 0,
+            "errors": errors
+        }
+    }
+    
+    action private async generate_transaction_explanation_and_optimization(tx: any) {
+        """
+        Generate AI explanation and optimization for transaction
+        """
+        print("🤖 Generating AI analysis for transaction: " + tx.hash.slice(0, 16))
+        
+        try {
+            if zaie != null {
+                let analysis = await zaie.analyze_transaction(tx)
+                
+                // Cache the explanation
+                cache_set("tx_explanation_" + tx.hash, analysis.explanation, 86400) // 24 hours
+                
+                // Log the analysis
+                audit("transaction_ai_analysis", {
+                    "transaction_hash": tx.hash,
+                    "analysis": analysis,
+                    "timestamp": datetime.now().timestamp()
+                })
             }
+        } catch (error) {
+            print("⚠️ Failed to generate transaction analysis: " + error)
         }
     }
-
-    action validate_request(request: map) -> map {
-        if request.get("jsonrpc", "") != "2.0" {
-            return {"valid": false, "error": "Invalid JSON-RPC version"}
+    
+    action private get_cached_ai_explanation(tx_hash: string) -> string? {
+        """
+        Get cached AI explanation for transaction
+        """
+        return cache_get("tx_explanation_" + tx_hash)
+    }
+    
+    action private initialize_middleware() {
+        """
+        Initialize middleware chain
+        """
+        // Security middleware
+        this.middleware_chain.push({
+            "name": "security",
+            "before": action(method, params, metadata) {
+                // Check for malicious patterns
+                if method.contains(";") or method.contains("DROP") or method.contains("DELETE") {
+                    return {"continue": false, "error": "Potential security threat detected"}
+                }
+                return {"continue": true}
+            },
+            "after": action(method, params, metadata, result) {
+                // Sanitize response if needed
+                return {"continue": true, "result": result}
+            },
+            "error": action(method, params, metadata, error) {
+                // Log security errors
+                return {"continue": true, "error": error}
+            }
+        })
+        
+        // Logging middleware
+        this.middleware_chain.push({
+            "name": "logging",
+            "before": action(method, params, metadata) {
+                print("📝 Request: " + method + " with " + string(len(params)) + " params")
+                return {"continue": true}
+            },
+            "after": action(method, params, metadata, result) {
+                print("✅ Response for " + method + " generated")
+                return {"continue": true, "result": result}
+            },
+            "error": action(method, params, metadata, error) {
+                print("❌ Error in " + method + ": " + string(error))
+                return {"continue": true, "error": error}
+            }
+        })
+        
+        // Performance monitoring middleware
+        this.middleware_chain.push({
+            "name": "performance",
+            "before": action(method, params, metadata) {
+                metadata.start_time = datetime.now().timestamp_ms()
+                return {"continue": true}
+            },
+            "after": action(method, params, metadata, result) {
+                let execution_time = datetime.now().timestamp_ms() - metadata.start_time
+                
+                // Record performance metrics
+                let perf_stats = cache_get("performance_stats") or {}
+                if not perf_stats.has(method) {
+                    perf_stats[method] = {"count": 0, "total_time": 0}
+                }
+                perf_stats[method].count += 1
+                perf_stats[method].total_time += execution_time
+                cache_set("performance_stats", perf_stats, 3600)
+                
+                return {"continue": true, "result": result}
+            },
+            "error": action(method, params, metadata, error) {
+                return {"continue": true, "error": error}
+            }
+        })
+    }
+    
+    action private initialize_database() {
+        """
+        Initialize database tables for RPC server
+        """
+        try {
+            // RPC request logs table
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS rpc_request_logs (
+                    id SERIAL PRIMARY KEY,
+                    request_id VARCHAR(64),
+                    method VARCHAR(100) NOT NULL,
+                    success BOOLEAN NOT NULL,
+                    execution_time_ms INTEGER NOT NULL,
+                    total_time_ms INTEGER NOT NULL,
+                    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    node_id VARCHAR(64),
+                    INDEX idx_method_time (method, timestamp),
+                    INDEX idx_success (success, timestamp),
+                    INDEX idx_node (node_id, timestamp)
+                )
+            """)
+            
+            // RPC method statistics table
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS rpc_method_stats (
+                    method_name VARCHAR(100) PRIMARY KEY,
+                    call_count BIGINT DEFAULT 0,
+                    success_count BIGINT DEFAULT 0,
+                    error_count BIGINT DEFAULT 0,
+                    total_execution_time_ms BIGINT DEFAULT 0,
+                    average_execution_time_ms FLOAT DEFAULT 0,
+                    last_called TIMESTAMP,
+                    INDEX idx_last_called (last_called)
+                )
+            """)
+            
+            // RPC session table
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS rpc_sessions (
+                    session_id VARCHAR(64) PRIMARY KEY,
+                    auth_token VARCHAR(256) NOT NULL,
+                    user_address VARCHAR(64),
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL,
+                    last_activity TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    metadata JSONB,
+                    INDEX idx_expires (expires_at),
+                    INDEX idx_user (user_address, last_activity)
+                )
+            """)
+            
+            print("✅ RPC database tables initialized")
+            
+        } catch (error) {
+            print("⚠️ Failed to initialize RPC database: " + error)
         }
-
-        if not request.has("method") {
-            return {"valid": false, "error": "Missing method"}
+    }
+    
+    action private configure_cors() {
+        """
+        Configure CORS for HTTP server
+        """
+        this.http_server.use(action(req, res, next) {
+            let origin = req.headers.get("Origin", "")
+            
+            if this.config.allowed_origins.contains("*") or this.config.allowed_origins.contains(origin) {
+                res.headers.set("Access-Control-Allow-Origin", origin)
+                res.headers.set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+                res.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                res.headers.set("Access-Control-Max-Age", "86400") // 24 hours
+            }
+            
+            if req.method == "OPTIONS" {
+                res.status(204).send("")
+            } else {
+                next()
+            }
+        })
+    }
+    
+    action private configure_compression() {
+        """
+        Configure compression for HTTP server
+        """
+        this.http_server.use(action(req, res, next) {
+            let accept_encoding = req.headers.get("Accept-Encoding", "")
+            
+            if accept_encoding.contains("gzip") {
+                res.headers.set("Content-Encoding", "gzip")
+            } else if accept_encoding.contains("deflate") {
+                res.headers.set("Content-Encoding", "deflate")
+            }
+            
+            next()
+        })
+    }
+    
+    action private register_routes() {
+        """
+        Register HTTP routes
+        """
+        // Main RPC endpoint
+        this.http_server.post("/", action(req, res) {
+            try {
+                let body = req.body
+                
+                // Handle batch requests
+                if type(body) == "list" {
+                    let batch_results = this.handle_batch_requests(body)
+                    res.json(batch_results)
+                } else {
+                    // Single request
+                    let result = this.handle_request(body)
+                    res.json(result)
+                }
+                
+            } catch (error) {
+                res.status(400).json({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": "Invalid Request",
+                        "data": string(error)
+                    },
+                    "id": null
+                })
+            }
+        })
+        
+        // Health check endpoint
+        this.http_server.get("/health", action(req, res) {
+            let health = this.health_check()
+            res.json(health)
+        })
+        
+        // Server stats endpoint
+        this.http_server.get("/stats", action(req, res) {
+            let stats = this.get_server_stats()
+            res.json(stats)
+        })
+        
+        // Methods list endpoint
+        this.http_server.get("/methods", action(req, res) {
+            let methods_info = this.methods["rpc_methods"]([])
+            res.json(methods_info)
+        })
+        
+        print("✅ HTTP routes registered")
+    }
+    
+    action private async start_websocket_server() {
+        """
+        Start WebSocket server for real-time RPC
+        """
+        print("🔌 Starting WebSocket RPC server...")
+        
+        try {
+            this.websocket_server = websocket_server(this.port + 1) // Use different port
+            
+            this.websocket_server.on("connection", action(ws) {
+                print("🌐 WebSocket connection established")
+                
+                ws.on("message", action(message) {
+                    try {
+                        let request = json.parse(message)
+                        let response = this.handle_request(request)
+                        ws.send(json.stringify(response))
+                    } catch (error) {
+                        ws.send(json.stringify({
+                            "jsonrpc": "2.0",
+                            "error": {
+                                "code": -32700,
+                                "message": "Parse error"
+                            },
+                            "id": null
+                        }))
+                    }
+                })
+                
+                ws.on("close", action() {
+                    print("🌐 WebSocket connection closed")
+                })
+            })
+            
+            print("✅ WebSocket server started on port " + string(this.port + 1))
+            
+        } catch (error) {
+            print("❌ Failed to start WebSocket server: " + error)
         }
-
-        if not request.has("id") {
-            return {"valid": false, "error": "Missing request ID"}
-        }
-
-        return {"valid": true, "error": ""}
     }
-
-    action update_method_stats(method: string) {
-        if not this.method_stats.has(method) {
-            this.method_stats[method] = 0
-        }
-        this.method_stats[method] += 1
-    }
-
-    action get_error_suggestions(code: integer) -> string {
-        match code {
-            case -32601: return "Check available methods using ziver_getMethods"
-            case -32000: return "Transaction may have bounce-back protection enabled"
-            case -32602: return "Verify parameter types and values"
-            default: return "Check documentation at docs.ziver.io"
-        }
-    }
-
-    // Placeholder implementations for advanced features
-    action async generate_transaction_explanation(tx: any) {
-        print("🤖 Generating AI explanation for transaction: " + tx.hash.slice(0, 16))
-        await sleep(0.1)
-    }
-
-    action get_seb_defi_block_data(block: any) -> map {
-        return {
-            "social_capital_min": 0.0,
-            "social_capital_max": 1.0,
-            "defi_activity": 0.5
-        }
-    }
-
-    action is_bounceback_protected(tx: any) -> boolean {
-        return tx.bounce_back_protection ?? false
-    }
-
-    action get_cached_explanation(tx_hash: string) -> string? {
-        return null // Would retrieve from cache
-    }
-
-    action async start_http_server() {
-        print("🌐 HTTP Server listening on port " + string(this.port))
-
-        // Simulate server operation
+    
+    action private async collect_metrics() {
+        """
+        Collect and log server metrics periodically
+        """
         while this.is_running {
-            await sleep(1)
-        }
-    }
-
-    action async collect_metrics() {
-        while this.is_running {
-            let stats = {
-                "total_requests": this.request_count,
-                "active_methods": this.methods.keys().count(),
-                "method_stats": this.method_stats,
-                "uptime": datetime.now().timestamp() - this.get_start_time()
+            try {
+                let stats = this.get_server_stats()
+                
+                // Log to database
+                try {
+                    db.execute("""
+                        INSERT INTO server_metrics (
+                            timestamp, request_count, active_sessions,
+                            average_response_time_ms, memory_usage_mb,
+                            cpu_usage_percent, alert_count
+                        ) VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+                    """, [
+                        stats.total_requests,
+                        stats.active_sessions,
+                        stats.average_response_time_ms,
+                        stats.memory_usage_mb,
+                        stats.cpu_usage_percent,
+                        stats.alerts.count()
+                    ])
+                } catch (error) {
+                    // Database errors shouldn't break metrics collection
+                }
+                
+                // Log every 60 seconds
+                await sleep(60)
+                
+            } catch (error) {
+                print("⚠️ Metrics collection error: " + error)
+                await sleep(60)
             }
-
-            // Log every 60 seconds
-            await sleep(60)
-            print("📊 RPC Metrics: " + string(stats))
         }
     }
-
-    action get_start_time() -> integer {
-        return datetime.now().timestamp() // Simplified
+    
+    action private async cleanup_sessions() {
+        """
+        Clean up expired sessions periodically
+        """
+        while this.is_running {
+            try {
+                let current_time = datetime.now().timestamp()
+                let expired_sessions = []
+                
+                for each token, session in this.sessions {
+                    if session.expires_at <= current_time {
+                        expired_sessions.push(token)
+                    }
+                }
+                
+                // Remove expired sessions
+                for each token in expired_sessions {
+                    delete this.sessions[token]
+                }
+                
+                if len(expired_sessions) > 0 {
+                    print("🧹 Cleaned up " + string(len(expired_sessions)) + " expired sessions")
+                }
+                
+                // Clean up every 5 minutes
+                await sleep(300)
+                
+            } catch (error) {
+                print("⚠️ Session cleanup error: " + error)
+                await sleep(300)
+            }
+        }
     }
-
-    action async sleep(seconds: float) {
-        // Async sleep implementation
+    
+    action private async process_request_queue() {
+        """
+        Process request queue (background task)
+        """
+        while this.is_running {
+            await sleep(0.1) // Small delay to prevent busy waiting
+            // Queue processing would be implemented here
+        }
     }
 }
 
 // Test Enhanced RPC Server
-action async test_enhanced_rpc() {
+action async test_enhanced_rpc_server() {
     print("🔌 Testing Enhanced JSON-RPC Server...")
 
-    // Create mock node for testing
+    // Create enhanced mock node for testing
     let mock_node = {
-        "network": {"is_listening": true, "get_connected_peers_count": action() { return 5 }},
+        "node_id": "test_node_001",
+        "network": {
+            "is_listening": true, 
+            "get_connected_peers_count": action() { return 5 }
+        },
         "blockchain": {
             "get_latest_block_index": action() { return 100 },
-            "get_block": action(n) { return {"index": n, "transactions": []} }
+            "get_block": action(n) { 
+                return {
+                    "index": n, 
+                    "transactions": [],
+                    "hash": "block_hash_" + string(n),
+                    "previous_hash": "prev_hash",
+                    "validator": "validator_address",
+                    "difficulty": 1000,
+                    "merkle_root": "merkle_root",
+                    "timestamp": datetime.now().timestamp(),
+                    "nonce": 123456
+                }
+            },
+            "get_pending_block_info": action(full_tx) {
+                return {"pending": true, "transaction_count": 10}
+            }
         },
-        "get_balance_with_social_capital": action(addr) { return {"amount": 1000} }
+        "get_enhanced_balance": action(addr, block_tag) {
+            return {
+                "amount": 1000 + math.random_int(0, 1000),
+                "social_capital": 0.75 + math.random() * 0.25,
+                "borrowing_power": 500 + math.random_int(0, 500)
+            }
+        },
+        "get_enhanced_wallet_info": action(addr) {
+            return {
+                "address": addr,
+                "balance": 1000,
+                "social_score": 0.8,
+                "transaction_count": 42,
+                "last_active": datetime.now().timestamp() - 3600
+            }
+        },
+        "create_enhanced_wallet": action(owner, type, options) {
+            return {
+                "address": "wallet_" + crypto.sha3_256(owner).slice(0, 40),
+                "public_key": "pub_key_" + crypto.sha3_256(owner + string(datetime.now().timestamp())),
+                "quantum_keys": ["key1", "key2"],
+                "recovery_phrase": "test recovery phrase",
+                "security_level": "high",
+                "estimated_security_years": 50,
+                "ai_recommendations": ["Enable 2FA", "Regular key rotation"]
+            }
+        },
+        "is_valid_address": action(addr) { return addr.starts_with("0x") and len(addr) == 42 },
+        "submit_transaction": action(tx) {
+            return {
+                "success": true,
+                "transaction_hash": "tx_" + crypto.sha3_256(string(tx) + string(datetime.now().timestamp())),
+                "status": "pending",
+                "estimated_confirmation_time": 15,
+                "gas_estimate": 21000
+            }
+        }
     }
 
-    let rpc_server = JSONRPCServer(node: mock_node, port: 8545)
+    // Initialize server
+    let rpc_server = JSONRPCServer(
+        node: mock_node, 
+        port: 8545,
+        config: {
+            "name": "Test RPC Server",
+            "version": "3.0.0",
+            "require_auth": false, // Disable auth for testing
+            "rate_limiting": true,
+            "caching": true,
+            "websocket": false, // Disable WebSocket for testing
+            "batch_requests": true
+        }
+    )
 
-    if rpc_server.start() {
-        print("✅ RPC Server started successfully")
-
+    // Start server
+    let start_result = await rpc_server.start()
+    
+    if start_result.success {
+        print("✅ RPC Server started: " + start_result.server_address)
+        
         // Test core methods
-        let version = rpc_server.methods["web3_clientVersion"]([])
-        print("Client Version: " + version)
-
-        let block_number = rpc_server.methods["eth_blockNumber"]([])
-        print("Current Block: " + block_number)
-
+        print("\n🧪 Testing core methods...")
+        
+        // Test web3_clientVersion
+        let version_request = {
+            "jsonrpc": "2.0",
+            "method": "web3_clientVersion",
+            "params": [],
+            "id": 1
+        }
+        
+        let version_response = rpc_server.handle_request(version_request)
+        print("Client Version: " + string(version_response.result))
+        
+        // Test eth_blockNumber
+        let block_request = {
+            "jsonrpc": "2.0",
+            "method": "eth_blockNumber",
+            "params": [],
+            "id": 2
+        }
+        
+        let block_response = rpc_server.handle_request(block_request)
+        print("Current Block: " + string(block_response.result))
+        
+        // Test eth_getBalance with enhanced response
+        let balance_request = {
+            "jsonrpc": "2.0",
+            "method": "eth_getBalance",
+            "params": ["0x742d35Cc6634C0532925a3b844Bc9e90E9190e6e", "latest"],
+            "id": 3
+        }
+        
+        let balance_response = rpc_server.handle_request(balance_request)
+        print("Balance Info: " + string(balance_response.result))
+        
+        // Test ziver_getWalletInfo
+        let wallet_request = {
+            "jsonrpc": "2.0",
+            "method": "ziver_getWalletInfo",
+            "params": ["0x742d35Cc6634C0532925a3b844Bc9e90E9190e6e"],
+            "id": 4
+        }
+        
+        let wallet_response = rpc_server.handle_request(wallet_request)
+        print("Wallet Info: " + string(wallet_response.result.address))
+        
+        // Test batch request
+        let batch_request = [
+            {
+                "jsonrpc": "2.0",
+                "method": "net_version",
+                "params": [],
+                "id": 5
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "net_peerCount",
+                "params": [],
+                "id": 6
+            }
+        ]
+        
+        let batch_response = await rpc_server.handle_batch_requests(batch_request)
+        print("Batch response count: " + string(batch_response.count()))
+        
         // Test error handling
-        let error_request = {"jsonrpc": "2.0", "method": "invalid_method", "id": 1}
+        let error_request = {
+            "jsonrpc": "2.0",
+            "method": "nonexistent_method",
+            "params": [],
+            "id": 7
+        }
+        
         let error_response = rpc_server.handle_request(error_request)
-        print("Error Response: " + string(error_response))
+        print("Error response: " + string(error_response.error.code) + " - " + error_response.error.message)
+        
+        // Test server stats
+        let stats = rpc_server.get_server_stats()
+        print("\n📊 Server Stats:")
+        print("  Total Requests: " + string(stats.total_requests))
+        print("  Uptime: " + string(stats.uptime_seconds) + "s")
+        print("  Active Sessions: " + string(stats.active_sessions))
+        
+        // Test health check
+        let health = rpc_server.health_check()
+        print("\n🏥 Health Check: " + health.status)
+        if health.issues.count() > 0 {
+            print("  Issues: " + string(health.issues))
+        }
+        
+        // Test method info
+        let method_info = rpc_server.get_method_info("eth_getBalance")
+        print("\n📋 Method Info for eth_getBalance:")
+        print("  Description: " + method_info.description)
+        print("  Auth Required: " + string(method_info.authentication_required))
+        print("  Cache Enabled: " + string(method_info.cache_enabled))
+        
+        // Stop server
+        print("\n🛑 Stopping server...")
+        let stop_result = rpc_server.stop()
+        
+        if stop_result.success {
+            print("✅ Server stopped successfully")
+            print("  Uptime: " + string(stop_result.uptime_seconds) + "s")
+            print("  Active connections closed: " + string(stop_result.active_connections_closed))
+        }
+        
+    } else {
+        print("❌ Failed to start server: " + (start_result.error or "Unknown error"))
     }
+
+    print("\n✅ RPC server test complete!")
 }
 
+// Export the contract and test function
 export {
     JSONRPCServer,
     JSONRPCProtocol,
-    test_enhanced_rpc
+    test_enhanced_rpc_server
+}
+
+// Main entry point for standalone execution
+if is_main() {
+    print("🚀 Starting Enhanced JSON-RPC Server Test...")
+    async test_enhanced_rpc_server()
 }
