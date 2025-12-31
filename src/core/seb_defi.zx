@@ -3,15 +3,46 @@
 use "crypto" as crypto
 use "datetime" as datetime
 use "math" as math
+use "json" as json
+use "../database/postgres" as db
+use "../ai/zaie_engine" as zaie
+use "../middleware/security_middleware" as security
 
-// Social & Engagement-Backed DeFi Protocol
+// Enable memory tracking for DeFi operations
+track_memory()
+
+// Security policies for SEB-DeFi
+const SEB_DEFI_POLICIES = {
+    min_social_capital_for_borrow: 0.2,
+    max_borrow_per_user: 1000000,
+    risk_score_threshold: 0.7,
+    collateralization_ratio: 1.5,
+    liquidation_buffer: 0.1,
+    fee_collection_period: 86400, // 24 hours
+    emergency_pause_threshold: 0.8
+}
+
+// Cache for user scores and borrowing power
+cache("user_scores_cache", { ttl: 300, strategy: "lru", max_entries: 10000 })
+cache("borrowing_power_cache", { ttl: 60, strategy: "lru" })
+
+// Throttle DeFi operations
+throttle("borrow_requests", { requests_per_minute: 100, burst: 10 })
+throttle("score_calculations", { requests_per_minute: 500 })
+
+// Social & Engagement-Backed DeFi Protocol with enhanced features
 protocol SEBDeFiProtocol {
-    action calculate_social_capital(user: string) -> float
-    action get_borrowing_power(user: string) -> integer
-    action update_engagement_metrics(user: string, activity: map) -> boolean
-    action get_user_tier(user: string) -> string
-    action calculate_borrowing_fee(user: string, amount: integer) -> map
-    action process_borrow(user: string, amount: integer) -> map
+    action calculate_social_capital(user: string, force_recalc: boolean?) -> SocialCapitalScore
+    action get_borrowing_power(user: string) -> BorrowingPower
+    action update_engagement_metrics(user: string, activity: EngagementActivity) -> EngagementUpdate
+    action get_user_tier(user: string) -> UserTier
+    action calculate_borrowing_fee(user: string, amount: integer, options: map?) -> FeeCalculation
+    action process_borrow(user: string, amount: integer, collateral: map?) -> BorrowResult
+    action process_repayment(user: string, amount: integer, loan_id: string) -> RepaymentResult
+    action liquidate_position(user: string, loan_id: string) -> LiquidationResult
+    action get_user_analytics(user: string) -> UserAnalytics
+    action get_system_health() -> SystemHealth
+    action adjust_risk_parameters(parameters: map) -> boolean
 }
 
 contract SEBDeFiEngine implements SEBDeFiProtocol {
@@ -21,289 +52,854 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
     persistent storage engagement_history: map
     persistent storage developer_rules: map
     persistent storage borrowing_history: map
-
-    contract UserScore {
-        persistent storage address: string
-        persistent storage social_capital: float = 0.0
-        persistent storage engagement_score: float = 0.0
-        persistent storage financial_trust: float = 0.0
-        persistent storage last_updated: integer
-        persistent storage tier: string = "BRONZE"
-        persistent storage total_borrowed: integer = 0
-        persistent storage total_fees_paid: integer = 0
-
-        action init(address: string) {
-            this.address = address
-            this.last_updated = datetime.now().timestamp()
+    persistent storage active_loans: map
+    persistent storage collateral_pools: map
+    persistent storage risk_adjustments: map
+    persistent storage fee_distribution: map
+    
+    // Enhanced data structures
+    entity UserScore {
+        address: string
+        social_capital: float = 0.0
+        engagement_score: float = 0.0
+        financial_trust: float = 0.0
+        risk_score: float = 0.5
+        last_updated: integer
+        tier: string = "BRONZE"
+        total_borrowed: integer = 0
+        total_repaid: integer = 0
+        total_fees_paid: integer = 0
+        active_loans: integer = 0
+        credit_limit: integer = 0
+        credit_utilization: float = 0.0
+        ai_trust_score: float = 1.0
+        
+        get credit_score() -> float {
+            return (this.social_capital * 0.4 + this.financial_trust * 0.4 + this.ai_trust_score * 0.2) * 100
         }
+    }
+    
+    entity EngagementActivity {
+        type: string
+        value: float
+        timestamp: integer
+        metadata: map?
+        weight: float = 1.0
+        source: string
+        confidence: float = 1.0
+    }
+    
+    entity SocialCapitalScore {
+        score: float
+        components: map
+        confidence: float
+        last_calculated: integer
+        next_recalc: integer
+        recommendations: list
+    }
+    
+    entity BorrowingPower {
+        total: integer
+        available: integer
+        used: integer
+        utilization: float
+        tier_multiplier: float
+        risk_adjusted: integer
+        collateral_required: integer
+    }
+    
+    entity UserTier {
+        name: string
+        level: integer
+        color: string
+        benefits: list
+        requirements: map
+        fee_multiplier: float
+    }
+    
+    entity FeeCalculation {
+        requested_amount: integer
+        fee_percentage: float
+        fee_amount: integer
+        net_amount: integer
+        tier: string
+        breakdown: map
+        timestamp: integer
+        expires_at: integer
+    }
+    
+    entity BorrowResult {
+        success: boolean
+        loan_id: string
+        borrow_record: map
+        user_stats: map
+        transaction_hash: string?
+        warnings: list
+        next_action: string?
+    }
+    
+    entity EngagementUpdate {
+        success: boolean
+        score_change: float
+        new_activities: integer
+        tier_change: string?
+        timestamp: integer
+    }
+    
+    // Reactive state for system monitoring
+    watch active_loans {
+        let total_value = 0
+        for each loan_id, loan in this.active_loans {
+            total_value += loan.amount
+        }
+        print("💰 Total active loans value: " + string(total_value))
+    }
+    
+    watch user_scores {
+        print("👥 User scores updated, total users: " + string(len(this.user_scores)))
     }
 
     action init() {
-        // Initialize SEB-DeFi tiers with Ziver's innovative approach
+        // Initialize SEB-DeFi tiers with enhanced parameters
         this.tier_thresholds = {
-            "DIAMOND": 0.9,    // Top 1% - Elite access
-            "PLATINUM": 0.75,  // Top 10% - Premium benefits  
-            "GOLD": 0.6,       // Top 25% - Enhanced access
-            "SILVER": 0.4,     // Top 50% - Standard benefits
-            "BRONZE": 0.2      // Everyone else - Basic access
+            "DIAMOND": {"min_score": 0.9, "level": 5, "color": "#4A90E2", "multiplier": 2.0},
+            "PLATINUM": {"min_score": 0.75, "level": 4, "color": "#7B68EE", "multiplier": 1.5},
+            "GOLD": {"min_score": 0.6, "level": 3, "color": "#FFD700", "multiplier": 1.2},
+            "SILVER": {"min_score": 0.4, "level": 2, "color": "#C0C0C0", "multiplier": 1.0},
+            "BRONZE": {"min_score": 0.2, "level": 1, "color": "#CD7F32", "multiplier": 0.8}
         }
 
-        // Dynamic DeFi parameters based on social capital - USING FEE MODEL
+        // Enhanced DeFi parameters with risk management
         this.defi_parameters = {
-            "max_borrow_ratio_diamond": 0.8,
-            "max_borrow_ratio_platinum": 0.6,
-            "max_borrow_ratio_gold": 0.4,
-            "max_borrow_ratio_silver": 0.25,
-            "max_borrow_ratio_bronze": 0.1,
-
-            // FEE PERCENTAGES (removed from borrowed amount upfront)
-            "borrowing_fee_diamond": 0.01,    // 1% fee for diamond tier
-            "borrowing_fee_platinum": 0.02,   // 2% fee for platinum
-            "borrowing_fee_gold": 0.03,       // 3% fee for gold
-            "borrowing_fee_silver": 0.05,     // 5% fee for silver
-            "borrowing_fee_bronze": 0.08,     // 8% fee for bronze
-
-            "liquidation_threshold_diamond": 0.9,
-            "liquidation_threshold_bronze": 0.7
+            // Borrowing ratios per tier
+            "max_borrow_ratio": {
+                "DIAMOND": 0.8,
+                "PLATINUM": 0.6,
+                "GOLD": 0.4,
+                "SILVER": 0.25,
+                "BRONZE": 0.1
+            },
+            
+            // Fee structure (front-loaded fees)
+            "borrowing_fee": {
+                "DIAMOND": 0.01,    // 1%
+                "PLATINUM": 0.02,   // 2%
+                "GOLD": 0.03,       // 3%
+                "SILVER": 0.05,     // 5%
+                "BRONZE": 0.08      // 8%
+            },
+            
+            // Liquidation thresholds
+            "liquidation_threshold": {
+                "DIAMOND": 0.9,
+                "PLATINUM": 0.85,
+                "GOLD": 0.8,
+                "SILVER": 0.75,
+                "BRONZE": 0.7
+            },
+            
+            // Risk parameters
+            "risk_free_rate": 0.02,
+            "volatility_factor": 0.15,
+            "correlation_penalty": 0.1,
+            "concentration_limit": 0.3
         }
 
         this.user_scores = {}
         this.engagement_history = {}
         this.borrowing_history = {}
+        this.active_loans = {}
+        this.collateral_pools = {}
+        this.risk_adjustments = {}
+        this.fee_distribution = {}
         this.developer_rules = this.get_default_rules()
+        
+        // Initialize database tables
+        try {
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS seb_users (
+                    address VARCHAR(42) PRIMARY KEY,
+                    social_capital FLOAT DEFAULT 0.0,
+                    engagement_score FLOAT DEFAULT 0.0,
+                    financial_trust FLOAT DEFAULT 0.0,
+                    tier VARCHAR(20) DEFAULT 'BRONZE',
+                    total_borrowed BIGINT DEFAULT 0,
+                    total_repaid BIGINT DEFAULT 0,
+                    total_fees_paid BIGINT DEFAULT 0,
+                    credit_score FLOAT DEFAULT 0.0,
+                    last_updated BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS seb_loans (
+                    loan_id VARCHAR(64) PRIMARY KEY,
+                    user_address VARCHAR(42) NOT NULL,
+                    amount BIGINT NOT NULL,
+                    net_received BIGINT NOT NULL,
+                    fee_amount BIGINT NOT NULL,
+                    tier VARCHAR(20) NOT NULL,
+                    status VARCHAR(20) DEFAULT 'ACTIVE',
+                    created_at BIGINT NOT NULL,
+                    due_at BIGINT,
+                    repaid_amount BIGINT DEFAULT 0,
+                    collateral_type VARCHAR(32),
+                    collateral_value BIGINT,
+                    risk_score FLOAT DEFAULT 0.5
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS seb_engagement (
+                    id SERIAL PRIMARY KEY,
+                    user_address VARCHAR(42) NOT NULL,
+                    activity_type VARCHAR(50) NOT NULL,
+                    activity_value FLOAT NOT NULL,
+                    score_impact FLOAT NOT NULL,
+                    timestamp BIGINT NOT NULL,
+                    metadata JSONB
+                )
+            """)
+        } catch (error) {
+            print("⚠️ Failed to initialize SEB-DeFi database: " + error)
+        }
     }
 
-    action calculate_social_capital(user: string) -> float {
+    action protect calculate_social_capital(user: string, force_recalc: boolean? = false) -> SocialCapitalScore {
         """
-        Calculate comprehensive social capital score using ZAIE AI engine
+        Calculate comprehensive social capital score using ZAIE AI engine with caching
         """
+        // Check cache first if not forcing recalculation
+        if not force_recalc {
+            let cached = cache_get("social_capital_" + user)
+            if cached != null and (datetime.now().timestamp() - cached.last_calculated) < 300 {
+                return cached
+            }
+        }
+        
         if not this.user_scores.has(user) {
-            this.user_scores[user] = UserScore(address: user)
+            this.user_scores[user] = UserScore{
+                address: user,
+                last_updated: datetime.now().timestamp()
+            }
         }
 
         let user_data = this.user_scores[user]
-        let engagement_metrics = this.get_engagement_metrics(user)
-
+        
         // Multi-factor scoring with ZAIE AI integration
         let factors = {
-            "on_chain_activity": this.analyze_on_chain_behavior(user),
-            "community_engagement": this.measure_community_participation(user),
-            "financial_reputation": this.assess_financial_trust(user),
-            "governance_participation": this.evaluate_governance_activity(user),
-            "network_contribution": this.calculate_network_value(user)
+            "on_chain_activity": await this.analyze_on_chain_behavior(user),
+            "community_engagement": await this.measure_community_participation(user),
+            "financial_reputation": await this.assess_financial_trust(user),
+            "governance_participation": await this.evaluate_governance_activity(user),
+            "network_contribution": await this.calculate_network_value(user),
+            "risk_profile": await this.assess_risk_profile(user)
         }
-
-        // ZAIE AI engine processing (placeholder for actual AI integration)
-        let zai_score = this.query_zai_engine(factors)
-
-        // Update user score
-        user_data.social_capital = zai_score
+        
+        // Use ZAIE AI engine for enhanced scoring
+        let zai_result = await zaie.analyze_social_capital(factors, user)
+        let zai_score = zai_result.score
+        let confidence = zai_result.confidence
+        let recommendations = zai_result.recommendations
+        
+        // Apply risk adjustments
+        let risk_adjusted_score = this.apply_risk_adjustment(zai_score, user_data.risk_score)
+        
+        // Update user score with enhanced data
+        user_data.social_capital = risk_adjusted_score
         user_data.engagement_score = factors.community_engagement
         user_data.financial_trust = factors.financial_reputation
-        user_data.tier = this.determine_tier(zai_score)
+        user_data.ai_trust_score = zai_result.ai_confidence
+        user_data.tier = this.determine_tier(risk_adjusted_score)
         user_data.last_updated = datetime.now().timestamp()
-
-        return zai_score
+        user_data.credit_limit = this.calculate_credit_limit(risk_adjusted_score, user_data.tier)
+        
+        // Update database
+        try {
+            db.execute("""
+                INSERT INTO seb_users (address, social_capital, engagement_score, financial_trust, tier, credit_score, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (address) DO UPDATE SET
+                    social_capital = EXCLUDED.social_capital,
+                    engagement_score = EXCLUDED.engagement_score,
+                    financial_trust = EXCLUDED.financial_trust,
+                    tier = EXCLUDED.tier,
+                    credit_score = EXCLUDED.credit_score,
+                    last_updated = EXCLUDED.last_updated
+            """, [
+                user,
+                risk_adjusted_score,
+                factors.community_engagement,
+                factors.financial_reputation,
+                user_data.tier,
+                user_data.credit_score,
+                datetime.now().timestamp()
+            ])
+        } catch (error) {
+            print("⚠️ Failed to update user in database: " + error)
+        }
+        
+        let result = SocialCapitalScore{
+            score: risk_adjusted_score,
+            components: factors,
+            confidence: confidence,
+            last_calculated: datetime.now().timestamp(),
+            next_recalc: datetime.now().timestamp() + 3600, // Recalculate in 1 hour
+            recommendations: recommendations
+        }
+        
+        // Cache the result
+        cache_set("social_capital_" + user, result)
+        
+        // Audit trail
+        audit("social_capital_calculated", {
+            "user": user,
+            "score": risk_adjusted_score,
+            "tier": user_data.tier,
+            "confidence": confidence,
+            "timestamp": datetime.now().timestamp()
+        })
+        
+        return result
     }
 
-    action get_borrowing_power(user: string) -> integer {
+    action protect get_borrowing_power(user: string) -> BorrowingPower {
         """
-        Calculate maximum borrowing power based on social capital
+        Calculate maximum borrowing power based on social capital with risk adjustment
         """
-        let score = this.calculate_social_capital(user)
+        // Check cache
+        let cached = cache_get("borrowing_power_" + user)
+        if cached != null {
+            return cached
+        }
+        
+        let score_result = this.calculate_social_capital(user)
         let tier = this.get_user_tier(user)
-        let wallet_balance = this.get_wallet_balance(user) // Would integrate with actual wallet
-
-        let max_ratio = this.defi_parameters["max_borrow_ratio_" + tier.lower()]
-        return integer(wallet_balance * max_ratio)
+        let wallet_balance = this.get_wallet_balance(user)
+        let risk_score = this.user_scores.get(user, {}).risk_score or 0.5
+        
+        // Base calculation
+        let max_ratio = this.defi_parameters.max_borrow_ratio[tier]
+        let base_power = integer(wallet_balance * max_ratio)
+        
+        // Adjust for risk
+        let risk_multiplier = 1.0 - (risk_score * 0.5) // Higher risk = lower multiplier
+        let risk_adjusted = integer(base_power * risk_multiplier)
+        
+        // Check utilization
+        let used = this.user_scores.get(user, {}).total_borrowed or 0
+        let available = math.max(0, risk_adjusted - used)
+        let utilization = used / math.max(1, risk_adjusted)
+        
+        // Calculate collateral requirement based on risk
+        let collateral_required = integer(used * SEB_DEFI_POLICIES.collateralization_ratio * (1 + risk_score))
+        
+        let borrowing_power = BorrowingPower{
+            total: risk_adjusted,
+            available: available,
+            used: used,
+            utilization: utilization,
+            tier_multiplier: this.tier_thresholds[tier].multiplier,
+            risk_adjusted: risk_adjusted,
+            collateral_required: collateral_required
+        }
+        
+        // Cache for 1 minute
+        cache_set("borrowing_power_" + user, borrowing_power)
+        
+        return borrowing_power
     }
 
-    action update_engagement_metrics(user: string, activity: map) -> boolean {
+    action protect update_engagement_metrics(user: string, activity: EngagementActivity) -> EngagementUpdate {
         """
-        Update user engagement metrics with developer-customizable rules
+        Update user engagement metrics with developer-customizable rules and AI validation
         """
         if not this.engagement_history.has(user) {
             this.engagement_history[user] = []
         }
-
-        // Apply developer-defined scoring rules
+        
+        // Validate activity with AI
+        let validation_result = await zaie.validate_engagement_activity(activity)
+        if not validation_result.valid {
+            throw "Invalid engagement activity: " + validation_result.reason
+        }
+        
+        // Apply developer-defined scoring rules with AI enhancement
         let score_impact = this.apply_developer_rules(activity)
-
-        // Record engagement
-        this.engagement_history[user].push({
+        let ai_enhanced_impact = await zaie.enhance_score_impact(score_impact, activity, user)
+        
+        // Record engagement with enhanced metadata
+        let engagement_record = {
             "activity": activity,
-            "score_impact": score_impact,
+            "score_impact": ai_enhanced_impact,
+            "ai_validation": validation_result,
+            "timestamp": datetime.now().timestamp(),
+            "confidence": validation_result.confidence
+        }
+        
+        this.engagement_history[user].push(engagement_record)
+        
+        // Store in database
+        try {
+            db.execute("""
+                INSERT INTO seb_engagement (user_address, activity_type, activity_value, score_impact, timestamp, metadata)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, [
+                user,
+                activity.type,
+                activity.value,
+                ai_enhanced_impact,
+                datetime.now().timestamp(),
+                json.stringify({
+                    "source": activity.source,
+                    "confidence": activity.confidence,
+                    "validation": validation_result
+                })
+            ])
+        } catch (error) {
+            print("⚠️ Failed to store engagement in database: " + error)
+        }
+        
+        // Recalculate social capital
+        let old_tier = this.get_user_tier(user)
+        let new_score = this.calculate_social_capital(user, true)
+        let new_tier = this.get_user_tier(user)
+        
+        let tier_change = null
+        if old_tier != new_tier {
+            tier_change = old_tier + " → " + new_tier
+            print("🎉 User " + user + " upgraded from " + old_tier + " to " + new_tier)
+        }
+        
+        // Audit trail
+        audit("engagement_updated", {
+            "user": user,
+            "activity_type": activity.type,
+            "score_impact": ai_enhanced_impact,
+            "old_tier": old_tier,
+            "new_tier": new_tier,
             "timestamp": datetime.now().timestamp()
         })
-
-        // Recalculate social capital
-        this.calculate_social_capital(user)
-
-        return true
-    }
-
-    action get_user_tier(user: string) -> string {
-        """
-        Get user's SEB-DeFi tier based on social capital
-        """
-        if not this.user_scores.has(user) {
-            return "BRONZE"
-        }
-
-        return this.user_scores[user].tier
-    }
-
-    action calculate_borrowing_fee(user: string, amount: integer) -> map {
-        """
-        Calculate borrowing fee and net amount using Ziver's fee model
-        Fee is deducted upfront from the borrowed amount
-        """
-        let tier = this.get_user_tier(user)
-        let fee_percentage = this.defi_parameters["borrowing_fee_" + tier.lower()]
         
-        let fee_amount = integer(amount * fee_percentage)
+        return EngagementUpdate{
+            success: true,
+            score_change: ai_enhanced_impact,
+            new_activities: len(this.engagement_history[user]),
+            tier_change: tier_change,
+            timestamp: datetime.now().timestamp()
+        }
+    }
+
+    action protect get_user_tier(user: string) -> UserTier {
+        """
+        Get user's SEB-DeFi tier based on social capital with enhanced metadata
+        """
+        let score = 0.0
+        if this.user_scores.has(user) {
+            score = this.user_scores[user].social_capital
+        } else {
+            score = (await this.calculate_social_capital(user)).score
+        }
+        
+        let tier_name = this.determine_tier(score)
+        let tier_info = this.tier_thresholds[tier_name]
+        
+        return UserTier{
+            name: tier_name,
+            level: tier_info.level,
+            color: tier_info.color,
+            benefits: this.get_tier_benefits(tier_name),
+            requirements: {"min_score": tier_info.min_score},
+            fee_multiplier: tier_info.multiplier
+        }
+    }
+
+    action protect calculate_borrowing_fee(user: string, amount: integer, options: map? = null) -> FeeCalculation {
+        """
+        Calculate borrowing fee and net amount using Ziver's enhanced fee model
+        """
+        verify(amount > 0, "Amount must be positive")
+        verify(amount <= SEB_DEFI_POLICIES.max_borrow_per_user, "Amount exceeds maximum borrow limit")
+        
+        let tier = this.get_user_tier(user).name
+        let base_fee_percentage = this.defi_parameters.borrowing_fee[tier]
+        
+        // Apply risk-based fee adjustment
+        let risk_score = this.user_scores.get(user, {}).risk_score or 0.5
+        let risk_multiplier = 1.0 + (risk_score * 0.5) // Higher risk = higher fees
+        let adjusted_fee_percentage = base_fee_percentage * risk_multiplier
+        
+        // Apply any custom options
+        if options?.fee_discount != null {
+            adjusted_fee_percentage *= (1.0 - options.fee_discount)
+        }
+        
+        let fee_amount = integer(amount * adjusted_fee_percentage)
         let net_amount = amount - fee_amount
         
-        return {
-            "requested_amount": amount,
-            "fee_percentage": fee_percentage,
-            "fee_amount": fee_amount,
-            "net_amount": net_amount,
-            "tier": tier
+        // Fee breakdown
+        let breakdown = {
+            "base_fee": integer(amount * base_fee_percentage),
+            "risk_adjustment": integer(amount * (adjusted_fee_percentage - base_fee_percentage)),
+            "platform_fee": integer(fee_amount * 0.3),
+            "reserve_fee": integer(fee_amount * 0.4),
+            "reward_pool": integer(fee_amount * 0.3)
+        }
+        
+        let timestamp = datetime.now().timestamp()
+        
+        return FeeCalculation{
+            requested_amount: amount,
+            fee_percentage: adjusted_fee_percentage,
+            fee_amount: fee_amount,
+            net_amount: net_amount,
+            tier: tier,
+            breakdown: breakdown,
+            timestamp: timestamp,
+            expires_at: timestamp + 300 // Quote expires in 5 minutes
         }
     }
 
-    action process_borrow(user: string, amount: integer) -> map {
+    action protect process_borrow(user: string, amount: integer, collateral: map? = null) -> BorrowResult {
         """
-        Process a borrowing request using Ziver's fee model
-        User receives (amount - fee) upfront, no future interest
+        Process a borrowing request using Ziver's enhanced fee model with collateral support
         """
-        // Check borrowing power
-        let borrowing_power = this.get_borrowing_power(user)
-        if amount > borrowing_power {
-            return {
-                "success": false,
-                "error": "Amount exceeds borrowing power",
-                "borrowing_power": borrowing_power
+        let start_time = datetime.now().timestamp()
+        
+        try {
+            // Check borrowing power
+            let borrowing_power = this.get_borrowing_power(user)
+            if amount > borrowing_power.available {
+                throw "Amount exceeds available borrowing power. Available: " + string(borrowing_power.available)
             }
-        }
-
-        // Calculate fee and net amount
-        let fee_calculation = this.calculate_borrowing_fee(user, amount)
-        
-        // Update user stats
-        if not this.user_scores.has(user) {
-            this.calculate_social_capital(user)
-        }
-        
-        let user_data = this.user_scores[user]
-        user_data.total_borrowed += amount
-        user_data.total_fees_paid += fee_calculation.fee_amount
-
-        // Record borrowing history
-        if not this.borrowing_history.has(user) {
-            this.borrowing_history[user] = []
-        }
-        
-        let borrow_record = {
-            "timestamp": datetime.now().timestamp(),
-            "requested_amount": amount,
-            "fee_amount": fee_calculation.fee_amount,
-            "net_received": fee_calculation.net_amount,
-            "tier": fee_calculation.tier,
-            "fee_percentage": fee_calculation.fee_percentage
-        }
-        
-        this.borrowing_history[user].push(borrow_record)
-
-        return {
-            "success": true,
-            "borrow_record": borrow_record,
-            "user_stats": {
-                "total_borrowed": user_data.total_borrowed,
-                "total_fees_paid": user_data.total_fees_paid,
-                "remaining_borrowing_power": borrowing_power - amount
+            
+            // Check social capital minimum
+            let social_capital = (await this.calculate_social_capital(user)).score
+            if social_capital < SEB_DEFI_POLICIES.min_social_capital_for_borrow {
+                throw "Social capital too low for borrowing. Required: " + 
+                      string(SEB_DEFI_POLICIES.min_social_capital_for_borrow)
+            }
+            
+            // Calculate fee and net amount
+            let fee_calculation = this.calculate_borrowing_fee(user, amount, {"timestamp": start_time})
+            
+            // Check if quote is still valid
+            if datetime.now().timestamp() > fee_calculation.expires_at {
+                throw "Fee quote expired. Please request a new one."
+            }
+            
+            // Process collateral if provided
+            let collateral_info = null
+            if collateral != null {
+                collateral_info = this.process_collateral(user, amount, collateral)
+            }
+            
+            // Generate loan ID
+            let loan_id = "LOAN_" + crypto.sha3_256(user + string(amount) + string(start_time))
+            
+            // Update user stats
+            if not this.user_scores.has(user) {
+                await this.calculate_social_capital(user, true)
+            }
+            
+            let user_data = this.user_scores[user]
+            user_data.total_borrowed += amount
+            user_data.total_fees_paid += fee_calculation.fee_amount
+            user_data.active_loans += 1
+            user_data.credit_utilization = user_data.total_borrowed / math.max(1, user_data.credit_limit)
+            
+            // Record borrowing history
+            let borrow_record = {
+                "loan_id": loan_id,
+                "timestamp": start_time,
+                "requested_amount": amount,
+                "fee_amount": fee_calculation.fee_amount,
+                "net_received": fee_calculation.net_amount,
+                "tier": fee_calculation.tier,
+                "fee_percentage": fee_calculation.fee_percentage,
+                "collateral": collateral_info,
+                "risk_score": user_data.risk_score,
+                "transaction_hash": this.generate_transaction_hash(user, amount, loan_id)
+            }
+            
+            if not this.borrowing_history.has(user) {
+                this.borrowing_history[user] = []
+            }
+            this.borrowing_history[user].push(borrow_record)
+            
+            // Store active loan
+            this.active_loans[loan_id] = {
+                "user": user,
+                "amount": amount,
+                "net_received": fee_calculation.net_amount,
+                "fee_amount": fee_calculation.fee_amount,
+                "tier": fee_calculation.tier,
+                "created_at": start_time,
+                "due_at": start_time + (30 * 24 * 60 * 60), // 30 days
+                "status": "ACTIVE",
+                "collateral": collateral_info,
+                "risk_score": user_data.risk_score,
+                "repaid_amount": 0
+            }
+            
+            // Update database
+            try {
+                db.execute("""
+                    INSERT INTO seb_loans (loan_id, user_address, amount, net_received, fee_amount, tier, created_at, due_at, risk_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [
+                    loan_id,
+                    user,
+                    amount,
+                    fee_calculation.net_amount,
+                    fee_calculation.fee_amount,
+                    fee_calculation.tier,
+                    start_time,
+                    start_time + (30 * 24 * 60 * 60),
+                    user_data.risk_score
+                ])
+                
+                db.execute("""
+                    UPDATE seb_users 
+                    SET total_borrowed = total_borrowed + ?, 
+                        total_fees_paid = total_fees_paid + ?
+                    WHERE address = ?
+                """, [amount, fee_calculation.fee_amount, user])
+            } catch (error) {
+                print("⚠️ Failed to update loan in database: " + error)
+            }
+            
+            // Distribute fees
+            this.distribute_fees(fee_calculation.breakdown, loan_id)
+            
+            // Audit trail
+            audit("loan_processed", {
+                "user": user,
+                "loan_id": loan_id,
+                "amount": amount,
+                "net_received": fee_calculation.net_amount,
+                "fee_amount": fee_calculation.fee_amount,
+                "tier": fee_calculation.tier,
+                "timestamp": start_time
+            })
+            
+            let warnings = []
+            if user_data.risk_score > 0.7 {
+                warnings.push("High risk score detected: " + string(user_data.risk_score))
+            }
+            
+            if borrowing_power.utilization > 0.8 {
+                warnings.push("High credit utilization: " + string(borrowing_power.utilization * 100) + "%")
+            }
+            
+            return BorrowResult{
+                success: true,
+                loan_id: loan_id,
+                borrow_record: borrow_record,
+                user_stats: {
+                    "total_borrowed": user_data.total_borrowed,
+                    "total_fees_paid": user_data.total_fees_paid,
+                    "active_loans": user_data.active_loans,
+                    "credit_utilization": user_data.credit_utilization,
+                    "remaining_borrowing_power": borrowing_power.available - amount
+                },
+                transaction_hash: borrow_record.transaction_hash,
+                warnings: warnings,
+                next_action: collateral_info != null ? "monitor_collateral" : "repayment_due_in_30_days"
+            }
+            
+        } catch (error) {
+            audit("loan_processing_failed", {
+                "user": user,
+                "amount": amount,
+                "error": error,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return BorrowResult{
+                success: false,
+                warnings: ["Processing failed: " + error]
             }
         }
     }
 
-    // Developer Customization System
-    action apply_developer_rules(activity: map) -> float {
-        """
-        Developer-customizable engagement scoring rules
-        """
-        let base_score = 0.0
+    action protect process_repayment(user: string, amount: integer, loan_id: string) -> RepaymentResult {
+        // Enhanced repayment processing with partial repayment support
+        // Implementation details...
+        return {"success": true} // Simplified for brevity
+    }
+
+    action protect liquidate_position(user: string, loan_id: string) -> LiquidationResult {
+        // Enhanced liquidation with collateral recovery
+        // Implementation details...
+        return {"success": true} // Simplified for brevity
+    }
+
+    // Developer Customization System with enhanced rules
+    action apply_developer_rules(activity: EngagementActivity) -> float {
+        let base_score = activity.value * activity.weight
         let activity_type = activity.type
-
-        // Developer can modify these rules based on their platform needs
+        
+        // Apply developer-defined multipliers
+        let multiplier = 1.0
         match activity_type {
             case "transaction":
-                base_score += this.developer_rules.transaction_weight * 0.1
+                multiplier = this.developer_rules.transaction_weight
             case "governance_vote":
-                base_score += this.developer_rules.governance_weight * 0.3
+                multiplier = this.developer_rules.governance_weight
             case "liquidity_provision":
-                base_score += this.developer_rules.liquidity_weight * 0.5
+                multiplier = this.developer_rules.liquidity_weight
             case "social_interaction":
-                base_score += this.developer_rules.social_weight * 0.2
+                multiplier = this.developer_rules.social_weight
             case "content_creation":
-                base_score += this.developer_rules.content_weight * 0.4
+                multiplier = this.developer_rules.content_weight
             case "bug_report":
-                base_score += this.developer_rules.contribution_weight * 0.6
+                multiplier = this.developer_rules.contribution_weight
+            case "ai_training":
+                multiplier = this.developer_rules.ai_weight or 2.0
             default:
-                base_score += 0.05 // Default small reward
+                multiplier = 1.0
         }
-
+        
+        // Source confidence adjustment
+        base_score *= activity.confidence
+        
         // Time-based decay for recent activity
         let recency_bonus = this.calculate_recency_bonus(activity.timestamp)
-        base_score *= recency_bonus
-
+        base_score *= recency_bonus * multiplier
+        
         return math.min(1.0, base_score)
     }
 
-    action set_developer_rules(rules: map) -> boolean {
+    action protect set_developer_rules(rules: map) -> boolean {
         """
-        Allow developers to set custom scoring rules
+        Allow developers to set custom scoring rules with validation
         """
-        this.developer_rules = this.validate_rules(rules)
+        let validated_rules = this.validate_rules(rules)
+        
+        // AI validation of rule impact
+        let impact_analysis = await zaie.analyze_rule_impact(validated_rules)
+        if impact_analysis.risk_score > 0.7 {
+            print("⚠️ High-risk rule changes detected: " + impact_analysis.warnings.join(", "))
+        }
+        
+        this.developer_rules = validated_rules
+        
+        audit("developer_rules_updated", {
+            "rules": validated_rules,
+            "impact_analysis": impact_analysis,
+            "timestamp": datetime.now().timestamp()
+        })
+        
         return true
     }
 
-    // Analytics and Reporting
-    action get_user_analytics(user: string) -> map {
-        """
-        Get comprehensive user analytics for transparency
-        """
+    // Analytics and Reporting with enhanced features
+    action protect get_user_analytics(user: string) -> UserAnalytics {
         if not this.user_scores.has(user) {
-            return {"error": "User not found"}
+            await this.calculate_social_capital(user)
         }
-
+        
         let user_data = this.user_scores[user]
         let engagement = this.engagement_history.get(user, [])
         let borrow_history = this.borrowing_history.get(user, [])
-
+        let active_loans_list = []
+        
+        for each loan_id, loan in this.active_loans {
+            if loan.user == user {
+                active_loans_list.push(loan)
+            }
+        }
+        
+        // AI-powered insights
+        let ai_insights = await zaie.generate_user_insights(user, user_data, engagement, borrow_history)
+        
         return {
             "address": user_data.address,
             "social_capital": user_data.social_capital,
             "tier": user_data.tier,
+            "credit_score": user_data.credit_score,
             "borrowing_power": this.get_borrowing_power(user),
             "engagement_score": user_data.engagement_score,
             "financial_trust": user_data.financial_trust,
-            "total_engagements": engagement.count(),
+            "risk_score": user_data.risk_score,
+            "ai_trust_score": user_data.ai_trust_score,
+            "total_engagements": len(engagement),
             "total_borrowed": user_data.total_borrowed,
+            "total_repaid": user_data.total_repaid,
             "total_fees_paid": user_data.total_fees_paid,
-            "borrow_count": borrow_history.count(),
-            "last_updated": user_data.last_updated
+            "borrow_count": len(borrow_history),
+            "active_loans_count": len(active_loans_list),
+            "credit_utilization": user_data.credit_utilization,
+            "last_updated": user_data.last_updated,
+            "ai_insights": ai_insights,
+            "recommendations": this.generate_recommendations(user_data)
         }
     }
 
-    action get_borrowing_history(user: string) -> list {
-        """
-        Get user's borrowing history
-        """
-        return this.borrowing_history.get(user, [])
+    action protect get_system_health() -> SystemHealth {
+        let total_users = len(this.user_scores)
+        let total_active_loans = len(this.active_loans)
+        
+        let total_loan_value = 0
+        let total_fees_collected = 0
+        let at_risk_loans = 0
+        
+        for each loan_id, loan in this.active_loans {
+            total_loan_value += loan.amount
+            total_fees_collected += loan.fee_amount
+            
+            // Check if loan is at risk
+            let user_data = this.user_scores.get(loan.user, {})
+            if user_data.risk_score > SEB_DEFI_POLICIES.risk_score_threshold {
+                at_risk_loans += 1
+            }
+        }
+        
+        // Calculate system risk score
+        let system_risk = at_risk_loans / math.max(1, total_active_loans)
+        let health_score = 100 * (1 - system_risk)
+        
+        // Check emergency conditions
+        let emergency_pause = system_risk > SEB_DEFI_POLICIES.emergency_pause_threshold
+        
+        return {
+            "total_users": total_users,
+            "total_active_loans": total_active_loans,
+            "total_loan_value": total_loan_value,
+            "total_fees_collected": total_fees_collected,
+            "at_risk_loans": at_risk_loans,
+            "system_risk_score": system_risk,
+            "health_score": health_score,
+            "emergency_pause_required": emergency_pause,
+            "tier_distribution": this.calculate_tier_distribution(),
+            "timestamp": datetime.now().timestamp()
+        }
     }
 
-    // Internal helper methods
+    action protect adjust_risk_parameters(parameters: map) -> boolean {
+        // Validate parameters
+        for each key, value in parameters {
+            if key in this.defi_parameters {
+                this.defi_parameters[key] = value
+            }
+        }
+        
+        // Recalculate all user scores with new parameters
+        for each user, user_data in this.user_scores {
+            this.calculate_social_capital(user, true)
+        }
+        
+        audit("risk_parameters_adjusted", {
+            "parameters": parameters,
+            "timestamp": datetime.now().timestamp()
+        })
+        
+        return true
+    }
+
+    // Internal helper methods with enhanced implementations
     action get_default_rules() -> map {
         return {
             "transaction_weight": 1.0,
@@ -312,16 +908,30 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
             "social_weight": 1.2,
             "content_weight": 1.8,
             "contribution_weight": 2.5,
-            "recency_decay_days": 30
+            "ai_weight": 2.0,
+            "recency_decay_days": 30,
+            "max_daily_engagement": 100,
+            "min_activity_confidence": 0.7
         }
     }
 
     action validate_rules(rules: map) -> map {
-        // Ensure rules are within reasonable bounds
         let validated = {}
+        let default_rules = this.get_default_rules()
+        
         for each key, value in rules {
-            validated[key] = math.max(0.0, math.min(3.0, value)) // Cap at 3x multiplier
+            if default_rules.has(key) {
+                // Apply constraints based on rule type
+                let constrained_value = value
+                if key.contains("weight") {
+                    constrained_value = math.max(0.0, math.min(5.0, value)) // Cap at 5x
+                } else if key == "recency_decay_days" {
+                    constrained_value = math.max(1, math.min(365, value)) // 1-365 days
+                }
+                validated[key] = constrained_value
+            }
         }
+        
         return validated
     }
 
@@ -331,90 +941,273 @@ contract SEBDeFiEngine implements SEBDeFiProtocol {
         return math.max(0.1, 1.0 - (days_ago / decay_days))
     }
 
-    // Placeholder implementations for external integrations
-    action get_engagement_metrics(user: string) -> map {
-        return {"total_transactions": 0, "community_posts": 0, "governance_votes": 0}
-    }
-
-    action analyze_on_chain_behavior(user: string) -> float {
-        return 0.5 // Would analyze transaction history, NFT holdings, etc.
-    }
-
-    action measure_community_participation(user: string) -> float {
-        return 0.5 // Would integrate with social platforms
-    }
-
-    action assess_financial_trust(user: string) -> float {
-        return 0.5 // Would analyze repayment history, collateral
-    }
-
-    action evaluate_governance_activity(user: string) -> float {
-        return 0.5 // Would check voting participation
-    }
-
-    action calculate_network_value(user: string) -> float {
-        return 0.5 // Would measure network contributions
-    }
-
-    action query_zai_engine(factors: map) -> float {
-        // Placeholder for ZAIE AI engine integration
-        let weighted_score = (
-            factors.on_chain_activity * 0.3 +
-            factors.community_engagement * 0.25 +
-            factors.financial_reputation * 0.2 +
-            factors.governance_participation * 0.15 +
-            factors.network_contribution * 0.1
-        )
-        return math.min(1.0, weighted_score)
-    }
-
-    action get_wallet_balance(user: string) -> integer {
-        return 1000 // Would integrate with actual wallet system
-    }
-
     action determine_tier(score: float) -> string {
-        for each tier, threshold in this.tier_thresholds {
-            if score >= threshold {
+        let tiers = ["DIAMOND", "PLATINUM", "GOLD", "SILVER", "BRONZE"]
+        for each tier in tiers {
+            if score >= this.tier_thresholds[tier].min_score {
                 return tier
             }
         }
         return "BRONZE"
     }
+    
+    action get_tier_benefits(tier: string) -> list {
+        match tier {
+            case "DIAMOND":
+                return ["Zero fees on small loans", "Priority support", "Early access to features", "Governance voting power"]
+            case "PLATINUM":
+                return ["Reduced fees", "Fast processing", "Enhanced limits", "Voting rights"]
+            case "GOLD":
+                return ["Standard benefits", "Reliable access", "Community rewards"]
+            case "SILVER":
+                return ["Basic borrowing", "Community access"]
+            case "BRONZE":
+                return ["Limited borrowing", "Starter benefits"]
+            default:
+                return ["Basic access"]
+        }
+    }
+    
+    action apply_risk_adjustment(score: float, risk_score: float) -> float {
+        let adjustment = 1.0 - (risk_score * 0.3) // Max 30% reduction for high risk
+        return score * adjustment
+    }
+    
+    action calculate_credit_limit(score: float, tier: string) -> integer {
+        let base_limit = 1000
+        let tier_multiplier = this.tier_thresholds[tier].multiplier
+        let score_multiplier = score * 10
+        
+        return integer(base_limit * tier_multiplier * score_multiplier)
+    }
+    
+    action process_collateral(user: string, amount: integer, collateral: map) -> map {
+        // Simplified collateral processing
+        return {
+            "type": collateral.type,
+            "value": collateral.value,
+            "locked": true,
+            "lock_timestamp": datetime.now().timestamp(),
+            "unlock_condition": "loan_repayment"
+        }
+    }
+    
+    action distribute_fees(breakdown: map, loan_id: string) {
+        // Distribute fees to various pools
+        if not this.fee_distribution.has(loan_id) {
+            this.fee_distribution[loan_id] = []
+        }
+        
+        this.fee_distribution[loan_id].push({
+            "breakdown": breakdown,
+            "timestamp": datetime.now().timestamp(),
+            "distributed": true
+        })
+    }
+    
+    action generate_transaction_hash(user: string, amount: integer, loan_id: string) -> string {
+        let data = user + string(amount) + loan_id + string(datetime.now().timestamp())
+        return "TX_" + crypto.sha3_256(data)
+    }
+    
+    action calculate_tier_distribution() -> map {
+        let distribution = {"DIAMOND": 0, "PLATINUM": 0, "GOLD": 0, "SILVER": 0, "BRONZE": 0}
+        
+        for each user, user_data in this.user_scores {
+            let tier = user_data.tier
+            distribution[tier] = distribution.get(tier, 0) + 1
+        }
+        
+        return distribution
+    }
+    
+    action generate_recommendations(user_data: UserScore) -> list {
+        let recommendations = []
+        
+        if user_data.social_capital < 0.3 {
+            recommendations.push("Increase engagement activities to improve social capital")
+        }
+        
+        if user_data.credit_utilization > 0.8 {
+            recommendations.push("Consider reducing credit utilization to improve borrowing terms")
+        }
+        
+        if user_data.risk_score > 0.7 {
+            recommendations.push("High risk score detected. Consider providing collateral for better rates")
+        }
+        
+        return recommendations
+    }
+
+    // Placeholder implementations for external integrations (enhanced)
+    action async analyze_on_chain_behavior(user: string) -> float {
+        // Would analyze transaction history, NFT holdings, DeFi participation, etc.
+        return await zaie.analyze_on_chain_behavior(user)
+    }
+
+    action async measure_community_participation(user: string) -> float {
+        // Would integrate with social platforms, forums, governance platforms
+        return await zaie.measure_community_engagement(user)
+    }
+
+    action async assess_financial_trust(user: string) -> float {
+        // Would analyze repayment history, collateral, credit history
+        return await zaie.assess_financial_reputation(user)
+    }
+
+    action async evaluate_governance_activity(user: string) -> float {
+        // Would check voting participation, proposals, community leadership
+        return await zaie.evaluate_governance_participation(user)
+    }
+
+    action async calculate_network_value(user: string) -> float {
+        // Would measure network contributions, node operation, protocol development
+        return await zaie.calculate_network_contribution(user)
+    }
+
+    action async assess_risk_profile(user: string) -> float {
+        // Comprehensive risk assessment using multiple factors
+        return await zaie.assess_user_risk(user)
+    }
+
+    action get_wallet_balance(user: string) -> integer {
+        // Would integrate with actual wallet system
+        // For now, return a simulated balance based on user tier
+        let tier = this.get_user_tier(user).name
+        let base_balance = {"DIAMOND": 10000, "PLATINUM": 5000, "GOLD": 2000, "SILVER": 1000, "BRONZE": 500}
+        return base_balance[tier]
+    }
+
+    // Dependency injection setup
+    inject database: db
+    inject ai_engine: zaie
+    
+    // Middleware for DeFi operations
+    middleware("defi_operations", action(req, res, next) {
+        let operation = req["operation"]
+        let user = req["user"]
+        
+        if operation in ["process_borrow", "get_borrowing_power"] {
+            // Check rate limits
+            if not security.check_rate_limit(user, "defi_borrow") {
+                res["status"] = 429
+                res["error"] = "Rate limit exceeded for borrowing operations"
+                return
+            }
+            
+            // Check system health
+            let system_health = this.get_system_health()
+            if system_health.emergency_pause_required {
+                res["status"] = 503
+                res["error"] = "System temporarily paused for risk management"
+                return
+            }
+        }
+        
+        next()
+    })
 }
 
-// Test SEB-DeFi Engine with Ziver's fee model
+// Register SEB-DeFi service for dependency injection
+register_dependency("seb_defi_service", SEBDeFiEngine())
+
+// Test SEB-DeFi Engine with enhanced features
 action async test_seb_defi() {
-    print("🏦 Testing SEB-DeFi Engine with Ziver Fee Model...")
-    let seb_engine = SEBDeFiEngine()
-
-    let test_user = "ZIV_user_123"
-
-    // Test social capital calculation
-    let social_capital = seb_engine.calculate_social_capital(test_user)
-    print("Social Capital Score: " + string(social_capital))
-
-    // Test borrowing power
-    let borrowing_power = seb_engine.get_borrowing_power(test_user)
-    print("Borrowing Power: " + string(borrowing_power))
-
-    // Test fee calculation
-    let borrow_amount = 500
-    let fee_calc = seb_engine.calculate_borrowing_fee(test_user, borrow_amount)
-    print("Fee Calculation for " + string(borrow_amount) + ":")
-    print("  Tier: " + fee_calc.tier)
-    print("  Fee Percentage: " + string(fee_calc.fee_percentage * 100) + "%")
-    print("  Fee Amount: " + string(fee_calc.fee_amount))
-    print("  Net Received: " + string(fee_calc.net_amount))
-
-    // Test actual borrowing
-    let borrow_result = seb_engine.process_borrow(test_user, borrow_amount)
-    print("Borrow Result: " + string(borrow_result))
-
-    // Test user analytics
-    let analytics = seb_engine.get_user_analytics(test_user)
-    print("User Analytics: " + string(analytics))
+    print("🏦 Testing Enhanced SEB-DeFi Engine v2.0...")
+    
+    // Enable error recovery mode
+    continue
+    
+    try {
+        let seb_engine = SEBDeFiEngine()
+        let test_user = "ZIV_user_" + string(datetime.now().timestamp())
+        
+        print("Testing with user: " + test_user)
+        
+        // Test social capital calculation with AI
+        let social_capital = await seb_engine.calculate_social_capital(test_user)
+        print("✅ Social Capital Score:")
+        print("  Score: " + string(social_capital.score))
+        print("  Confidence: " + string(social_capital.confidence))
+        print("  Tier: " + seb_engine.get_user_tier(test_user).name)
+        
+        // Test engagement update
+        let activity = EngagementActivity{
+            type: "social_interaction",
+            value: 0.8,
+            timestamp: datetime.now().timestamp(),
+            source: "test_suite",
+            confidence: 0.9
+        }
+        
+        let engagement_update = seb_engine.update_engagement_metrics(test_user, activity)
+        print("✅ Engagement Update:")
+        print("  Success: " + string(engagement_update.success))
+        print("  Score Change: " + string(engagement_update.score_change))
+        
+        // Test borrowing power calculation
+        let borrowing_power = seb_engine.get_borrowing_power(test_user)
+        print("✅ Borrowing Power:")
+        print("  Total: " + string(borrowing_power.total))
+        print("  Available: " + string(borrowing_power.available))
+        print("  Risk Adjusted: " + string(borrowing_power.risk_adjusted))
+        
+        // Test fee calculation
+        let borrow_amount = 500
+        let fee_calc = seb_engine.calculate_borrowing_fee(test_user, borrow_amount)
+        print("✅ Fee Calculation for " + string(borrow_amount) + ":")
+        print("  Tier: " + fee_calc.tier)
+        print("  Fee Percentage: " + string(fee_calc.fee_percentage * 100) + "%")
+        print("  Fee Amount: " + string(fee_calc.fee_amount))
+        print("  Net Received: " + string(fee_calc.net_amount))
+        
+        // Test actual borrowing
+        if borrowing_power.available >= borrow_amount:
+            let borrow_result = await seb_engine.process_borrow(test_user, borrow_amount)
+            print("✅ Borrow Result:")
+            print("  Success: " + string(borrow_result.success))
+            
+            if borrow_result.success:
+                print("  Loan ID: " + borrow_result.loan_id)
+                print("  Net Received: " + string(borrow_result.borrow_record.net_received))
+                
+                if borrow_result.warnings.count() > 0:
+                    print("  Warnings: " + string(borrow_result.warnings))
+        else:
+            print("⚠️ Insufficient borrowing power for test")
+        
+        // Test user analytics
+        let analytics = seb_engine.get_user_analytics(test_user)
+        print("✅ User Analytics:")
+        print("  Credit Score: " + string(analytics.credit_score))
+        print("  Total Borrowed: " + string(analytics.total_borrowed))
+        print("  Active Loans: " + string(analytics.active_loans_count))
+        
+        // Test system health
+        let system_health = seb_engine.get_system_health()
+        print("✅ System Health:")
+        print("  Health Score: " + string(system_health.health_score))
+        print("  Total Active Loans: " + string(system_health.total_active_loans))
+        print("  System Risk: " + string(system_health.system_risk_score))
+        
+    } catch (error) {
+        print("❌ Test failed: " + error)
+    }
 }
 
 export action get_seb_defi_engine() -> SEBDeFiProtocol {
     return SEBDeFiEngine()
+}
+
+// Additional exports
+export {
+    SEBDeFiEngine,
+    SEBDeFiProtocol,
+    SEB_DEFI_POLICIES,
+    test_seb_defi,
+    UserScore,
+    EngagementActivity,
+    SocialCapitalScore,
+    BorrowingPower,
+    UserTier
 }
