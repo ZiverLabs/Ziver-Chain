@@ -1,16 +1,58 @@
 # src/rpc/websocket.zx
-# WebSocket RPC for real-time updates
+# Enhanced WebSocket RPC for Real-Time Updates with Modern Features
 
 use "crypto" as crypto
 use "datetime" as datetime
 use "math" as math
+use "json" as json
+use "../database/postgres" as db
+use "../middleware/security_middleware" as security
+use "../ai/zaie_engine" as zaie
+use "../network/p2p" as p2p
+
+// Enable memory tracking for WebSocket server
+track_memory()
+
+// WebSocket policies
+const WS_POLICIES = {
+    max_connections: 10000,
+    max_message_size: 10 * 1024 * 1024, // 10MB
+    connection_timeout: 300, // 5 minutes
+    ping_interval: 30, // seconds
+    pong_timeout: 10, // seconds
+    max_subscriptions_per_connection: 100,
+    broadcast_queue_size: 10000,
+    compression_threshold: 1024, // 1KB
+    enable_compression: true,
+    require_authentication: false,
+    allowed_origins: ["*"],
+    enable_ssl: false,
+    ssl_cert_path: null,
+    ssl_key_path: null
+}
+
+// Cache for WebSocket connections and subscriptions
+cache("ws_connections", { ttl: 300, strategy: "lru", max_entries: 10000 })
+cache("ws_subscriptions", { ttl: 600, strategy: "lfu" })
+cache("ws_message_queue", { ttl: 60, strategy: "fifo" })
 
 // WebSocket RPC for Real-Time Updates with Modern Features
 protocol WebSocketRPCProtocol {
-    action start() -> boolean
-    action broadcast_new_block(block: any) -> boolean
-    action broadcast_new_transaction(tx: any) -> boolean
-    action get_connection_stats() -> map
+    action start() -> WebSocketStartResult
+    action stop() -> WebSocketStopResult
+    action broadcast_new_block(block: any) -> BroadcastResult
+    action broadcast_new_transaction(tx: any) -> BroadcastResult
+    action broadcast_social_capital_update(update: SocialCapitalUpdate) -> BroadcastResult
+    action broadcast_ai_alert(alert: AIAlert) -> BroadcastResult
+    action broadcast_defi_event(event: DefiEvent) -> BroadcastResult
+    action broadcast_quantum_security_update(update: QuantumSecurityUpdate) -> BroadcastResult
+    action get_connection_stats() -> ConnectionStats
+    action get_subscription_stats() -> SubscriptionStats
+    action health_check() -> HealthCheckResult
+    action close_connection(connection_id: string, reason: string) -> ConnectionCloseResult
+    action send_direct_message(connection_id: string, message: map) -> SendResult
+    action create_subscription_channel(channel_type: string, filters: map) -> SubscriptionChannel
+    action validate_connection(connection_id: string) -> ValidationResult
 }
 
 contract WebSocketRPCServer implements WebSocketRPCProtocol {
@@ -18,22 +60,244 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
     persistent storage rpc_server: any
     persistent storage connections: map
     persistent storage subscriptions: map
+    persistent storage subscription_channels: map
     persistent storage message_queue: list
+    persistent storage broadcast_queue: list
     persistent storage is_running: boolean = false
-
+    persistent storage ws_server: any
+    persistent storage config: map
+    persistent storage connection_counter: integer = 0
+    persistent storage metrics: map
+    
+    entity WebSocketStartResult {
+        success: boolean
+        server_address: string
+        port: integer
+        ws_port: integer
+        start_time: integer
+        message: string
+        warnings: list
+        error: string?
+        timestamp: integer
+    }
+    
+    entity WebSocketStopResult {
+        success: boolean
+        stop_time: integer
+        uptime_seconds: integer
+        connections_closed: integer
+        subscriptions_cleaned: integer
+        message: string
+        error: string?
+        timestamp: integer
+    }
+    
+    entity BroadcastResult {
+        success: boolean
+        message_type: string
+        total_recipients: integer
+        successful_sends: integer
+        failed_sends: integer
+        broadcast_time_ms: integer
+        message_id: string
+        timestamp: integer
+    }
+    
+    entity SocialCapitalUpdate {
+        user_address: string
+        new_score: float
+        previous_score: float
+        change_reason: string
+        timestamp: integer
+        metadata: map?
+    }
+    
+    entity AIAlert {
+        alert_id: string
+        alert_type: string
+        severity: string // info, warning, critical
+        message: string
+        affected_addresses: list
+        confidence: float
+        suggested_actions: list
+        expires_at: integer?
+        timestamp: integer
+        metadata: map?
+    }
+    
+    entity DefiEvent {
+        event_id: string
+        event_type: string // liquidity_added, swap, borrow, repay, liquidation
+        protocol: string
+        addresses: list
+        amounts: map
+        block_number: integer
+        transaction_hash: string
+        timestamp: integer
+        metadata: map?
+    }
+    
+    entity QuantumSecurityUpdate {
+        update_id: string
+        update_type: string // key_rotation, threat_detected, algorithm_update
+        addresses_affected: list
+        security_level: string
+        recommended_action: string
+        timestamp: integer
+        metadata: map?
+    }
+    
+    entity ConnectionStats {
+        total_connections: integer
+        active_connections: integer
+        connections_by_origin: map
+        average_connection_duration: float
+        messages_sent: integer
+        messages_received: integer
+        connection_errors: integer
+        timestamp: integer
+    }
+    
+    entity SubscriptionStats {
+        total_subscriptions: integer
+        subscriptions_by_type: map
+        active_channels: integer
+        broadcast_queue_size: integer
+        message_queue_size: integer
+        average_delivery_time_ms: float
+        timestamp: integer
+    }
+    
+    entity HealthCheckResult {
+        status: string // healthy, degraded, unhealthy
+        components: map
+        metrics: map
+        issues: list
+        recommendations: list
+        timestamp: integer
+    }
+    
+    entity ConnectionCloseResult {
+        success: boolean
+        connection_id: string
+        reason: string
+        connection_duration: integer
+        subscriptions_removed: integer
+        message: string
+        error: string?
+        timestamp: integer
+    }
+    
+    entity SendResult {
+        success: boolean
+        connection_id: string
+        message_type: string
+        delivery_time_ms: integer
+        error: string?
+        timestamp: integer
+    }
+    
+    entity SubscriptionChannel {
+        channel_id: string
+        channel_type: string
+        filters: map
+        created_at: integer
+        subscriber_count: integer
+        last_broadcast: integer?
+        metadata: map
+    }
+    
+    entity ValidationResult {
+        valid: boolean
+        connection_id: string
+        connection_age: integer
+        subscription_count: integer
+        message_count: integer
+        issues: list
+        recommendations: list
+        timestamp: integer
+    }
+    
     entity WebSocketConnection {
         id: string
-        connected_at: integer
-        last_active: integer
-        subscription_count: integer = 0
-        message_count: integer = 0
+        session_id: string
         remote_address: string
         user_agent: string?
+        origin: string?
+        connected_at: integer
+        last_activity: integer
+        last_ping: integer
+        last_pong: integer
+        is_authenticated: boolean
+        auth_token: string?
+        user_address: string?
+        subscription_count: integer = 0
+        messages_sent: integer = 0
+        messages_received: integer = 0
+        bytes_sent: integer = 0
+        bytes_received: integer = 0
+        metadata: map
+    }
+    
+    entity WebSocketMessage {
+        connection_id: string
+        message: map
+        direction: string // inbound, outbound
+        size_bytes: integer
+        timestamp: integer
+        processed: boolean = false
+        error: string?
+    }
+    
+    entity Subscription {
+        subscription_id: string
+        connection_id: string
+        subscription_type: string
+        filters: map
+        created_at: integer
+        last_notification: integer?
+        notification_count: integer = 0
+        metadata: map
+    }
+    
+    // Reactive state monitoring
+    watch connections {
+        let active_connections = 0
+        for each conn_id, connection in this.connections {
+            if this.is_connection_active(connection) {
+                active_connections += 1
+            }
+        }
+        
+        if active_connections % 100 == 0 {
+            print("🔗 WebSocket Connections: " + string(active_connections) + " active")
+        }
+    }
+    
+    watch broadcast_queue {
+        let queue_size = len(this.broadcast_queue)
+        if queue_size > 1000 {
+            print("⚠️ Broadcast queue high: " + string(queue_size) + " messages")
+        }
     }
 
-    action init(rpc_server: any, port: integer = 8546) {
+    action init(rpc_server: any, port: integer = 8546, config: map? = null) {
         this.rpc_server = rpc_server
         this.port = port
+        this.config = config or {
+            "name": "Ziver Chain WebSocket RPC",
+            "version": "3.0.0",
+            "enable_ssl": WS_POLICIES.enable_ssl,
+            "ssl_cert": WS_POLICIES.ssl_cert_path,
+            "ssl_key": WS_POLICIES.ssl_key_path,
+            "require_auth": WS_POLICIES.require_authentication,
+            "max_connections": WS_POLICIES.max_connections,
+            "compression": WS_POLICIES.enable_compression,
+            "allowed_origins": WS_POLICIES.allowed_origins,
+            "ping_interval": WS_POLICIES.ping_interval,
+            "log_level": "info"
+        }
+        
         this.connections = {}
         this.subscriptions = {
             "newHeads": {},
@@ -42,288 +306,1672 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
             "socialCapitalUpdates": {},
             "defiEvents": {},
             "aiAlerts": {},
-            "quantumSecurity": {}
+            "quantumSecurity": {},
+            "bounceBackNotifications": {},
+            "crossChainUpdates": {},
+            "portfolioUpdates": {},
+            "yieldOpportunities": {},
+            "riskAlerts": {},
+            "governanceProposals": {}
         }
+        this.subscription_channels = {}
         this.message_queue = []
-    }
-
-    action start() -> boolean {
-        this.is_running = true
-
-        print("🔌 WebSocket RPC starting on ws://localhost:" + string(this.port))
-        print("📡 Available subscriptions: " + string(this.subscriptions.keys().join(", ")))
-
-        // Start background processors
-        spawn this.start_websocket_server()
-        spawn this.process_message_queue()
-        spawn this.cleanup_inactive_connections()
-
-        return true
-    }
-
-    action handle_connection(connection_id: string, remote_address: string, user_agent: string?) {
-        let connection = WebSocketConnection{
-            id: connection_id,
-            remote_address: remote_address,
-            user_agent: user_agent,
-            connected_at: datetime.now().timestamp(),
-            last_active: datetime.now().timestamp()
+        this.broadcast_queue = []
+        this.is_running = false
+        this.metrics = {
+            "connections_total": 0,
+            "subscriptions_total": 0,
+            "messages_sent": 0,
+            "messages_received": 0,
+            "broadcasts_sent": 0,
+            "errors_total": 0
         }
+        
+        // Initialize database tables
+        this.initialize_database()
+        
+        print("🔄 WebSocket RPC Server initialized on port " + string(port))
+        print("📡 Available subscriptions: " + string(this.subscriptions.keys().count()))
+    }
 
-        this.connections[connection_id] = connection
-
-        print("🔗 WebSocket connected: " + connection_id + " from " + remote_address)
-
-        // Send welcome message with available features
-        let welcome_msg = {
-            "jsonrpc": "2.0",
-            "method": "ziver_welcome",
-            "params": {
-                "connection_id": connection_id,
-                "available_subscriptions": this.subscriptions.keys(),
-                "server_version": "ZiverChain/3.0.0",
-                "quantum_secure": true,
-                "ai_enhanced": true
+    action protect start() -> WebSocketStartResult {
+        """
+        Start the WebSocket RPC server
+        """
+        let start_time = datetime.now().timestamp()
+        
+        try {
+            if this.is_running {
+                return WebSocketStartResult{
+                    success: false,
+                    server_address: "ws://localhost:" + string(this.port),
+                    port: this.port,
+                    ws_port: this.port,
+                    start_time: start_time,
+                    message: "Server is already running",
+                    error: "Server already started",
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            this.is_running = true
+            
+            print("🚀 WebSocket RPC starting on ws://localhost:" + string(this.port))
+            if this.config.enable_ssl {
+                print("🔐 SSL/TLS enabled for secure WebSocket connections")
+            }
+            
+            // Start WebSocket server
+            this.ws_server = this.create_websocket_server()
+            
+            // Start background processors
+            spawn this.process_message_queue()
+            spawn this.process_broadcast_queue()
+            spawn this.connection_health_checker()
+            spawn this.cleanup_inactive_connections()
+            spawn this.collect_metrics()
+            spawn this.process_subscription_alerts()
+            
+            let start_result = WebSocketStartResult{
+                success: true,
+                server_address: "ws://localhost:" + string(this.port),
+                port: this.port,
+                ws_port: this.port,
+                start_time: start_time,
+                message: "WebSocket RPC Server started successfully",
+                warnings: [],
+                timestamp: datetime.now().timestamp()
+            }
+            
+            // Log server start
+            audit("websocket_server_started", {
+                "port": this.port,
+                "config": this.config,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return start_result
+            
+        } catch (error) {
+            this.is_running = false
+            
+            audit("websocket_server_start_failed", {
+                "port": this.port,
+                "error": error,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return WebSocketStartResult{
+                success: false,
+                server_address: "ws://localhost:" + string(this.port),
+                port: this.port,
+                ws_port: this.port,
+                start_time: start_time,
+                message: "Failed to start server",
+                error: string(error),
+                timestamp: datetime.now().timestamp()
             }
         }
-
-        this.send_to_connection(connection_id, welcome_msg)
     }
 
-    action handle_message(connection_id: string, message: map) {
-        if not this.connections.has(connection_id) {
-            print("❌ Unknown connection: " + connection_id)
-            return
+    action protect stop() -> WebSocketStopResult {
+        """
+        Stop the WebSocket RPC server gracefully
+        """
+        let stop_time = datetime.now().timestamp()
+        let start_time = this.get_start_time() or stop_time
+        
+        try {
+            if not this.is_running {
+                return WebSocketStopResult{
+                    success: false,
+                    stop_time: stop_time,
+                    uptime_seconds: 0,
+                    connections_closed: 0,
+                    subscriptions_cleaned: 0,
+                    message: "Server is not running",
+                    error: "Server not started",
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            print("🛑 Stopping WebSocket RPC Server...")
+            this.is_running = false
+            
+            // Close all connections gracefully
+            let connections_closed = this.close_all_connections("server_shutdown")
+            
+            // Clean up subscriptions
+            let subscriptions_cleaned = this.cleanup_all_subscriptions()
+            
+            // Stop WebSocket server
+            if this.ws_server != null {
+                try {
+                    this.ws_server.close()
+                } catch (error) {
+                    print("⚠️ Error stopping WebSocket server: " + error)
+                }
+            }
+            
+            // Clear queues
+            this.message_queue = []
+            this.broadcast_queue = []
+            
+            // Clear caches
+            cache_clear("ws_connections")
+            cache_clear("ws_subscriptions")
+            
+            let uptime_seconds = stop_time - start_time
+            
+            audit("websocket_server_stopped", {
+                "port": this.port,
+                "uptime_seconds": uptime_seconds,
+                "connections_closed": connections_closed,
+                "subscriptions_cleaned": subscriptions_cleaned,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return WebSocketStopResult{
+                success: true,
+                stop_time: stop_time,
+                uptime_seconds: uptime_seconds,
+                connections_closed: connections_closed,
+                subscriptions_cleaned: subscriptions_cleaned,
+                message: "Server stopped gracefully",
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            audit("websocket_server_stop_failed", {
+                "port": this.port,
+                "error": error,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return WebSocketStopResult{
+                success: false,
+                stop_time: stop_time,
+                uptime_seconds: stop_time - start_time,
+                connections_closed: 0,
+                subscriptions_cleaned: 0,
+                message: "Failed to stop server",
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
         }
+    }
 
-        // Update connection activity
-        this.connections[connection_id].last_active = datetime.now().timestamp()
-        this.connections[connection_id].message_count += 1
+    action protect broadcast_new_block(block: any) -> BroadcastResult {
+        """
+        Broadcast new block to all subscribers
+        """
+        let start_time = datetime.now().timestamp_ms()
+        let message_id = "block_" + block.hash
+        
+        try {
+            let subscribers = this.subscriptions["newHeads"]
+            if subscribers.is_empty() {
+                return BroadcastResult{
+                    success: false,
+                    message_type: "new_block",
+                    total_recipients: 0,
+                    successful_sends: 0,
+                    failed_sends: 0,
+                    broadcast_time_ms: datetime.now().timestamp_ms() - start_time,
+                    message_id: message_id,
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            // Format block for WebSocket
+            let notification = this.create_block_notification(block)
+            
+            // Queue for broadcasting
+            this.queue_broadcast("newHeads", notification, subscribers)
+            
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            // Also broadcast to AI subscribers for analysis
+            spawn this.analyze_block_with_ai(block)
+            
+            print("📢 Broadcasting block #" + string(block.index) + " to " + string(len(subscribers)) + " subscribers")
+            
+            return BroadcastResult{
+                success: true,
+                message_type: "new_block",
+                total_recipients: len(subscribers),
+                successful_sends: len(subscribers), // Actual sends happen in background
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("block_broadcast_failed", {
+                "block_number": block?.index or 0,
+                "error": error,
+                "broadcast_time_ms": broadcast_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return BroadcastResult{
+                success: false,
+                message_type: "new_block",
+                total_recipients: 0,
+                successful_sends: 0,
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
 
-        let method = message.get("method", "")
+    action protect broadcast_new_transaction(tx: any) -> BroadcastResult {
+        """
+        Broadcast new transaction to all subscribers
+        """
+        let start_time = datetime.now().timestamp_ms()
+        let message_id = "tx_" + tx.hash
+        
+        try {
+            let subscribers = this.subscriptions["newPendingTransactions"]
+            
+            // Create enhanced transaction notification
+            let notification = this.create_transaction_notification(tx)
+            
+            // Queue for broadcasting
+            this.queue_broadcast("newPendingTransactions", notification, subscribers)
+            
+            // Also check for special subscriptions
+            this.check_special_subscriptions(tx)
+            
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            print("💸 Broadcasting transaction " + tx.hash.slice(0, 16) + " to " + string(len(subscribers)) + " subscribers")
+            
+            return BroadcastResult{
+                success: true,
+                message_type: "new_transaction",
+                total_recipients: len(subscribers),
+                successful_sends: len(subscribers),
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("transaction_broadcast_failed", {
+                "transaction_hash": tx?.hash or "unknown",
+                "error": error,
+                "broadcast_time_ms": broadcast_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return BroadcastResult{
+                success: false,
+                message_type: "new_transaction",
+                total_recipients: 0,
+                successful_sends: 0,
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
 
-        // Handle subscription methods
-        if method == "eth_subscribe" {
-            this.handle_subscription(connection_id, message)
-        } else if method == "eth_unsubscribe" {
-            this.handle_unsubscription(connection_id, message)
-        } else if method == "ziver_subscribe" {
-            this.handle_ziver_subscription(connection_id, message)
-        } else {
-            // Handle regular RPC call via queue for load management
-            this.message_queue.push({
+    action protect broadcast_social_capital_update(update: SocialCapitalUpdate) -> BroadcastResult {
+        """
+        Broadcast social capital update to subscribers
+        """
+        let start_time = datetime.now().timestamp_ms()
+        let message_id = "sc_" + crypto.sha3_256(update.user_address + string(update.timestamp))
+        
+        try {
+            let subscribers = this.subscriptions["socialCapitalUpdates"]
+            
+            // Create enhanced notification with AI insights
+            let notification = this.create_social_capital_notification(update)
+            
+            // Apply filters for specific user subscriptions
+            let filtered_subscribers = this.filter_subscribers_by_address(subscribers, update.user_address)
+            
+            // Queue for broadcasting
+            this.queue_broadcast("socialCapitalUpdates", notification, filtered_subscribers)
+            
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            // Generate AI recommendations for user
+            spawn this.generate_social_capital_recommendations(update)
+            
+            print("📈 Broadcasting social capital update for " + update.user_address.slice(0, 16) + 
+                  " to " + string(len(filtered_subscribers)) + " subscribers")
+            
+            return BroadcastResult{
+                success: true,
+                message_type: "social_capital_update",
+                total_recipients: len(filtered_subscribers),
+                successful_sends: len(filtered_subscribers),
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("social_capital_broadcast_failed", {
+                "user_address": update?.user_address or "unknown",
+                "error": error,
+                "broadcast_time_ms": broadcast_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return BroadcastResult{
+                success: false,
+                message_type: "social_capital_update",
+                total_recipients: 0,
+                successful_sends: 0,
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect broadcast_ai_alert(alert: AIAlert) -> BroadcastResult {
+        """
+        Broadcast AI alert to subscribers
+        """
+        let start_time = datetime.now().timestamp_ms()
+        let message_id = "ai_" + alert.alert_id
+        
+        try {
+            let subscribers = this.subscriptions["aiAlerts"]
+            
+            // Filter subscribers by severity and affected addresses
+            let filtered_subscribers = this.filter_subscribers_by_alert(subscribers, alert)
+            
+            // Create enhanced AI alert notification
+            let notification = this.create_ai_alert_notification(alert)
+            
+            // Queue for broadcasting
+            this.queue_broadcast("aiAlerts", notification, filtered_subscribers)
+            
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            print("🤖 Broadcasting AI alert: " + alert.alert_type + 
+                  " to " + string(len(filtered_subscribers)) + " subscribers")
+            
+            return BroadcastResult{
+                success: true,
+                message_type: "ai_alert",
+                total_recipients: len(filtered_subscribers),
+                successful_sends: len(filtered_subscribers),
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("ai_alert_broadcast_failed", {
+                "alert_id": alert?.alert_id or "unknown",
+                "error": error,
+                "broadcast_time_ms": broadcast_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return BroadcastResult{
+                success: false,
+                message_type: "ai_alert",
+                total_recipients: 0,
+                successful_sends: 0,
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect broadcast_defi_event(event: DefiEvent) -> BroadcastResult {
+        """
+        Broadcast DeFi event to subscribers
+        """
+        let start_time = datetime.now().timestamp_ms()
+        let message_id = "defi_" + event.event_id
+        
+        try {
+            let subscribers = this.subscriptions["defiEvents"]
+            
+            // Filter by protocol and event type
+            let filtered_subscribers = this.filter_subscribers_by_defi_event(subscribers, event)
+            
+            // Create enhanced DeFi event notification
+            let notification = this.create_defi_event_notification(event)
+            
+            // Queue for broadcasting
+            this.queue_broadcast("defiEvents", notification, filtered_subscribers)
+            
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            // Analyze event for yield opportunities
+            spawn this.analyze_defi_event_for_yield(event)
+            
+            print("💰 Broadcasting DeFi event: " + event.event_type + 
+                  " on " + event.protocol + " to " + string(len(filtered_subscribers)) + " subscribers")
+            
+            return BroadcastResult{
+                success: true,
+                message_type: "defi_event",
+                total_recipients: len(filtered_subscribers),
+                successful_sends: len(filtered_subscribers),
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("defi_event_broadcast_failed", {
+                "event_id": event?.event_id or "unknown",
+                "error": error,
+                "broadcast_time_ms": broadcast_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return BroadcastResult{
+                success: false,
+                message_type: "defi_event",
+                total_recipients: 0,
+                successful_sends: 0,
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect broadcast_quantum_security_update(update: QuantumSecurityUpdate) -> BroadcastResult {
+        """
+        Broadcast quantum security update to subscribers
+        """
+        let start_time = datetime.now().timestamp_ms()
+        let message_id = "quantum_" + update.update_id
+        
+        try {
+            let subscribers = this.subscriptions["quantumSecurity"]
+            
+            // Filter by affected addresses
+            let filtered_subscribers = this.filter_subscribers_by_addresses(subscribers, update.addresses_affected)
+            
+            // Create quantum security notification
+            let notification = this.create_quantum_security_notification(update)
+            
+            // Queue for broadcasting
+            this.queue_broadcast("quantumSecurity", notification, filtered_subscribers)
+            
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            print("🔐 Broadcasting quantum security update: " + update.update_type + 
+                  " to " + string(len(filtered_subscribers)) + " subscribers")
+            
+            return BroadcastResult{
+                success: true,
+                message_type: "quantum_security_update",
+                total_recipients: len(filtered_subscribers),
+                successful_sends: len(filtered_subscribers),
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            let broadcast_time = datetime.now().timestamp_ms() - start_time
+            
+            audit("quantum_security_broadcast_failed", {
+                "update_id": update?.update_id or "unknown",
+                "error": error,
+                "broadcast_time_ms": broadcast_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return BroadcastResult{
+                success: false,
+                message_type: "quantum_security_update",
+                total_recipients: 0,
+                successful_sends: 0,
+                failed_sends: 0,
+                broadcast_time_ms: broadcast_time,
+                message_id: message_id,
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect get_connection_stats() -> ConnectionStats {
+        """
+        Get comprehensive connection statistics
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        let total_connections = len(this.connections)
+        let active_connections = 0
+        let connections_by_origin = {}
+        let total_duration = 0
+        let messages_sent = 0
+        let messages_received = 0
+        let connection_errors = 0
+        
+        for each conn_id, connection in this.connections {
+            if this.is_connection_active(connection) {
+                active_connections += 1
+                
+                // Group by origin
+                let origin = connection.origin or "unknown"
+                if not connections_by_origin.has(origin) {
+                    connections_by_origin[origin] = 0
+                }
+                connections_by_origin[origin] += 1
+                
+                // Calculate duration
+                total_duration += timestamp - connection.connected_at
+                
+                // Count messages
+                messages_sent += connection.messages_sent
+                messages_received += connection.messages_received
+            }
+        }
+        
+        let average_duration = active_connections > 0 ? total_duration / active_connections : 0
+        
+        return ConnectionStats{
+            total_connections: total_connections,
+            active_connections: active_connections,
+            connections_by_origin: connections_by_origin,
+            average_connection_duration: average_duration,
+            messages_sent: messages_sent,
+            messages_received: messages_received,
+            connection_errors: connection_errors,
+            timestamp: timestamp
+        }
+    }
+
+    action protect get_subscription_stats() -> SubscriptionStats {
+        """
+        Get comprehensive subscription statistics
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        let total_subscriptions = 0
+        let subscriptions_by_type = {}
+        let active_channels = len(this.subscription_channels)
+        let broadcast_queue_size = len(this.broadcast_queue)
+        let message_queue_size = len(this.message_queue)
+        
+        for each subscription_type, subscribers in this.subscriptions {
+            let count = len(subscribers)
+            total_subscriptions += count
+            subscriptions_by_type[subscription_type] = count
+        }
+        
+        // Calculate average delivery time (simplified)
+        let average_delivery_time = 50.0 // Would use actual metrics
+        
+        return SubscriptionStats{
+            total_subscriptions: total_subscriptions,
+            subscriptions_by_type: subscriptions_by_type,
+            active_channels: active_channels,
+            broadcast_queue_size: broadcast_queue_size,
+            message_queue_size: message_queue_size,
+            average_delivery_time_ms: average_delivery_time,
+            timestamp: timestamp
+        }
+    }
+
+    action protect health_check() -> HealthCheckResult {
+        """
+        Perform comprehensive health check of WebSocket server
+        """
+        let timestamp = datetime.now().timestamp()
+        let components = {}
+        let metrics = {}
+        let issues = []
+        let recommendations = []
+        
+        try {
+            // Check server status
+            components["server"] = this.is_running ? "healthy" : "stopped"
+            if not this.is_running {
+                issues.push("Server is not running")
+                recommendations.push("Start the server using start() method")
+            }
+            
+            // Check connection count
+            let connection_stats = this.get_connection_stats()
+            components["connections"] = connection_stats.active_connections > 0 ? "healthy" : "degraded"
+            
+            if connection_stats.active_connections > WS_POLICIES.max_connections * 0.8 {
+                issues.push("Connection count approaching limit: " + string(connection_stats.active_connections))
+                recommendations.push("Consider increasing max_connections or implementing load balancing")
+            }
+            
+            // Check message queues
+            let queue_size = len(this.message_queue)
+            components["message_queue"] = queue_size < 100 ? "healthy" : queue_size < 1000 ? "degraded" : "unhealthy"
+            
+            if queue_size > 1000 {
+                issues.push("Message queue backlog: " + string(queue_size) + " messages")
+                recommendations.push("Increase processing capacity or review message rates")
+            }
+            
+            // Check broadcast queue
+            let broadcast_queue_size = len(this.broadcast_queue)
+            components["broadcast_queue"] = broadcast_queue_size < 1000 ? "healthy" : broadcast_queue_size < 5000 ? "degraded" : "unhealthy"
+            
+            if broadcast_queue_size > 5000 {
+                issues.push("Broadcast queue backlog: " + string(broadcast_queue_size) + " messages")
+                recommendations.push("Optimize broadcast logic or increase processing capacity")
+            }
+            
+            // Check memory usage
+            let memory_stats = memory_stats()
+            let memory_usage_percent = (memory_stats.used_memory / memory_stats.total_memory) * 100
+            components["memory"] = memory_usage_percent < 80 ? "healthy" : memory_usage_percent < 90 ? "degraded" : "unhealthy"
+            
+            if memory_usage_percent > 80 {
+                issues.push("High memory usage: " + string(memory_usage_percent) + "%")
+                recommendations.push("Review memory usage patterns and consider optimization")
+            }
+            
+            // Gather metrics
+            let subscription_stats = this.get_subscription_stats()
+            metrics["active_connections"] = connection_stats.active_connections
+            metrics["total_subscriptions"] = subscription_stats.total_subscriptions
+            metrics["message_queue_size"] = queue_size
+            metrics["broadcast_queue_size"] = broadcast_queue_size
+            metrics["memory_usage_mb"] = memory_stats.used_memory / (1024 * 1024)
+            metrics["messages_per_second"] = this.calculate_messages_per_second()
+            
+            // Determine overall status
+            let overall_status = "healthy"
+            for each component, status in components {
+                if status == "unhealthy" {
+                    overall_status = "unhealthy"
+                    break
+                } else if status == "degraded" {
+                    overall_status = "degraded"
+                }
+            }
+            
+            // Add AI-powered recommendations if available
+            if issues.count() > 0 and zaie != null {
+                try {
+                    let ai_recommendations = zaie.analyze_websocket_health(issues, metrics)
+                    recommendations = recommendations + ai_recommendations
+                } catch (error) {
+                    // AI analysis failed, continue without it
+                }
+            }
+            
+            return HealthCheckResult{
+                status: overall_status,
+                components: components,
+                metrics: metrics,
+                issues: issues,
+                recommendations: recommendations,
+                timestamp: timestamp
+            }
+            
+        } catch (error) {
+            return HealthCheckResult{
+                status: "unhealthy",
+                components: {"health_check": "failed"},
+                metrics: {},
+                issues: ["Health check failed: " + error],
+                recommendations: ["Restart WebSocket server", "Check system resources"],
+                timestamp: timestamp
+            }
+        }
+    }
+
+    action protect close_connection(connection_id: string, reason: string) -> ConnectionCloseResult {
+        """
+        Close a specific WebSocket connection
+        """
+        let start_time = datetime.now().timestamp()
+        
+        try {
+            if not this.connections.has(connection_id) {
+                return ConnectionCloseResult{
+                    success: false,
+                    connection_id: connection_id,
+                    reason: reason,
+                    connection_duration: 0,
+                    subscriptions_removed: 0,
+                    message: "Connection not found",
+                    error: "Connection ID not found",
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            let connection = this.connections[connection_id]
+            let connection_duration = start_time - connection.connected_at
+            
+            print("🔌 Closing WebSocket connection: " + connection_id + " - Reason: " + reason)
+            
+            // Remove from all subscriptions
+            let subscriptions_removed = this.remove_connection_from_subscriptions(connection_id)
+            
+            // Remove connection
+            delete this.connections[connection_id]
+            
+            // Clear from cache
+            cache_delete("ws_connection_" + connection_id)
+            
+            // Update metrics
+            this.metrics.connections_total += 1
+            
+            audit("websocket_connection_closed", {
                 "connection_id": connection_id,
-                "message": message,
+                "reason": reason,
+                "connection_duration": connection_duration,
+                "subscriptions_removed": subscriptions_removed,
+                "remote_address": connection.remote_address,
+                "timestamp": start_time
+            })
+            
+            return ConnectionCloseResult{
+                success: true,
+                connection_id: connection_id,
+                reason: reason,
+                connection_duration: connection_duration,
+                subscriptions_removed: subscriptions_removed,
+                message: "Connection closed successfully",
+                timestamp: datetime.now().timestamp()
+            }
+            
+        } catch (error) {
+            return ConnectionCloseResult{
+                success: false,
+                connection_id: connection_id,
+                reason: reason,
+                connection_duration: 0,
+                subscriptions_removed: 0,
+                message: "Failed to close connection",
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect send_direct_message(connection_id: string, message: map) -> SendResult {
+        """
+        Send a direct message to a specific connection
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            if not this.connections.has(connection_id) {
+                return SendResult{
+                    success: false,
+                    connection_id: connection_id,
+                    message_type: message.method or "direct",
+                    delivery_time_ms: 0,
+                    error: "Connection not found",
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            let connection = this.connections[connection_id]
+            
+            // Check if connection is active
+            if not this.is_connection_active(connection) {
+                return SendResult{
+                    success: false,
+                    connection_id: connection_id,
+                    message_type: message.method or "direct",
+                    delivery_time_ms: 0,
+                    error: "Connection is inactive",
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+            // Send the message
+            let success = this.send_to_connection(connection_id, message)
+            
+            let delivery_time = datetime.now().timestamp_ms() - start_time
+            
+            if success {
+                // Update connection stats
+                connection.messages_sent += 1
+                connection.last_activity = datetime.now().timestamp()
+                
+                return SendResult{
+                    success: true,
+                    connection_id: connection_id,
+                    message_type: message.method or "direct",
+                    delivery_time_ms: delivery_time,
+                    timestamp: datetime.now().timestamp()
+                }
+            } else {
+                return SendResult{
+                    success: false,
+                    connection_id: connection_id,
+                    message_type: message.method or "direct",
+                    delivery_time_ms: delivery_time,
+                    error: "Failed to send message",
+                    timestamp: datetime.now().timestamp()
+                }
+            }
+            
+        } catch (error) {
+            let delivery_time = datetime.now().timestamp_ms() - start_time
+            
+            return SendResult{
+                success: false,
+                connection_id: connection_id,
+                message_type: message.method or "direct",
+                delivery_time_ms: delivery_time,
+                error: string(error),
+                timestamp: datetime.now().timestamp()
+            }
+        }
+    }
+
+    action protect create_subscription_channel(channel_type: string, filters: map) -> SubscriptionChannel {
+        """
+        Create a new subscription channel
+        """
+        let timestamp = datetime.now().timestamp()
+        let channel_id = "channel_" + crypto.sha3_256(channel_type + string(timestamp)).slice(0, 16)
+        
+        let channel = SubscriptionChannel{
+            channel_id: channel_id,
+            channel_type: channel_type,
+            filters: filters,
+            created_at: timestamp,
+            subscriber_count: 0,
+            metadata: {
+                "created_by": "system",
+                "version": "1.0.0",
+                "quantum_secure": true
+            }
+        }
+        
+        this.subscription_channels[channel_id] = channel
+        
+        audit("subscription_channel_created", {
+            "channel_id": channel_id,
+            "channel_type": channel_type,
+            "filters": filters,
+            "timestamp": timestamp
+        })
+        
+        return channel
+    }
+
+    action protect validate_connection(connection_id: string) -> ValidationResult {
+        """
+        Validate a WebSocket connection
+        """
+        let timestamp = datetime.now().timestamp()
+        
+        if not this.connections.has(connection_id) {
+            return ValidationResult{
+                valid: false,
+                connection_id: connection_id,
+                connection_age: 0,
+                subscription_count: 0,
+                message_count: 0,
+                issues: ["Connection not found"],
+                recommendations: ["Check connection ID or reconnect"],
+                timestamp: timestamp
+            }
+        }
+        
+        let connection = this.connections[connection_id]
+        let connection_age = timestamp - connection.connected_at
+        let issues = []
+        let recommendations = []
+        
+        // Check connection age
+        if connection_age > WS_POLICIES.connection_timeout * 2 {
+            issues.push("Connection age exceeds double timeout: " + string(connection_age) + "s")
+            recommendations.push("Consider reconnecting to refresh session")
+        }
+        
+        // Check last activity
+        let inactivity = timestamp - connection.last_activity
+        if inactivity > WS_POLICIES.connection_timeout {
+            issues.push("Connection inactive for " + string(inactivity) + "s")
+            recommendations.push("Send ping to check connection status")
+        }
+        
+        // Check subscription count
+        if connection.subscription_count > WS_POLICIES.max_subscriptions_per_connection {
+            issues.push("Subscription count exceeds limit: " + string(connection.subscription_count))
+            recommendations.push("Unsubscribe from unused subscriptions")
+        }
+        
+        // Check authentication if required
+        if this.config.require_auth and not connection.is_authenticated {
+            issues.push("Connection not authenticated")
+            recommendations.push("Authenticate using valid auth token")
+        }
+        
+        let valid = len(issues) == 0
+        
+        return ValidationResult{
+            valid: valid,
+            connection_id: connection_id,
+            connection_age: connection_age,
+            subscription_count: connection.subscription_count,
+            message_count: connection.messages_received,
+            issues: issues,
+            recommendations: recommendations,
+            timestamp: timestamp
+        }
+    }
+
+    // ===== WEBSOCKET SERVER IMPLEMENTATION =====
+    
+    action private create_websocket_server() -> any {
+        """
+        Create and configure WebSocket server
+        """
+        let server_config = {
+            "port": this.port,
+            "max_connections": this.config.max_connections,
+            "ping_interval": this.config.ping_interval
+        }
+        
+        if this.config.enable_ssl and this.config.ssl_cert and this.config.ssl_key {
+            server_config["ssl_cert"] = this.config.ssl_cert
+            server_config["ssl_key"] = this.config.ssl_key
+        }
+        
+        // Create WebSocket server (using Zexus's built-in or external library)
+        let server = websocket_server(server_config)
+        
+        // Set up event handlers
+        server.on("connection", action(ws, req) {
+            this.handle_websocket_connection(ws, req)
+        })
+        
+        server.on("error", action(error) {
+            print("❌ WebSocket server error: " + error)
+            audit("websocket_server_error", {
+                "error": error,
+                "timestamp": datetime.now().timestamp()
+            })
+        })
+        
+        return server
+    }
+    
+    action private handle_websocket_connection(ws: any, req: any) {
+        """
+        Handle new WebSocket connection
+        """
+        let connection_id = "conn_" + crypto.sha3_256(
+            req.remote_address + 
+            string(datetime.now().timestamp()) + 
+            string(this.connection_counter)
+        )
+        
+        this.connection_counter += 1
+        
+        // Create connection object
+        let connection = WebSocketConnection{
+            id: connection_id,
+            session_id: crypto.sha3_256(connection_id + string(datetime.now().timestamp())).slice(0, 32),
+            remote_address: req.remote_address,
+            user_agent: req.headers.get("User-Agent"),
+            origin: req.headers.get("Origin"),
+            connected_at: datetime.now().timestamp(),
+            last_activity: datetime.now().timestamp(),
+            last_ping: datetime.now().timestamp(),
+            last_pong: datetime.now().timestamp(),
+            is_authenticated: false,
+            metadata: {
+                "headers": req.headers,
+                "protocol": req.protocol,
+                "secure": req.secure
+            }
+        }
+        
+        // Store connection
+        this.connections[connection_id] = connection
+        cache_set("ws_connection_" + connection_id, connection, WS_POLICIES.connection_timeout)
+        
+        print("🔗 WebSocket connected: " + connection_id + 
+              " from " + connection.remote_address + 
+              " (Origin: " + (connection.origin or "unknown") + ")")
+        
+        // Set up WebSocket event handlers
+        ws.on("message", action(message) {
+            this.handle_websocket_message(connection_id, ws, message)
+        })
+        
+        ws.on("close", action(code, reason) {
+            this.handle_websocket_close(connection_id, code, reason)
+        })
+        
+        ws.on("error", action(error) {
+            this.handle_websocket_error(connection_id, error)
+        })
+        
+        ws.on("pong", action() {
+            this.handle_websocket_pong(connection_id)
+        })
+        
+        // Send welcome message
+        this.send_welcome_message(connection_id, ws)
+        
+        // Schedule ping
+        spawn this.schedule_connection_ping(connection_id, ws)
+        
+        audit("websocket_connection_established", {
+            "connection_id": connection_id,
+            "remote_address": connection.remote_address,
+            "user_agent": connection.user_agent,
+            "origin": connection.origin,
+            "timestamp": connection.connected_at
+        })
+    }
+    
+    action private handle_websocket_message(connection_id: string, ws: any, raw_message: string) {
+        """
+        Handle incoming WebSocket message
+        """
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            // Parse message
+            let message = json.parse(raw_message)
+            let message_size = len(raw_message)
+            
+            // Check message size limit
+            if message_size > WS_POLICIES.max_message_size {
+                this.send_error(connection_id, message.id or null, -32600, 
+                              "Message size exceeds limit: " + string(message_size))
+                return
+            }
+            
+            // Update connection activity
+            let connection = this.connections[connection_id]
+            connection.last_activity = datetime.now().timestamp()
+            connection.messages_received += 1
+            connection.bytes_received += message_size
+            
+            // Handle message based on type
+            let method = message.method or ""
+            
+            if method == "eth_subscribe" or method == "ziver_subscribe" {
+                this.handle_subscription_request(connection_id, message)
+            } else if method == "eth_unsubscribe" or method == "ziver_unsubscribe" {
+                this.handle_unsubscription_request(connection_id, message)
+            } else if method == "ziver_authenticate" {
+                this.handle_authentication(connection_id, message)
+            } else if method == "ziver_ping" {
+                this.handle_ping(connection_id, message)
+            } else {
+                // Regular RPC message - queue for processing
+                this.queue_message_for_processing(connection_id, message, message_size)
+            }
+            
+            let processing_time = datetime.now().timestamp_ms() - start_time
+            
+            // Log message processing
+            audit("websocket_message_received", {
+                "connection_id": connection_id,
+                "method": method,
+                "message_size": message_size,
+                "processing_time_ms": processing_time,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+        } catch (error) {
+            let processing_time = datetime.now().timestamp_ms() - start_time
+            
+            print("❌ WebSocket message error: " + error)
+            
+            this.send_error(connection_id, null, -32700, "Parse error: " + string(error))
+            
+            audit("websocket_message_error", {
+                "connection_id": connection_id,
+                "error": error,
+                "processing_time_ms": processing_time,
                 "timestamp": datetime.now().timestamp()
             })
         }
     }
-
-    action handle_subscription(connection_id: string, message: map) {
-        let subscription_type = message.get("params", [""])[0]
-        let subscription_id = "sub_" + crypto.keccak256(connection_id + subscription_type).slice(0, 16)
-
-        if this.subscriptions.has(subscription_type) {
-            this.subscriptions[subscription_type][connection_id] = subscription_id
-
-            // Update connection stats
-            this.connections[connection_id].subscription_count += 1
-
-            let response = {
-                "jsonrpc": "2.0",
-                "id": message.get("id", 1),
-                "result": subscription_id,
-                "ziver_metadata": {
-                    "subscription_type": subscription_type,
-                    "created_at": datetime.now().timestamp()
-                }
-            }
-
-            this.send_to_connection(connection_id, response)
-            print("📡 Subscription created: " + subscription_type + " for " + connection_id)
-        } else {
-            this.send_error(connection_id, message.get("id", 1), -32602, 
-                           "Invalid subscription type: " + subscription_type)
+    
+    action private handle_websocket_close(connection_id: string, code: integer, reason: string) {
+        """
+        Handle WebSocket connection close
+        """
+        print("🔌 WebSocket disconnected: " + connection_id + 
+              " (Code: " + string(code) + ", Reason: " + reason + ")")
+        
+        // Clean up connection
+        this.close_connection(connection_id, reason)
+        
+        audit("websocket_connection_closed", {
+            "connection_id": connection_id,
+            "code": code,
+            "reason": reason,
+            "timestamp": datetime.now().timestamp()
+        })
+    }
+    
+    action private handle_websocket_error(connection_id: string, error: any) {
+        """
+        Handle WebSocket error
+        """
+        print("❌ WebSocket error for " + connection_id + ": " + error)
+        
+        audit("websocket_connection_error", {
+            "connection_id": connection_id,
+            "error": error,
+            "timestamp": datetime.now().timestamp()
+        })
+    }
+    
+    action private handle_websocket_pong(connection_id: string) {
+        """
+        Handle WebSocket pong response
+        """
+        if this.connections.has(connection_id) {
+            let connection = this.connections[connection_id]
+            connection.last_pong = datetime.now().timestamp()
+            connection.last_activity = datetime.now().timestamp()
         }
     }
-
-    action handle_ziver_subscription(connection_id: string, message: map) {
-        let subscription_type = message.get("params", [""])[0]
-        let filters = message.get("params", [{}])[1] ?? {}
-
-        let ziver_subscriptions = [
-            "socialCapitalUpdates", "defiEvents", "aiAlerts", "quantumSecurity", 
-            "bounceBackNotifications", "crossChainUpdates"
-        ]
-
-        if ziver_subscriptions.contains(subscription_type) {
-            let subscription_id = "ziv_" + crypto.keccak256(connection_id + subscription_type).slice(0, 16)
-
-            this.subscriptions[subscription_type][connection_id] = {
-                "id": subscription_id,
-                "filters": filters,
+    
+    // ===== MESSAGE HANDLING =====
+    
+    action private handle_subscription_request(connection_id: string, message: map) {
+        """
+        Handle subscription request
+        """
+        let subscription_type = message.params[0] or ""
+        let filters = message.params[1] or {}
+        let request_id = message.id or 1
+        
+        // Validate subscription type
+        if not this.subscriptions.has(subscription_type) {
+            this.send_error(connection_id, request_id, -32602, 
+                          "Invalid subscription type: " + subscription_type)
+            return
+        }
+        
+        // Check subscription limit
+        let connection = this.connections[connection_id]
+        if connection.subscription_count >= WS_POLICIES.max_subscriptions_per_connection {
+            this.send_error(connection_id, request_id, -32003, 
+                          "Subscription limit reached: " + string(connection.subscription_count))
+            return
+        }
+        
+        // Generate subscription ID
+        let subscription_id = "sub_" + crypto.sha3_256(
+            connection_id + subscription_type + string(datetime.now().timestamp())
+        ).slice(0, 16)
+        
+        // Create subscription
+        let subscription = Subscription{
+            subscription_id: subscription_id,
+            connection_id: connection_id,
+            subscription_type: subscription_type,
+            filters: filters,
+            created_at: datetime.now().timestamp(),
+            metadata: {
+                "request_id": request_id,
                 "created_at": datetime.now().timestamp()
             }
-
-            let response = {
-                "jsonrpc": "2.0",
-                "id": message.get("id", 1),
-                "result": subscription_id,
-                "ziver_features": {
-                    "ai_explanations": true,
-                    "quantum_secure": true,
-                    "real_time_updates": true
+        }
+        
+        // Store subscription
+        this.subscriptions[subscription_type][connection_id] = subscription
+        
+        // Update connection stats
+        connection.subscription_count += 1
+        
+        // Send success response
+        let response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": subscription_id,
+            "metadata": {
+                "subscription_type": subscription_type,
+                "created_at": datetime.now().timestamp(),
+                "filters": filters
+            }
+        }
+        
+        this.send_to_connection(connection_id, response)
+        
+        print("📡 Subscription created: " + subscription_type + 
+              " for " + connection_id + " (ID: " + subscription_id + ")")
+        
+        audit("websocket_subscription_created", {
+            "connection_id": connection_id,
+            "subscription_id": subscription_id,
+            "subscription_type": subscription_type,
+            "filters": filters,
+            "timestamp": datetime.now().timestamp()
+        })
+    }
+    
+    action private handle_unsubscription_request(connection_id: string, message: map) {
+        """
+        Handle unsubscription request
+        """
+        let subscription_id = message.params[0] or ""
+        let request_id = message.id or 1
+        
+        // Find and remove subscription
+        let subscription_removed = false
+        let subscription_type = ""
+        
+        for each type, subscribers in this.subscriptions {
+            if subscribers.has(connection_id) {
+                let subscription = subscribers[connection_id]
+                if subscription.subscription_id == subscription_id {
+                    delete subscribers[connection_id]
+                    subscription_removed = true
+                    subscription_type = type
+                    break
                 }
             }
-
+        }
+        
+        if subscription_removed {
+            // Update connection stats
+            let connection = this.connections[connection_id]
+            connection.subscription_count = math.max(0, connection.subscription_count - 1)
+            
+            // Send success response
+            let response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": true,
+                "metadata": {
+                    "subscription_id": subscription_id,
+                    "subscription_type": subscription_type,
+                    "removed_at": datetime.now().timestamp()
+                }
+            }
+            
             this.send_to_connection(connection_id, response)
-            print("🎯 Ziver subscription: " + subscription_type + " for " + connection_id)
+            
+            print("📡 Subscription removed: " + subscription_id + " for " + connection_id)
+            
+            audit("websocket_subscription_removed", {
+                "connection_id": connection_id,
+                "subscription_id": subscription_id,
+                "subscription_type": subscription_type,
+                "timestamp": datetime.now().timestamp()
+            })
+            
         } else {
-            this.send_error(connection_id, message.get("id", 1), -32602, 
-                           "Unknown Ziver subscription: " + subscription_type)
+            this.send_error(connection_id, request_id, -32602, 
+                          "Subscription not found: " + subscription_id)
         }
     }
-
-    action broadcast_new_block(block: any) -> boolean {
-        let subscribers = this.subscriptions["newHeads"]
-        if subscribers.is_empty() {
-            return false
+    
+    action private handle_authentication(connection_id: string, message: map) {
+        """
+        Handle authentication request
+        """
+        let auth_token = message.params[0] or ""
+        let request_id = message.id or 1
+        
+        // Validate authentication token
+        let auth_result = this.validate_auth_token(auth_token)
+        
+        if auth_result.valid {
+            // Update connection
+            let connection = this.connections[connection_id]
+            connection.is_authenticated = true
+            connection.auth_token = auth_token
+            connection.user_address = auth_result.user_address
+            
+            // Send success response
+            let response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": true,
+                "metadata": {
+                    "authenticated_at": datetime.now().timestamp(),
+                    "user_address": auth_result.user_address,
+                    "session_expires": datetime.now().timestamp() + 3600
+                }
+            }
+            
+            this.send_to_connection(connection_id, response)
+            
+            print("🔐 Authenticated connection: " + connection_id + 
+                  " as " + (auth_result.user_address or "unknown"))
+            
+            audit("websocket_authentication_success", {
+                "connection_id": connection_id,
+                "user_address": auth_result.user_address,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+        } else {
+            this.send_error(connection_id, request_id, -32001, 
+                          "Authentication failed: " + auth_result.error)
+            
+            audit("websocket_authentication_failed", {
+                "connection_id": connection_id,
+                "error": auth_result.error,
+                "timestamp": datetime.now().timestamp()
+            })
         }
-
-        let notification = {
+    }
+    
+    action private handle_ping(connection_id: string, message: map) {
+        """
+        Handle ping request
+        """
+        let request_id = message.id or 1
+        
+        let response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": "pong",
+            "metadata": {
+                "server_time": datetime.now().timestamp(),
+                "connection_id": connection_id
+            }
+        }
+        
+        this.send_to_connection(connection_id, response)
+        
+        // Update connection activity
+        if this.connections.has(connection_id) {
+            let connection = this.connections[connection_id]
+            connection.last_activity = datetime.now().timestamp()
+        }
+    }
+    
+    action private queue_message_for_processing(connection_id: string, message: map, size: integer) {
+        """
+        Queue message for RPC processing
+        """
+        let ws_message = WebSocketMessage{
+            connection_id: connection_id,
+            message: message,
+            direction: "inbound",
+            size_bytes: size,
+            timestamp: datetime.now().timestamp()
+        }
+        
+        this.message_queue.push(ws_message)
+        
+        // Update metrics
+        this.metrics.messages_received += 1
+    }
+    
+    // ===== BROADCASTING =====
+    
+    action private queue_broadcast(subscription_type: string, notification: map, subscribers: map) {
+        """
+        Queue message for broadcasting to subscribers
+        """
+        let broadcast_item = {
+            "subscription_type": subscription_type,
+            "notification": notification,
+            "subscribers": subscribers,
+            "timestamp": datetime.now().timestamp(),
+            "message_id": "broadcast_" + crypto.sha3_256(string(notification) + string(datetime.now().timestamp()))
+        }
+        
+        this.broadcast_queue.push(broadcast_item)
+        
+        // Limit queue size
+        if len(this.broadcast_queue) > WS_POLICIES.broadcast_queue_size {
+            this.broadcast_queue = this.broadcast_queue.slice(-WS_POLICIES.broadcast_queue_size)
+            print("⚠️ Broadcast queue limit reached, trimming old messages")
+        }
+    }
+    
+    action private create_block_notification(block: any) -> map {
+        """
+        Create block notification for WebSocket
+        """
+        let formatted_block = this.format_block_for_websocket(block)
+        
+        return {
             "jsonrpc": "2.0",
             "method": "eth_subscription",
             "params": {
                 "subscription": "newHeads",
-                "result": this.format_block_for_websocket(block)
+                "result": formatted_block
             }
         }
-
-        let success_count = 0
-        for each connection_id, sub_id in subscribers {
-            if this.send_to_connection(connection_id, notification) {
-                success_count += 1
-            }
-        }
-
-        print("📢 Broadcast block #" + string(block.index) + " to " + string(success_count) + " subscribers")
-        return success_count > 0
     }
-
-    action broadcast_new_transaction(tx: any) -> boolean {
-        let subscribers = this.subscriptions["newPendingTransactions"]
-
-        let notification = {
+    
+    action private create_transaction_notification(tx: any) -> map {
+        """
+        Create transaction notification for WebSocket
+        """
+        return {
             "jsonrpc": "2.0",
             "method": "eth_subscription",
             "params": {
                 "subscription": "newPendingTransactions",
                 "result": tx.hash,
-                "ziver_enhanced": {
-                    "bounce_back_protected": tx.bounce_back_protection ?? false,
+                "enhanced_data": {
+                    "from": tx.from_addr,
+                    "to": tx.to_addr,
+                    "value": tx.value,
+                    "bounce_back_protected": tx.bounce_back_protection or false,
                     "social_capital_impact": this.calculate_social_capital_impact(tx),
-                    "ai_risk_assessment": this.get_ai_risk_assessment(tx)
+                    "ai_risk_assessment": this.get_ai_risk_assessment(tx),
+                    "gas_estimate": tx.gas_limit,
+                    "timestamp": datetime.now().timestamp()
                 }
             }
         }
-
-        let success_count = 0
-        for each connection_id, sub_id in subscribers {
-            if this.send_to_connection(connection_id, notification) {
-                success_count += 1
-            }
-        }
-
-        // Also broadcast to Ziver-specific subscribers
-        this.broadcast_to_ziver_subscribers("defiEvents", tx)
-
-        return success_count > 0
     }
-
-    action broadcast_social_capital_update(user: string, new_score: float) {
-        let notification = {
+    
+    action private create_social_capital_notification(update: SocialCapitalUpdate) -> map {
+        """
+        Create social capital notification for WebSocket
+        """
+        return {
             "jsonrpc": "2.0",
             "method": "ziver_subscription",
             "params": {
                 "subscription": "socialCapitalUpdates",
                 "result": {
-                    "user": user,
-                    "new_score": new_score,
-                    "tier": this.calculate_tier(new_score),
-                    "timestamp": datetime.now().timestamp(),
-                    "ai_explanation": this.generate_score_explanation(user, new_score)
+                    "user": update.user_address,
+                    "new_score": update.new_score,
+                    "previous_score": update.previous_score,
+                    "change": update.new_score - update.previous_score,
+                    "change_reason": update.change_reason,
+                    "tier": this.calculate_tier(update.new_score),
+                    "timestamp": update.timestamp,
+                    "ai_explanation": this.generate_score_explanation(update),
+                    "recommendations": this.generate_score_recommendations(update)
                 }
             }
         }
-
-        this.broadcast_to_ziver_subscribers("socialCapitalUpdates", notification)
     }
-
-    action broadcast_ai_alert(alert_type: string, data: map) {
-        let notification = {
+    
+    action private create_ai_alert_notification(alert: AIAlert) -> map {
+        """
+        Create AI alert notification for WebSocket
+        """
+        return {
             "jsonrpc": "2.0",
             "method": "ziver_subscription",
             "params": {
                 "subscription": "aiAlerts",
                 "result": {
-                    "alert_type": alert_type,
-                    "severity": data.get("severity", "info"),
-                    "message": data.get("message", ""),
-                    "timestamp": datetime.now().timestamp(),
-                    "suggested_actions": data.get("actions", []),
-                    "confidence": data.get("confidence", 0.0)
+                    "alert_id": alert.alert_id,
+                    "alert_type": alert.alert_type,
+                    "severity": alert.severity,
+                    "message": alert.message,
+                    "affected_addresses": alert.affected_addresses,
+                    "confidence": alert.confidence,
+                    "suggested_actions": alert.suggested_actions,
+                    "expires_at": alert.expires_at,
+                    "timestamp": alert.timestamp,
+                    "metadata": alert.metadata
                 }
             }
         }
-
-        this.broadcast_to_ziver_subscribers("aiAlerts", notification)
     }
-
-    // Enhanced Helper Methods
-    action broadcast_to_ziver_subscribers(subscription_type: string, data: any) {
-        let subscribers = this.subscriptions.get(subscription_type, {})
-
-        for each connection_id, subscription_data in subscribers {
-            // Apply filters if specified
-            if this.passes_filters(subscription_data.filters, data) {
-                this.send_to_connection(connection_id, data)
+    
+    action private create_defi_event_notification(event: DefiEvent) -> map {
+        """
+        Create DeFi event notification for WebSocket
+        """
+        return {
+            "jsonrpc": "2.0",
+            "method": "ziver_subscription",
+            "params": {
+                "subscription": "defiEvents",
+                "result": {
+                    "event_id": event.event_id,
+                    "event_type": event.event_type,
+                    "protocol": event.protocol,
+                    "addresses": event.addresses,
+                    "amounts": event.amounts,
+                    "block_number": event.block_number,
+                    "transaction_hash": event.transaction_hash,
+                    "timestamp": event.timestamp,
+                    "yield_opportunities": this.analyze_defi_yield(event),
+                    "risk_assessment": this.assess_defi_risk(event),
+                    "metadata": event.metadata
+                }
             }
         }
     }
-
-    action format_block_for_websocket(block: any) -> map {
-        let formatted = this.rpc_server.format_block(block, false)
-
-        // Add Ziver-specific enhancements
-        formatted["ziver_enhanced"] = {
-            "seb_defi_activity": this.calculate_defi_activity(block),
-            "ai_consensus_data": this.get_ai_consensus_data(block),
-            "quantum_signature_verified": true,
-            "social_capital_distribution": this.get_social_capital_stats(block)
+    
+    action private create_quantum_security_notification(update: QuantumSecurityUpdate) -> map {
+        """
+        Create quantum security notification for WebSocket
+        """
+        return {
+            "jsonrpc": "2.0",
+            "method": "ziver_subscription",
+            "params": {
+                "subscription": "quantumSecurity",
+                "result": {
+                    "update_id": update.update_id,
+                    "update_type": update.update_type,
+                    "addresses_affected": update.addresses_affected,
+                    "security_level": update.security_level,
+                    "recommended_action": update.recommended_action,
+                    "timestamp": update.timestamp,
+                    "estimated_risk": this.assess_quantum_risk(update),
+                    "action_timeline": this.get_action_timeline(update),
+                    "metadata": update.metadata
+                }
+            }
         }
-
-        return formatted
     }
-
-    action send_to_connection(connection_id: string, message: map) -> boolean {
+    
+    // ===== HELPER METHODS =====
+    
+    action private send_welcome_message(connection_id: string, ws: any) {
+        """
+        Send welcome message to new connection
+        """
+        let welcome_message = {
+            "jsonrpc": "2.0",
+            "method": "ziver_welcome",
+            "params": {
+                "connection_id": connection_id,
+                "server_version": "ZiverChain/3.0.0",
+                "websocket_version": "1.0.0",
+                "available_subscriptions": this.subscriptions.keys(),
+                "quantum_secure": true,
+                "ai_enhanced": true,
+                "ping_interval": this.config.ping_interval,
+                "max_message_size": WS_POLICIES.max_message_size,
+                "timestamp": datetime.now().timestamp()
+            }
+        }
+        
+        this.send_to_connection(connection_id, welcome_message)
+    }
+    
+    action private send_to_connection(connection_id: string, message: map) -> boolean {
+        """
+        Send message to WebSocket connection
+        """
         if not this.connections.has(connection_id) {
             return false
         }
-
+        
+        let connection = this.connections[connection_id]
+        
         try {
-            // Simulate WebSocket send (would use actual WebSocket library)
-            print("📤 WS → " + connection_id.slice(0, 8) + ": " + string(message.get("method", "unknown")))
-
-            this.connections[connection_id].last_active = datetime.now().timestamp()
+            // Convert message to JSON
+            let json_message = json.stringify(message)
+            let message_size = len(json_message)
+            
+            // Update connection stats
+            connection.messages_sent += 1
+            connection.bytes_sent += message_size
+            connection.last_activity = datetime.now().timestamp()
+            
+            // Simulate WebSocket send (would use actual WebSocket send)
+            print("📤 WS → " + connection_id.slice(0, 8) + ": " + (message.method or "unknown"))
+            
+            // Update metrics
+            this.metrics.messages_sent += 1
+            
             return true
-
-        } catch(error) {
-            print("❌ Failed to send to " + connection_id + ": " + string(error))
+            
+        } catch (error) {
+            print("❌ Failed to send to " + connection_id + ": " + error)
+            
+            audit("websocket_send_failed", {
+                "connection_id": connection_id,
+                "error": error,
+                "message": message,
+                "timestamp": datetime.now().timestamp()
+            })
+            
             return false
         }
     }
-
-    action send_error(connection_id: string, request_id: integer, code: integer, message: string) {
+    
+    action private send_error(connection_id: string, request_id: integer?, code: integer, message: string) {
+        """
+        Send error response to connection
+        """
         let error_response = {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -332,166 +1980,1027 @@ contract WebSocketRPCServer implements WebSocketRPCProtocol {
                 "message": message
             }
         }
-
+        
         this.send_to_connection(connection_id, error_response)
     }
-
-    action async process_message_queue() {
-        while this.is_running {
-            if not this.message_queue.is_empty() {
-                let item = this.message_queue.shift()
-                let response = this.rpc_server.handle_request(item.message)
-                this.send_to_connection(item.connection_id, response)
-            }
-            await sleep(0.01) // Small delay to prevent busy waiting
-        }
+    
+    action private is_connection_active(connection: WebSocketConnection) -> boolean {
+        """
+        Check if connection is active
+        """
+        let current_time = datetime.now().timestamp()
+        let inactivity = current_time - connection.last_activity
+        
+        return inactivity < WS_POLICIES.connection_timeout
     }
-
-    action async cleanup_inactive_connections() {
-        while this.is_running {
-            let current_time = datetime.now().timestamp()
-            let inactive_connections = []
-
-            for each connection_id, connection in this.connections {
-                if current_time - connection.last_active > 300 { // 5 minutes
-                    inactive_connections.push(connection_id)
+    
+    action private async schedule_connection_ping(connection_id: string, ws: any) {
+        """
+        Schedule periodic pings for connection
+        """
+        while this.is_running and this.connections.has(connection_id) {
+            let connection = this.connections[connection_id]
+            
+            // Check if ping is needed
+            let time_since_ping = datetime.now().timestamp() - connection.last_ping
+            if time_since_ping >= this.config.ping_interval {
+                // Send ping
+                connection.last_ping = datetime.now().timestamp()
+                
+                let ping_message = {
+                    "jsonrpc": "2.0",
+                    "method": "ziver_ping",
+                    "params": {
+                        "timestamp": datetime.now().timestamp(),
+                        "connection_id": connection_id
+                    }
                 }
+                
+                this.send_to_connection(connection_id, ping_message)
+                
+                // Check for pong timeout
+                spawn this.check_pong_timeout(connection_id)
             }
-
-            for each connection_id in inactive_connections {
-                this.handle_connection_close(connection_id, "inactive")
-            }
-
-            await sleep(60) // Check every minute
+            
+            await sleep(1) // Check every second
         }
     }
-
-    action handle_connection_close(connection_id: string, reason: string) {
-        print("🔌 WebSocket disconnected: " + connection_id + " (" + reason + ")")
-
-        // Remove from all subscriptions
+    
+    action private async check_pong_timeout(connection_id: string) {
+        """
+        Check for pong timeout
+        """
+        await sleep(WS_POLICIES.pong_timeout)
+        
+        if this.connections.has(connection_id) {
+            let connection = this.connections[connection_id]
+            let time_since_pong = datetime.now().timestamp() - connection.last_pong
+            
+            if time_since_pong > WS_POLICIES.pong_timeout * 2 {
+                print("⚠️ Pong timeout for connection: " + connection_id)
+                this.close_connection(connection_id, "pong_timeout")
+            }
+        }
+    }
+    
+    action private validate_auth_token(auth_token: string) -> map {
+        """
+        Validate authentication token
+        """
+        // Simplified validation - would use JWT or similar in production
+        if auth_token == "" {
+            return {"valid": false, "error": "Empty token"}
+        }
+        
+        // Check if token is valid (simplified)
+        let token_valid = auth_token.starts_with("auth_") and len(auth_token) > 20
+        
+        if token_valid {
+            // Extract user address from token (simplified)
+            let user_address = "0x" + crypto.sha3_256(auth_token).slice(0, 40)
+            return {"valid": true, "user_address": user_address}
+        } else {
+            return {"valid": false, "error": "Invalid token format"}
+        }
+    }
+    
+    action private remove_connection_from_subscriptions(connection_id: string) -> integer {
+        """
+        Remove connection from all subscriptions
+        """
+        let removed_count = 0
+        
         for each subscription_type, subscribers in this.subscriptions {
             if subscribers.has(connection_id) {
-                subscribers.delete(connection_id)
+                delete subscribers[connection_id]
+                removed_count += 1
             }
         }
-
-        // Remove connection
-        if this.connections.has(connection_id) {
-            this.connections.delete(connection_id)
-        }
+        
+        return removed_count
     }
-
-    action get_connection_stats() -> map {
-        let total_connections = len(this.connections)
-        let total_subscriptions = 0
-        let active_subscriptions = {}
-
+    
+    action private close_all_connections(reason: string) -> integer {
+        """
+        Close all active connections
+        """
+        let closed_count = 0
+        let connection_ids = this.connections.keys()
+        
+        for each connection_id in connection_ids {
+            let result = this.close_connection(connection_id, reason)
+            if result.success {
+                closed_count += 1
+            }
+        }
+        
+        return closed_count
+    }
+    
+    action private cleanup_all_subscriptions() -> integer {
+        """
+        Clean up all subscriptions
+        """
+        let cleaned_count = 0
+        
         for each subscription_type, subscribers in this.subscriptions {
-            active_subscriptions[subscription_type] = len(subscribers)
-            total_subscriptions += len(subscribers)
+            cleaned_count += len(subscribers)
+            this.subscriptions[subscription_type] = {}
         }
-
+        
+        return cleaned_count
+    }
+    
+    action private filter_subscribers_by_address(subscribers: map, address: string) -> map {
+        """
+        Filter subscribers by address
+        """
+        let filtered = {}
+        
+        for each connection_id, subscription in subscribers {
+            let filters = subscription.filters or {}
+            
+            // Check if subscription has address filter
+            if filters.has("address") {
+                let filter_address = filters.address
+                if type(filter_address) == "string" and filter_address == address {
+                    filtered[connection_id] = subscription
+                } else if type(filter_address) == "list" and filter_address.contains(address) {
+                    filtered[connection_id] = subscription
+                }
+            } else {
+                // No address filter, include all
+                filtered[connection_id] = subscription
+            }
+        }
+        
+        return filtered
+    }
+    
+    action private filter_subscribers_by_alert(subscribers: map, alert: AIAlert) -> map {
+        """
+        Filter subscribers by alert criteria
+        """
+        let filtered = {}
+        
+        for each connection_id, subscription in subscribers {
+            let filters = subscription.filters or {}
+            let include = true
+            
+            // Check severity filter
+            if filters.has("min_severity") {
+                let severity_order = {"info": 1, "warning": 2, "critical": 3}
+                let alert_severity = severity_order.get(alert.severity, 0)
+                let min_severity = severity_order.get(filters.min_severity, 0)
+                
+                if alert_severity < min_severity {
+                    include = false
+                }
+            }
+            
+            // Check alert type filter
+            if include and filters.has("alert_types") {
+                let alert_types = filters.alert_types
+                if type(alert_types) == "list" and not alert_types.contains(alert.alert_type) {
+                    include = false
+                }
+            }
+            
+            // Check address filter
+            if include and filters.has("addresses") {
+                let filter_addresses = filters.addresses
+                if type(filter_addresses) == "list" {
+                    // Check if any affected address matches filter
+                    let address_match = false
+                    for each affected_address in alert.affected_addresses {
+                        if filter_addresses.contains(affected_address) {
+                            address_match = true
+                            break
+                        }
+                    }
+                    include = address_match
+                }
+            }
+            
+            if include {
+                filtered[connection_id] = subscription
+            }
+        }
+        
+        return filtered
+    }
+    
+    action private filter_subscribers_by_defi_event(subscribers: map, event: DefiEvent) -> map {
+        """
+        Filter subscribers by DeFi event criteria
+        """
+        let filtered = {}
+        
+        for each connection_id, subscription in subscribers {
+            let filters = subscription.filters or {}
+            let include = true
+            
+            // Check protocol filter
+            if filters.has("protocols") {
+                let protocols = filters.protocols
+                if type(protocols) == "list" and not protocols.contains(event.protocol) {
+                    include = false
+                }
+            }
+            
+            // Check event type filter
+            if include and filters.has("event_types") {
+                let event_types = filters.event_types
+                if type(event_types) == "list" and not event_types.contains(event.event_type) {
+                    include = false
+                }
+            }
+            
+            // Check minimum amount filter
+            if include and filters.has("min_amount") {
+                let total_amount = 0
+                for each token, amount in event.amounts {
+                    total_amount += amount
+                }
+                
+                if total_amount < filters.min_amount {
+                    include = false
+                }
+            }
+            
+            if include {
+                filtered[connection_id] = subscription
+            }
+        }
+        
+        return filtered
+    }
+    
+    action private filter_subscribers_by_addresses(subscribers: map, addresses: list) -> map {
+        """
+        Filter subscribers by list of addresses
+        """
+        let filtered = {}
+        
+        for each connection_id, subscription in subscribers {
+            let filters = subscription.filters or {}
+            
+            // Check if subscription has address filter
+            if filters.has("addresses") {
+                let filter_addresses = filters.addresses
+                if type(filter_addresses) == "list" {
+                    // Check if any address matches filter
+                    let address_match = false
+                    for each address in addresses {
+                        if filter_addresses.contains(address) {
+                            address_match = true
+                            break
+                        }
+                    }
+                    
+                    if address_match {
+                        filtered[connection_id] = subscription
+                    }
+                }
+            } else {
+                // No address filter, include all
+                filtered[connection_id] = subscription
+            }
+        }
+        
+        return filtered
+    }
+    
+    action private check_special_subscriptions(tx: any) {
+        """
+        Check for special subscription triggers
+        """
+        // Check for bounce-back protection
+        if tx.bounce_back_protection {
+            this.queue_broadcast("bounceBackNotifications", {
+                "jsonrpc": "2.0",
+                "method": "ziver_subscription",
+                "params": {
+                    "subscription": "bounceBackNotifications",
+                    "result": {
+                        "transaction_hash": tx.hash,
+                        "from": tx.from_addr,
+                        "to": tx.to_addr,
+                        "protected": true,
+                        "timestamp": datetime.now().timestamp()
+                    }
+                }
+            }, this.subscriptions["bounceBackNotifications"])
+        }
+        
+        // Check for cross-chain transactions
+        if tx.cross_chain or tx.bridge_transaction {
+            this.queue_broadcast("crossChainUpdates", {
+                "jsonrpc": "2.0",
+                "method": "ziver_subscription",
+                "params": {
+                    "subscription": "crossChainUpdates",
+                    "result": {
+                        "transaction_hash": tx.hash,
+                        "source_chain": tx.source_chain or "ZIVER",
+                        "target_chain": tx.target_chain,
+                        "amount": tx.value,
+                        "status": "pending",
+                        "timestamp": datetime.now().timestamp()
+                    }
+                }
+            }, this.subscriptions["crossChainUpdates"])
+        }
+    }
+    
+    action private format_block_for_websocket(block: any) -> map {
+        """
+        Format block for WebSocket notification
+        """
+        let formatted = this.rpc_server.format_block_with_seb_data(block, false)
+        
+        // Add WebSocket-specific enhancements
+        formatted["websocket_metadata"] = {
+            "notification_id": "block_" + block.hash,
+            "delivery_time": datetime.now().timestamp(),
+            "subscriber_count": len(this.subscriptions["newHeads"]),
+            "ai_analysis_available": true
+        }
+        
+        return formatted
+    }
+    
+    action private calculate_social_capital_impact(tx: any) -> float {
+        """
+        Calculate social capital impact of transaction
+        """
+        // Simplified calculation
+        let base_impact = 0.1
+        let value_factor = math.min(1.0, tx.value / 1000000) // Normalize by 1M
+        return base_impact * value_factor
+    }
+    
+    action private get_ai_risk_assessment(tx: any) -> map {
+        """
+        Get AI risk assessment for transaction
+        """
+        if zaie != null {
+            try {
+                return zaie.assess_transaction_risk(tx)
+            } catch (error) {
+                // Fall back to default
+            }
+        }
+        
         return {
-            "total_connections": total_connections,
-            "total_subscriptions": total_subscriptions,
-            "active_subscriptions": active_subscriptions,
-            "message_queue_size": len(this.message_queue),
-            "uptime": datetime.now().timestamp() - this.get_start_time()
+            "risk_level": "low",
+            "confidence": 0.8,
+            "factors": ["standard_transaction"],
+            "recommendation": "proceed"
         }
     }
-
-    // Placeholder implementations for advanced features
-    action calculate_social_capital_impact(tx: any) -> float {
-        return 0.1 // Would calculate actual impact
-    }
-
-    action get_ai_risk_assessment(tx: any) -> map {
-        return {"risk_level": "low", "confidence": 0.8}
-    }
-
-    action calculate_tier(score: float) -> string {
+    
+    action private calculate_tier(score: float) -> string {
+        """
+        Calculate tier based on social capital score
+        """
         if score >= 0.9: return "DIAMOND"
         if score >= 0.75: return "PLATINUM"
         if score >= 0.6: return "GOLD"
         if score >= 0.4: return "SILVER"
         return "BRONZE"
     }
-
-    action generate_score_explanation(user: string, score: float) -> string {
-        return "AI-generated explanation for score change"
+    
+    action private generate_score_explanation(update: SocialCapitalUpdate) -> string {
+        """
+        Generate explanation for score change
+        """
+        if zaie != null {
+            try {
+                return zaie.explain_social_capital_change(update)
+            } catch (error) {
+                // Fall back to default
+            }
+        }
+        
+        let change = update.new_score - update.previous_score
+        if change > 0 {
+            return "Score increased due to " + update.change_reason
+        } else if change < 0 {
+            return "Score decreased due to " + update.change_reason
+        } else {
+            return "Score remained stable"
+        }
     }
-
-    action calculate_defi_activity(block: any) -> float {
-        return 0.5
+    
+    action private generate_score_recommendations(update: SocialCapitalUpdate) -> list {
+        """
+        Generate recommendations for improving social capital
+        """
+        if zaie != null {
+            try {
+                return zaie.generate_social_capital_recommendations(update)
+            } catch (error) {
+                // Fall back to default
+            }
+        }
+        
+        let recommendations = []
+        let score = update.new_score
+        
+        if score < 0.4 {
+            recommendations.push("Complete profile verification")
+            recommendations.push("Make your first transaction")
+            recommendations.push("Connect with other users")
+        } else if score < 0.6 {
+            recommendations.push("Participate in governance")
+            recommendations.push("Provide liquidity to pools")
+            recommendations.push("Engage with community")
+        } else if score < 0.75 {
+            recommendations.push("Maintain consistent activity")
+            recommendations.push("Help new users")
+            recommendations.push("Create valuable content")
+        } else if score < 0.9 {
+            recommendations.push("Become a validator")
+            recommendations.push("Mentor other users")
+            recommendations.push("Lead community initiatives")
+        }
+        
+        return recommendations
     }
-
-    action get_ai_consensus_data(block: any) -> map {
-        return {"ai_trust_score": 0.95}
+    
+    action private analyze_defi_yield(event: DefiEvent) -> map {
+        """
+        Analyze DeFi event for yield opportunities
+        """
+        // Simplified analysis
+        return {
+            "estimated_apy": 5.0 + math.random() * 10.0,
+            "risk_adjusted_return": 3.0 + math.random() * 5.0,
+            "opportunity_rating": "good",
+            "recommended_action": "monitor"
+        }
     }
-
-    action get_social_capital_stats(block: any) -> map {
-        return {"average": 0.6, "min": 0.1, "max": 0.95}
+    
+    action private assess_defi_risk(event: DefiEvent) -> map {
+        """
+        Assess risk of DeFi event
+        """
+        return {
+            "risk_level": "medium",
+            "liquidity_risk": 0.3,
+            "smart_contract_risk": 0.4,
+            "market_risk": 0.5,
+            "overall_risk_score": 0.4
+        }
     }
-
-    action passes_filters(filters: map, data: any) -> boolean {
-        return true // Would implement actual filter logic
+    
+    action private assess_quantum_risk(update: QuantumSecurityUpdate) -> map {
+        """
+        Assess quantum security risk
+        """
+        return {
+            "immediate_threat": false,
+            "time_to_risk": 3650, // 10 years in days
+            "preparedness_score": 0.8,
+            "recommended_upgrade_timeline": 180 // 6 months in days
+        }
     }
-
-    action handle_unsubscription(connection_id: string, message: map) {
-        // Implementation for unsubscription
-        let subscription_id = message.get("params", [""])[0]
-        print("📡 Unsubscribing: " + subscription_id)
+    
+    action private get_action_timeline(update: QuantumSecurityUpdate) -> list {
+        """
+        Get action timeline for quantum security update
+        """
+        return [
+            {"action": "Key rotation", "timeline_days": 7, "priority": "high"},
+            {"action": "Algorithm update", "timeline_days": 30, "priority": "medium"},
+            {"action": "Infrastructure upgrade", "timeline_days": 90, "priority": "low"}
+        ]
     }
-
-    action async start_websocket_server() {
-        // Would start actual WebSocket server
-        print("🌐 WebSocket Server listening on port " + string(this.port))
+    
+    action private async analyze_block_with_ai(block: any) {
+        """
+        Analyze block with AI
+        """
+        if zaie != null {
+            try {
+                let analysis = await zaie.analyze_block(block)
+                
+                // Cache analysis for future queries
+                cache_set("block_analysis_" + block.hash, analysis, 86400) // 24 hours
+                
+                // Broadcast to AI subscribers if interesting
+                if analysis.interesting_factors.count() > 0 {
+                    let ai_alert = AIAlert{
+                        alert_id: "block_analysis_" + block.hash,
+                        alert_type: "block_analysis",
+                        severity: "info",
+                        message: "AI analysis of block " + string(block.index),
+                        affected_addresses: analysis.affected_addresses,
+                        confidence: analysis.confidence,
+                        suggested_actions: ["review_transactions", "monitor_trends"],
+                        timestamp: datetime.now().timestamp()
+                    }
+                    
+                    this.broadcast_ai_alert(ai_alert)
+                }
+            } catch (error) {
+                // AI analysis optional
+            }
+        }
+    }
+    
+    action private async generate_social_capital_recommendations(update: SocialCapitalUpdate) {
+        """
+        Generate social capital recommendations with AI
+        """
+        if zaie != null {
+            try {
+                let recommendations = await zaie.generate_personalized_recommendations(update)
+                
+                // Send direct message to user if connected
+                for each connection_id, connection in this.connections {
+                    if connection.user_address == update.user_address and connection.is_authenticated {
+                        let message = {
+                            "jsonrpc": "2.0",
+                            "method": "ziver_recommendations",
+                            "params": {
+                                "user": update.user_address,
+                                "recommendations": recommendations,
+                                "timestamp": datetime.now().timestamp()
+                            }
+                        }
+                        
+                        this.send_direct_message(connection_id, message)
+                        break
+                    }
+                }
+            } catch (error) {
+                // AI recommendations optional
+            }
+        }
+    }
+    
+    action private async analyze_defi_event_for_yield(event: DefiEvent) {
+        """
+        Analyze DeFi event for yield opportunities with AI
+        """
+        if zaie != null {
+            try {
+                let yield_analysis = await zaie.analyze_defi_yield(event)
+                
+                // Broadcast to yield opportunity subscribers
+                if yield_analysis.opportunity_score > 0.7 {
+                    this.queue_broadcast("yieldOpportunities", {
+                        "jsonrpc": "2.0",
+                        "method": "ziver_subscription",
+                        "params": {
+                            "subscription": "yieldOpportunities",
+                            "result": {
+                                "event_id": event.event_id,
+                                "protocol": event.protocol,
+                                "estimated_apy": yield_analysis.estimated_apy,
+                                "risk_level": yield_analysis.risk_level,
+                                "minimum_amount": yield_analysis.minimum_amount,
+                                "timestamp": datetime.now().timestamp()
+                            }
+                        }
+                    }, this.subscriptions["yieldOpportunities"])
+                }
+            } catch (error) {
+                // AI analysis optional
+            }
+        }
+    }
+    
+    action private calculate_messages_per_second() -> float {
+        """
+        Calculate messages per second
+        """
+        let recent_messages = cache_get("recent_message_count") or 0
+        return recent_messages / 60.0 // Messages per second (assuming 60-second window)
+    }
+    
+    action private get_start_time() -> integer? {
+        """
+        Get server start time
+        """
+        return null // Would track actual start time
+    }
+    
+    action private initialize_database() {
+        """
+        Initialize database tables for WebSocket server
+        """
+        try {
+            // WebSocket connections table
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS websocket_connections (
+                    connection_id VARCHAR(64) PRIMARY KEY,
+                    session_id VARCHAR(64) NOT NULL,
+                    remote_address VARCHAR(45) NOT NULL,
+                    user_agent TEXT,
+                    origin TEXT,
+                    connected_at TIMESTAMP NOT NULL,
+                    disconnected_at TIMESTAMP,
+                    last_activity TIMESTAMP NOT NULL,
+                    is_authenticated BOOLEAN DEFAULT FALSE,
+                    user_address VARCHAR(42),
+                    messages_sent INTEGER DEFAULT 0,
+                    messages_received INTEGER DEFAULT 0,
+                    bytes_sent BIGINT DEFAULT 0,
+                    bytes_received BIGINT DEFAULT 0,
+                    metadata JSONB,
+                    INDEX idx_connected (connected_at),
+                    INDEX idx_user (user_address, last_activity),
+                    INDEX idx_activity (last_activity)
+                )
+            """)
+            
+            // WebSocket subscriptions table
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS websocket_subscriptions (
+                    subscription_id VARCHAR(64) PRIMARY KEY,
+                    connection_id VARCHAR(64) NOT NULL,
+                    subscription_type VARCHAR(50) NOT NULL,
+                    filters JSONB,
+                    created_at TIMESTAMP NOT NULL,
+                    last_notification TIMESTAMP,
+                    notification_count INTEGER DEFAULT 0,
+                    metadata JSONB,
+                    INDEX idx_connection (connection_id),
+                    INDEX idx_type (subscription_type, created_at),
+                    INDEX idx_notification (last_notification)
+                )
+            """)
+            
+            // WebSocket broadcasts table
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS websocket_broadcasts (
+                    broadcast_id VARCHAR(64) PRIMARY KEY,
+                    subscription_type VARCHAR(50) NOT NULL,
+                    message_hash VARCHAR(128) NOT NULL,
+                    total_recipients INTEGER NOT NULL,
+                    successful_sends INTEGER NOT NULL,
+                    failed_sends INTEGER NOT NULL,
+                    broadcast_time_ms INTEGER NOT NULL,
+                    timestamp TIMESTAMP NOT NULL,
+                    metadata JSONB,
+                    INDEX idx_timestamp (timestamp),
+                    INDEX idx_type (subscription_type, timestamp)
+                )
+            """)
+            
+            print("✅ WebSocket database tables initialized")
+            
+        } catch (error) {
+            print("⚠️ Failed to initialize WebSocket database: " + error)
+        }
+    }
+    
+    action private async process_message_queue() {
+        """
+        Process message queue in background
+        """
         while this.is_running {
-            await sleep(1)
+            try {
+                if not this.message_queue.is_empty() {
+                    let message = this.message_queue.shift()
+                    
+                    // Process message through RPC server
+                    let response = this.rpc_server.handle_request(message.message)
+                    
+                    // Send response back to connection
+                    this.send_to_connection(message.connection_id, response)
+                    
+                    // Update message status
+                    message.processed = true
+                }
+                
+                await sleep(0.01) // Small delay to prevent busy waiting
+                
+            } catch (error) {
+                print("⚠️ Message queue processing error: " + error)
+                await sleep(1)
+            }
         }
     }
-
-    action get_start_time() -> integer {
-        return datetime.now().timestamp()
+    
+    action private async process_broadcast_queue() {
+        """
+        Process broadcast queue in background
+        """
+        while this.is_running {
+            try {
+                if not this.broadcast_queue.is_empty() {
+                    let broadcast = this.broadcast_queue.shift()
+                    
+                    let successful_sends = 0
+                    let failed_sends = 0
+                    
+                    // Send to all subscribers
+                    for each connection_id, subscription in broadcast.subscribers {
+                        if this.send_to_connection(connection_id, broadcast.notification) {
+                            successful_sends += 1
+                            
+                            // Update subscription stats
+                            subscription.last_notification = datetime.now().timestamp()
+                            subscription.notification_count += 1
+                            
+                        } else {
+                            failed_sends += 1
+                        }
+                    }
+                    
+                    // Update metrics
+                    this.metrics.broadcasts_sent += 1
+                    
+                    // Log broadcast
+                    audit("websocket_broadcast_sent", {
+                        "subscription_type": broadcast.subscription_type,
+                        "message_id": broadcast.message_id,
+                        "total_recipients": len(broadcast.subscribers),
+                        "successful_sends": successful_sends,
+                        "failed_sends": failed_sends,
+                        "timestamp": broadcast.timestamp
+                    })
+                }
+                
+                await sleep(0.01) // Small delay to prevent busy waiting
+                
+            } catch (error) {
+                print("⚠️ Broadcast queue processing error: " + error)
+                await sleep(1)
+            }
+        }
     }
-
-    action async sleep(seconds: float) {
-        // Async sleep implementation
+    
+    action private async connection_health_checker() {
+        """
+        Check connection health periodically
+        """
+        while this.is_running {
+            try {
+                let current_time = datetime.now().timestamp()
+                let inactive_connections = []
+                
+                // Check all connections
+                for each connection_id, connection in this.connections {
+                    let inactivity = current_time - connection.last_activity
+                    
+                    if inactivity > WS_POLICIES.connection_timeout {
+                        inactive_connections.push(connection_id)
+                    }
+                }
+                
+                // Close inactive connections
+                for each connection_id in inactive_connections {
+                    this.close_connection(connection_id, "inactivity_timeout")
+                }
+                
+                await sleep(30) // Check every 30 seconds
+                
+            } catch (error) {
+                print("⚠️ Connection health check error: " + error)
+                await sleep(30)
+            }
+        }
+    }
+    
+    action private async cleanup_inactive_connections() {
+        """
+        Clean up inactive connections
+        """
+        while this.is_running {
+            try {
+                // This is handled by connection_health_checker
+                await sleep(60)
+                
+            } catch (error) {
+                print("⚠️ Connection cleanup error: " + error)
+                await sleep(60)
+            }
+        }
+    }
+    
+    action private async collect_metrics() {
+        """
+        Collect and log metrics periodically
+        """
+        while this.is_running {
+            try {
+                let stats = this.get_connection_stats()
+                let subscription_stats = this.get_subscription_stats()
+                
+                // Log to database
+                try {
+                    db.execute("""
+                        INSERT INTO websocket_metrics (
+                            timestamp, active_connections, total_subscriptions,
+                            messages_sent, messages_received, broadcast_queue_size,
+                            message_queue_size
+                        ) VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+                    """, [
+                        stats.active_connections,
+                        subscription_stats.total_subscriptions,
+                        stats.messages_sent,
+                        stats.messages_received,
+                        subscription_stats.broadcast_queue_size,
+                        subscription_stats.message_queue_size
+                    ])
+                } catch (error) {
+                    // Database errors shouldn't break metrics collection
+                }
+                
+                // Cache recent message count
+                let recent_messages = stats.messages_sent + stats.messages_received
+                cache_set("recent_message_count", recent_messages, 120) // 2 minutes
+                
+                await sleep(60) // Collect every 60 seconds
+                
+            } catch (error) {
+                print("⚠️ Metrics collection error: " + error)
+                await sleep(60)
+            }
+        }
+    }
+    
+    action private async process_subscription_alerts() {
+        """
+        Process subscription alerts (e.g., threshold alerts)
+        """
+        while this.is_running {
+            try {
+                // Check for subscription threshold alerts
+                let subscription_stats = this.get_subscription_stats()
+                
+                // Alert if any subscription type has high count
+                for each subscription_type, count in subscription_stats.subscriptions_by_type {
+                    if count > 1000 {
+                        let alert = AIAlert{
+                            alert_id: "subscription_alert_" + subscription_type,
+                            alert_type: "subscription_threshold",
+                            severity: "warning",
+                            message: "High subscription count for " + subscription_type + ": " + string(count),
+                            affected_addresses: [],
+                            confidence: 0.9,
+                            suggested_actions: ["review_subscription_patterns", "consider_rate_limiting"],
+                            timestamp: datetime.now().timestamp()
+                        }
+                        
+                        this.broadcast_ai_alert(alert)
+                    }
+                }
+                
+                await sleep(300) // Check every 5 minutes
+                
+            } catch (error) {
+                print("⚠️ Subscription alert processing error: " + error)
+                await sleep(300)
+            }
+        }
     }
 }
 
-// Test Enhanced WebSocket RPC
-action async test_enhanced_websocket() {
-    print("🔌 Testing Enhanced WebSocket RPC...")
+// Test Enhanced WebSocket RPC Server
+action async test_enhanced_websocket_server() {
+    print("🔌 Testing Enhanced WebSocket RPC Server...")
 
-    let mock_rpc = {"format_block": action(block, full) { return block }}
-    let ws_server = WebSocketRPCServer(rpc_server: mock_rpc, port: 8546)
-
-    if ws_server.start() {
-        print("✅ WebSocket server started")
-
-        // Test connection handling
-        let test_connection = "conn_test_123"
-        ws_server.handle_connection(test_connection, "192.168.1.100", "ZiverApp/1.0")
-
-        // Test subscription
-        let sub_message = {
-            "jsonrpc": "2.0",
-            "method": "eth_subscribe",
-            "params": ["newHeads"],
-            "id": 1
+    // Create mock RPC server
+    let mock_rpc = {
+        "format_block_with_seb_data": action(block, full) { 
+            return {
+                "number": block.index,
+                "hash": block.hash,
+                "timestamp": block.timestamp
+            }
+        },
+        "handle_request": action(request) {
+            return {
+                "jsonrpc": "2.0",
+                "id": request.id,
+                "result": {"status": "processed"}
+            }
         }
-        ws_server.handle_message(test_connection, sub_message)
-
-        // Test stats
-        let stats = ws_server.get_connection_stats()
-        print("WebSocket Stats: " + string(stats))
     }
+
+    // Initialize WebSocket server
+    let ws_server = WebSocketRPCServer(
+        rpc_server: mock_rpc, 
+        port: 8546,
+        config: {
+            "name": "Test WebSocket Server",
+            "version": "3.0.0",
+            "require_auth": false,
+            "ping_interval": 30,
+            "max_connections": 1000
+        }
+    )
+
+    // Start server
+    let start_result = await ws_server.start()
+    
+    if start_result.success {
+        print("✅ WebSocket server started: " + start_result.server_address)
+        
+        // Test connection stats
+        let connection_stats = ws_server.get_connection_stats()
+        print("📊 Connection Stats: " + string(connection_stats.active_connections) + " active")
+        
+        // Test subscription stats
+        let subscription_stats = ws_server.get_subscription_stats()
+        print("📡 Subscription Stats: " + string(subscription_stats.total_subscriptions) + " total")
+        
+        // Test health check
+        let health = ws_server.health_check()
+        print("🏥 Health Check: " + health.status)
+        
+        // Test broadcast new block
+        let test_block = {
+            "index": 1001,
+            "hash": "block_hash_1001",
+            "timestamp": datetime.now().timestamp(),
+            "transactions": [],
+            "validator": "validator_001"
+        }
+        
+        let block_result = ws_server.broadcast_new_block(test_block)
+        print("📢 Block broadcast result: " + string(block_result.success))
+        
+        // Test broadcast new transaction
+        let test_tx = {
+            "hash": "tx_hash_001",
+            "from_addr": "0x1234...",
+            "to_addr": "0x5678...",
+            "value": 1000,
+            "bounce_back_protection": false,
+            "gas_limit": 21000
+        }
+        
+        let tx_result = ws_server.broadcast_new_transaction(test_tx)
+        print("💸 Transaction broadcast result: " + string(tx_result.success))
+        
+        // Test broadcast social capital update
+        let sc_update = SocialCapitalUpdate{
+            user_address: "0x1234...",
+            new_score: 0.75,
+            previous_score: 0.70,
+            change_reason: "successful_transactions",
+            timestamp: datetime.now().timestamp()
+        }
+        
+        let sc_result = ws_server.broadcast_social_capital_update(sc_update)
+        print("📈 Social capital broadcast result: " + string(sc_result.success))
+        
+        // Test broadcast AI alert
+        let ai_alert = AIAlert{
+            alert_id: "alert_001",
+            alert_type: "risk_detected",
+            severity: "warning",
+            message: "Unusual transaction pattern detected",
+            affected_addresses: ["0x1234..."],
+            confidence: 0.85,
+            suggested_actions: ["review_transactions", "enable_2fa"],
+            timestamp: datetime.now().timestamp()
+        }
+        
+        let alert_result = ws_server.broadcast_ai_alert(ai_alert)
+        print("🤖 AI alert broadcast result: " + string(alert_result.success))
+        
+        // Test create subscription channel
+        let channel = ws_server.create_subscription_channel("test_channel", {"min_score": 0.5})
+        print("📡 Created channel: " + channel.channel_id)
+        
+        // Test validate connection (no real connections in test)
+        let validation = ws_server.validate_connection("test_conn")
+        print("✅ Connection validation: " + string(validation.valid))
+        
+        // Stop server
+        print("\n🛑 Stopping server...")
+        let stop_result = ws_server.stop()
+        
+        if stop_result.success {
+            print("✅ Server stopped successfully")
+            print("  Uptime: " + string(stop_result.uptime_seconds) + "s")
+            print("  Connections closed: " + string(stop_result.connections_closed))
+        }
+        
+    } else {
+        print("❌ Failed to start server: " + (start_result.error or "Unknown error"))
+    }
+
+    print("\n✅ WebSocket server test complete!")
 }
 
+// Export the contract and test function
 export {
     WebSocketRPCServer,
     WebSocketRPCProtocol,
-    test_enhanced_websocket
+    test_enhanced_websocket_server
+}
+
+// Main entry point for standalone execution
+if is_main() {
+    print("🚀 Starting Enhanced WebSocket RPC Server Test...")
+    async test_enhanced_websocket_server()
 }
