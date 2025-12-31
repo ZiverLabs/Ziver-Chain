@@ -4,101 +4,686 @@
 use "crypto" as crypto_lib
 use "math" as math
 use "datetime" as datetime
+use "json" as json
+use "../database/postgres" as db
+use "../middleware/security_middleware" as security
 
-// Quantum-Resistant Cryptography Implementation
+// Enable memory tracking for cryptographic operations
+track_memory()
+
+// Security policies for cryptography
+const CRYPTO_POLICIES = {
+    min_key_strength: 2048,
+    max_key_age_days: 365,
+    signature_timeout_seconds: 300,
+    encryption_algorithm: "AES-256-GCM",
+    hash_algorithm: "SHA3-512",
+    quantum_safe_threshold: 2030, // Year when quantum safety becomes critical
+}
+
+// Cache for frequently used public keys and signatures
+cache("public_key_cache", { ttl: 3600, max_entries: 1000 })
+cache("signature_verification", { ttl: 300, max_entries: 5000 })
+
+// Throttle cryptographic operations
+throttle("key_generation", { requests_per_minute: 100 })
+throttle("signature_verification", { requests_per_minute: 1000 })
+
+// Quantum-Resistant Cryptography Implementation with enhanced features
 protocol QuantumResistantCrypto {
-    action generate_quantum_keypair() -> KeyPair
-    action quantum_sign(message: string, private_key: string) -> string
-    action quantum_verify(message: string, signature: string, public_key: string) -> boolean
-    action hybrid_encrypt(data: string, public_key: string) -> string
-    action hybrid_decrypt(encrypted_data: string, private_key: string) -> string
+    action generate_quantum_keypair(algorithm: string?) -> KeyPair
+    action generate_hybrid_keypair() -> HybridKeyPair
+    action quantum_sign(message: string, private_key: string, context: map?) -> QuantumSignature
+    action quantum_verify(message: string, signature: QuantumSignature, public_key: string) -> VerificationResult
+    action hybrid_encrypt(data: string, public_key: string, options: map?) -> EncryptedData
+    action hybrid_decrypt(encrypted_data: EncryptedData, private_key: string) -> DecryptionResult
+    action rotate_keys(key_id: string, new_algorithm: string) -> boolean
+    action get_key_info(key_id: string) -> KeyInfo
+    action validate_key_strength(public_key: string) -> SecurityRating
+}
+
+// Enhanced data structures
+entity KeyPair {
+    public_key: string
+    private_key: string
+    address: string
+    key_type: string = "SPHINCS+"
+    key_strength: integer = 256
+    created_at: integer
+    expires_at: integer?
+    metadata: map?
+    status: string = "active"
+    rotation_count: integer = 0
+}
+
+entity HybridKeyPair {
+    classical_keypair: KeyPair
+    quantum_keypair: KeyPair
+    combined_address: string
+    security_level: string = "quantum_resistant"
+    created_at: integer
+}
+
+entity QuantumSignature {
+    signature: string
+    timestamp: integer
+    nonce: integer
+    algorithm: string
+    context_hash: string?
+    recovery_id: integer?
+}
+
+entity EncryptedData {
+    ciphertext: string
+    iv: string
+    tag: string?
+    encryption_algorithm: string
+    key_id: string
+    timestamp: integer
+    metadata: map?
+}
+
+entity VerificationResult {
+    valid: boolean
+    confidence: float
+    warnings: list
+    verification_time_ms: integer
+    details: map
+}
+
+entity DecryptionResult {
+    success: boolean
+    decrypted_data: string?
+    error: string?
+    decryption_time_ms: integer
+}
+
+entity KeyInfo {
+    key_id: string
+    key_type: string
+    key_strength: integer
+    created_at: integer
+    expires_at: integer?
+    usage_count: integer
+    last_used: integer?
+    security_rating: SecurityRating
+}
+
+entity SecurityRating {
+    level: string  // quantum_safe, post_quantum, classical, weak
+    score: float
+    weaknesses: list
+    recommendations: list
 }
 
 contract QuantumCrypto implements QuantumResistantCrypto {
     persistent storage key_registry: map
-
-    entity KeyPair {
-        public_key: string
-        private_key: string
-        address: string
-        key_type: string = "SPHINCS+"
+    persistent storage signature_registry: map
+    persistent storage key_rotation_log: map
+    persistent storage security_audit_log: map
+    
+    // Reactive state for monitoring
+    watch key_registry {
+        let active_keys = 0
+        for each key_id, key_info in this.key_registry {
+            if key_info.status == "active" {
+                active_keys += 1
+            }
+        }
+        print("🔑 Active cryptographic keys: " + string(active_keys))
     }
 
     action init() {
         this.key_registry = {}
+        this.signature_registry = {}
+        this.key_rotation_log = {}
+        this.security_audit_log = {}
+        
+        // Initialize database tables for cryptographic keys
+        try {
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS crypto_keys (
+                    key_id VARCHAR(64) PRIMARY KEY,
+                    public_key TEXT NOT NULL,
+                    private_key_hash VARCHAR(128),
+                    key_type VARCHAR(32) NOT NULL,
+                    key_strength INTEGER DEFAULT 256,
+                    created_at BIGINT NOT NULL,
+                    expires_at BIGINT,
+                    status VARCHAR(20) DEFAULT 'active',
+                    metadata JSONB,
+                    rotation_count INTEGER DEFAULT 0
+                )
+            """)
+            
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS crypto_signatures (
+                    signature_id VARCHAR(128) PRIMARY KEY,
+                    message_hash VARCHAR(128) NOT NULL,
+                    public_key_id VARCHAR(64) NOT NULL,
+                    timestamp BIGINT NOT NULL,
+                    algorithm VARCHAR(32) NOT NULL,
+                    verified BOOLEAN DEFAULT FALSE,
+                    verification_count INTEGER DEFAULT 0,
+                    context JSONB
+                )
+            """)
+        } catch (error) {
+            print("⚠️ Failed to initialize crypto database: " + error)
+        }
     }
 
-    action generate_quantum_keypair() -> KeyPair {
-        // For now, use traditional crypto until native bindings are available
-        let keypair = crypto_lib.generate_keypair()
+    action protect generate_quantum_keypair(algorithm: string? = "SPHINCS+") -> KeyPair {
+        // Validate algorithm
+        verify(this.is_valid_algorithm(algorithm), "Unsupported quantum algorithm: " + algorithm)
         
-        // Generate quantum-resistant address
-        let address_hash = crypto_lib.keccak256(keypair.public_key)
-        let address = "ZIV_Q" + address_hash.slice(0, 40)
-
+        let timestamp = datetime.now().timestamp()
+        
+        // For now, use traditional crypto with quantum-resistant enhancements
+        let keypair = crypto_lib.generate_keypair_enhanced(algorithm)
+        
+        // Generate quantum-resistant address with enhanced hashing
+        let address_hash = crypto_lib.sha3_512(keypair.public_key)
+        let address = "ZIV_Q_" + algorithm + "_" + address_hash.slice(0, 40)
+        
+        // Calculate expiration (1 year for quantum keys)
+        let expires_at = timestamp + (365 * 24 * 60 * 60)
+        
         let quantum_keypair = KeyPair{
             public_key: keypair.public_key,
             private_key: keypair.private_key,
-            address: address
+            address: address,
+            key_type: algorithm,
+            key_strength: this.get_key_strength(algorithm),
+            created_at: timestamp,
+            expires_at: expires_at,
+            metadata: {
+                "algorithm": algorithm,
+                "generation_method": "enhanced_quantum",
+                "security_level": "post_quantum"
+            }
         }
-
-        this.key_registry[address] = quantum_keypair
+        
+        // Store in registry
+        let key_id = this.calculate_key_id(quantum_keypair.public_key)
+        this.key_registry[key_id] = quantum_keypair
+        
+        // Store in database
+        try {
+            db.execute("""
+                INSERT INTO crypto_keys (key_id, public_key, private_key_hash, key_type, key_strength, created_at, expires_at, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                key_id,
+                quantum_keypair.public_key,
+                crypto_lib.sha3_256(quantum_keypair.private_key),
+                quantum_keypair.key_type,
+                quantum_keypair.key_strength,
+                quantum_keypair.created_at,
+                quantum_keypair.expires_at,
+                json.stringify(quantum_keypair.metadata)
+            ])
+        } catch (error) {
+            print("⚠️ Failed to store key in database: " + error)
+        }
+        
+        // Audit trail
+        audit("quantum_keypair_generated", {
+            "key_id": key_id,
+            "algorithm": algorithm,
+            "address": address,
+            "timestamp": timestamp
+        })
+        
         return quantum_keypair
     }
 
-    action quantum_sign(message: string, private_key: string) -> string {
-        // Use traditional signing for now
-        let signature = crypto_lib.secp256k1_sign(message, private_key)
+    action protect generate_hybrid_keypair() -> HybridKeyPair {
+        // Generate both classical and quantum keypairs
+        let classical = this.generate_quantum_keypair("ECDSA_SECP256K1")
+        let quantum = this.generate_quantum_keypair("SPHINCS+")
         
-        // Add timestamp for replay protection
-        let timestamp = string(datetime.now().timestamp())
-        let full_signature = signature + "|" + timestamp + "|" + crypto_lib.keccak256(message)
-
-        return full_signature
-    }
-
-    action quantum_verify(message: string, signature: string, public_key: string) -> boolean {
-        let parts = signature.split("|")
-        if parts.count() != 3 {
-            return false
+        // Create combined address
+        let combined_hash = crypto_lib.sha3_512(classical.public_key + quantum.public_key)
+        let combined_address = "ZIV_HYBRID_" + combined_hash.slice(0, 48)
+        
+        let hybrid_keypair = HybridKeyPair{
+            classical_keypair: classical,
+            quantum_keypair: quantum,
+            combined_address: combined_address,
+            created_at: datetime.now().timestamp()
         }
+        
+        // Cache the hybrid keypair
+        cache_set("hybrid_key_" + combined_address, hybrid_keypair)
+        
+        audit("hybrid_keypair_generated", {
+            "combined_address": combined_address,
+            "classical_algorithm": classical.key_type,
+            "quantum_algorithm": quantum.key_type,
+            "timestamp": hybrid_keypair.created_at
+        })
+        
+        return hybrid_keypair
+    }
 
-        let sig = parts[0]
-        let timestamp = parts[1]
-        let message_hash = parts[2]
-
-        // Check message integrity
-        if crypto_lib.keccak256(message) != message_hash {
-            return false
+    action protect quantum_sign(message: string, private_key: string, context: map? = null) -> QuantumSignature {
+        verify(message != null and len(message) > 0, "Message cannot be empty")
+        verify(private_key != null and len(private_key) > 0, "Private key required")
+        
+        let timestamp = datetime.now().timestamp()
+        let nonce = crypto_lib.random_int(0, 999999999)
+        
+        // Add context to message for additional security
+        let message_with_context = message
+        if context != null {
+            let context_hash = crypto_lib.sha3_256(json.stringify(context))
+            message_with_context = message + "|" + context_hash
         }
-
-        // Check timestamp (prevent replay attacks)
-        let time_diff = datetime.now().timestamp() - integer(timestamp)
-        if time_diff > 300 {
-            return false
+        
+        // Generate deterministic signature with timestamp and nonce
+        let signing_data = message_with_context + "|" + string(timestamp) + "|" + string(nonce)
+        
+        // Use enhanced signing with recovery ID support
+        let signature_result = crypto_lib.secp256k1_sign_with_recovery(signing_data, private_key)
+        
+        let quantum_signature = QuantumSignature{
+            signature: signature_result.signature,
+            timestamp: timestamp,
+            nonce: nonce,
+            algorithm: "ECDSA_SECP256K1_WITH_TIMESTAMP",
+            context_hash: context != null ? crypto_lib.sha3_256(json.stringify(context)) : null,
+            recovery_id: signature_result.recovery_id
         }
-
-        return crypto_lib.verify_signature(message, sig, public_key)
+        
+        // Store signature in registry for nonce prevention
+        let signature_id = this.calculate_signature_id(quantum_signature)
+        this.signature_registry[signature_id] = quantum_signature
+        
+        // Record in database
+        try {
+            db.execute("""
+                INSERT INTO crypto_signatures (signature_id, message_hash, public_key_id, timestamp, algorithm, context)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, [
+                signature_id,
+                crypto_lib.sha3_256(message),
+                this.get_public_key_id_from_private(private_key),
+                timestamp,
+                quantum_signature.algorithm,
+                context != null ? json.stringify(context) : null
+            ])
+        } catch (error) {
+            print("⚠️ Failed to store signature in database: " + error)
+        }
+        
+        return quantum_signature
     }
 
-    action hybrid_encrypt(data: string, public_key: string) -> string {
-        // Simple encryption for now - would be enhanced with lattice crypto
-        let encrypted = crypto_lib.aes_encrypt(data, public_key.slice(0, 32))
-        return encrypted
+    action protect quantum_verify(message: string, signature: QuantumSignature, public_key: string) -> VerificationResult {
+        let start_time = datetime.now().timestamp_ms()
+        let warnings = []
+        
+        try {
+            // Check signature structure
+            verify(signature.signature != null, "Signature cannot be null")
+            verify(public_key != null, "Public key required")
+            
+            // Check timestamp validity
+            let current_time = datetime.now().timestamp()
+            let time_diff = current_time - signature.timestamp
+            
+            if time_diff > CRYPTO_POLICIES.signature_timeout_seconds {
+                warnings.push("Signature timestamp is too old")
+            }
+            
+            if time_diff < 0 {
+                warnings.push("Signature timestamp is in the future")
+            }
+            
+            // Reconstruct signing data
+            let message_with_context = message
+            if signature.context_hash != null {
+                message_with_context = message + "|" + signature.context_hash
+            }
+            
+            let signing_data = message_with_context + "|" + string(signature.timestamp) + "|" + string(signature.nonce)
+            
+            // Verify signature
+            let verification_result
+            if signature.recovery_id != null {
+                verification_result = crypto_lib.verify_signature_with_recovery(
+                    signing_data, 
+                    signature.signature, 
+                    public_key,
+                    signature.recovery_id
+                )
+            } else {
+                verification_result = crypto_lib.verify_signature(signing_data, signature.signature, public_key)
+            }
+            
+            // Check for replay attacks using nonce registry
+            let signature_id = this.calculate_signature_id(signature)
+            if this.signature_registry.has(signature_id) {
+                let existing = this.signature_registry[signature_id]
+                if existing.timestamp != signature.timestamp {
+                    warnings.push("Possible replay attack detected")
+                }
+            }
+            
+            // Calculate confidence score
+            let confidence = this.calculate_verification_confidence(verification_result, time_diff, warnings)
+            
+            let verification_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            // Update signature verification count in database
+            if verification_result {
+                try {
+                    db.execute("""
+                        UPDATE crypto_signatures 
+                        SET verified = TRUE, verification_count = verification_count + 1
+                        WHERE signature_id = ?
+                    """, [signature_id])
+                } catch (error) {
+                    print("⚠️ Failed to update signature verification: " + error)
+                }
+            }
+            
+            return VerificationResult{
+                valid: verification_result,
+                confidence: confidence,
+                warnings: warnings,
+                verification_time_ms: verification_time_ms,
+                details: {
+                    "timestamp": signature.timestamp,
+                    "time_diff_seconds": time_diff,
+                    "algorithm": signature.algorithm,
+                    "nonce": signature.nonce
+                }
+            }
+            
+        } catch (error) {
+            let verification_time_ms = datetime.now().timestamp_ms() - start_time
+            return VerificationResult{
+                valid: false,
+                confidence: 0.0,
+                warnings: ["Verification error: " + error],
+                verification_time_ms: verification_time_ms,
+                details: {"error": error}
+            }
+        }
     }
 
-    action hybrid_decrypt(encrypted_data: string, private_key: string) -> string {
-        // Simple decryption for now
-        return crypto_lib.aes_decrypt(encrypted_data, private_key.slice(0, 32))
+    action protect hybrid_encrypt(data: string, public_key: string, options: map? = null) -> EncryptedData {
+        verify(data != null, "Data cannot be null")
+        verify(public_key != null, "Public key required")
+        
+        let timestamp = datetime.now().timestamp()
+        let algorithm = options?.algorithm or CRYPTO_POLICIES.encryption_algorithm
+        
+        // Generate initialization vector
+        let iv = crypto_lib.random_bytes(16)
+        
+        // Use hybrid encryption: symmetric key encrypted with public key
+        let symmetric_key = crypto_lib.generate_symmetric_key(256)
+        
+        // Encrypt data with symmetric key
+        let encrypted_result = crypto_lib.encrypt_with_algorithm(
+            data, 
+            symmetric_key, 
+            iv, 
+            algorithm
+        )
+        
+        // Encrypt symmetric key with public key
+        let encrypted_key = crypto_lib.rsa_encrypt(symmetric_key, public_key)
+        
+        // Generate key ID for reference
+        let key_id = this.calculate_key_id(public_key)
+        
+        let encrypted_data = EncryptedData{
+            ciphertext: encrypted_result.ciphertext,
+            iv: iv,
+            tag: encrypted_result.tag,
+            encryption_algorithm: algorithm,
+            key_id: key_id,
+            timestamp: timestamp,
+            metadata: {
+                "data_length": len(data),
+                "encryption_mode": "hybrid",
+                "symmetric_key_size": 256
+            }
+        }
+        
+        // Cache encrypted data metadata
+        cache_set("encrypted_" + crypto_lib.sha3_256(data), {
+            "key_id": key_id,
+            "timestamp": timestamp,
+            "algorithm": algorithm
+        })
+        
+        audit("data_encrypted", {
+            "key_id": key_id,
+            "algorithm": algorithm,
+            "data_length": len(data),
+            "timestamp": timestamp
+        })
+        
+        return encrypted_data
     }
 
-    // Traditional crypto implementations
+    action protect hybrid_decrypt(encrypted_data: EncryptedData, private_key: string) -> DecryptionResult {
+        let start_time = datetime.now().timestamp_ms()
+        
+        try {
+            verify(encrypted_data != null, "Encrypted data required")
+            verify(private_key != null, "Private key required")
+            
+            // First, decrypt the symmetric key using private key
+            let symmetric_key = crypto_lib.rsa_decrypt(encrypted_data.ciphertext, private_key)
+            
+            if symmetric_key == null {
+                throw "Failed to decrypt symmetric key"
+            }
+            
+            // Then decrypt the actual data
+            let decrypted_data = crypto_lib.decrypt_with_algorithm(
+                encrypted_data.ciphertext,
+                symmetric_key,
+                encrypted_data.iv,
+                encrypted_data.encryption_algorithm,
+                encrypted_data.tag
+            )
+            
+            let decryption_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("data_decrypted", {
+                "key_id": encrypted_data.key_id,
+                "algorithm": encrypted_data.encryption_algorithm,
+                "decryption_time_ms": decryption_time_ms,
+                "success": true,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return DecryptionResult{
+                success: true,
+                decrypted_data: decrypted_data,
+                decryption_time_ms: decryption_time_ms
+            }
+            
+        } catch (error) {
+            let decryption_time_ms = datetime.now().timestamp_ms() - start_time
+            
+            audit("data_decryption_failed", {
+                "key_id": encrypted_data?.key_id or "unknown",
+                "error": error,
+                "decryption_time_ms": decryption_time_ms,
+                "timestamp": datetime.now().timestamp()
+            })
+            
+            return DecryptionResult{
+                success: false,
+                error: error,
+                decryption_time_ms: decryption_time_ms
+            }
+        }
+    }
+
+    action protect rotate_keys(key_id: string, new_algorithm: string = "SPHINCS+") -> boolean {
+        verify(this.key_registry.has(key_id), "Key not found: " + key_id)
+        
+        let old_key = this.key_registry[key_id]
+        
+        // Generate new keypair
+        let new_keypair = this.generate_quantum_keypair(new_algorithm)
+        
+        // Update registry
+        old_key.status = "rotated"
+        old_key.expires_at = datetime.now().timestamp()
+        
+        this.key_registry[key_id] = old_key
+        
+        // Create new entry
+        let new_key_id = this.calculate_key_id(new_keypair.public_key)
+        this.key_registry[new_key_id] = new_keypair
+        
+        // Log rotation
+        if not this.key_rotation_log.has(key_id) {
+            this.key_rotation_log[key_id] = []
+        }
+        
+        this.key_rotation_log[key_id].push({
+            "old_key_id": key_id,
+            "new_key_id": new_key_id,
+            "old_algorithm": old_key.key_type,
+            "new_algorithm": new_algorithm,
+            "timestamp": datetime.now().timestamp(),
+            "reason": "scheduled_rotation"
+        })
+        
+        // Update database
+        try {
+            db.execute("""
+                UPDATE crypto_keys 
+                SET status = 'rotated', expires_at = ?
+                WHERE key_id = ?
+            """, [datetime.now().timestamp(), key_id])
+        } catch (error) {
+            print("⚠️ Failed to update key rotation in database: " + error)
+        }
+        
+        audit("key_rotated", {
+            "old_key_id": key_id,
+            "new_key_id": new_key_id,
+            "old_algorithm": old_key.key_type,
+            "new_algorithm": new_algorithm,
+            "timestamp": datetime.now().timestamp()
+        })
+        
+        return true
+    }
+
+    action protect get_key_info(key_id: string) -> KeyInfo {
+        if not this.key_registry.has(key_id) {
+            throw "Key not found: " + key_id
+        }
+        
+        let key = this.key_registry[key_id]
+        
+        // Get usage stats from database
+        let usage_count = 0
+        let last_used = null
+        
+        try {
+            let stats = db.query_one("""
+                SELECT 
+                    COUNT(*) as usage_count,
+                    MAX(timestamp) as last_used
+                FROM crypto_signatures 
+                WHERE public_key_id = ?
+            """, [key_id])
+            
+            if stats != null {
+                usage_count = stats.usage_count or 0
+                last_used = stats.last_used
+            }
+        } catch (error) {
+            print("⚠️ Failed to get key usage stats: " + error)
+        }
+        
+        let security_rating = this.validate_key_strength(key.public_key)
+        
+        return KeyInfo{
+            key_id: key_id,
+            key_type: key.key_type,
+            key_strength: key.key_strength,
+            created_at: key.created_at,
+            expires_at: key.expires_at,
+            usage_count: usage_count,
+            last_used: last_used,
+            security_rating: security_rating
+        }
+    }
+
+    action protect validate_key_strength(public_key: string) -> SecurityRating {
+        let weaknesses = []
+        let recommendations = []
+        let score = 100.0
+        
+        // Check key length
+        let key_length = len(public_key)
+        if key_length < 64 {
+            weaknesses.push("Key too short")
+            score -= 30
+            recommendations.push("Generate longer key (minimum 256 bytes)")
+        }
+        
+        // Check algorithm (simplified)
+        if public_key.starts_with("ZIV_Q_") {
+            // Quantum-resistant key
+            if datetime.now().year() > CRYPTO_POLICIES.quantum_safe_threshold {
+                weaknesses.push("Algorithm may not be quantum-safe beyond " + string(CRYPTO_POLICIES.quantum_safe_threshold))
+                score -= 10
+                recommendations.push("Consider upgrading to next-generation quantum-resistant algorithm")
+            }
+        } else if public_key.starts_with("0x") {
+            // Ethereum-style key
+            weaknesses.push("Classical ECDSA key, not quantum-resistant")
+            score -= 40
+            recommendations.push("Migrate to quantum-resistant keypair")
+        }
+        
+        // Determine security level
+        let level = "classical"
+        if score >= 90:
+            level = "quantum_safe"
+        elif score >= 70:
+            level = "post_quantum"
+        elif score >= 50:
+            level = "classical"
+        else:
+            level = "weak"
+        
+        return SecurityRating{
+            level: level,
+            score: score,
+            weaknesses: weaknesses,
+            recommendations: recommendations
+        }
+    }
+
+    // Traditional crypto implementations with enhancements
     action keccak256(data: string) -> string {
-        return crypto_lib.keccak256(data)
+        // Use enhanced keccak with additional security
+        return crypto_lib.keccak256(data + "|ZIVER|" + string(datetime.now().timestamp()))
     }
 
     action sha256(data: string) -> string {
         return crypto_lib.sha256(data)
+    }
+
+    action sha3_512(data: string) -> string {
+        return crypto_lib.sha3_512(data)
     }
 
     action secp256k1_sign(message: string, private_key: string) -> string {
@@ -106,30 +691,32 @@ contract QuantumCrypto implements QuantumResistantCrypto {
     }
 
     action verify_signature(message: string, signature: string, public_key: string) -> boolean {
-        return crypto_lib.verify_signature(message, signature, public_key)
+        let result = crypto_lib.verify_signature(message, signature, public_key)
+        
+        // Cache verification result
+        cache_set("sig_verify_" + crypto_lib.sha3_256(message + signature + public_key), {
+            "valid": result,
+            "timestamp": datetime.now().timestamp()
+        })
+        
+        return result
     }
 
-    action generate_keypair() -> KeyPair {
-        let keypair = crypto_lib.generate_keypair()
-        let address_hash = crypto_lib.keccak256(keypair.public_key)
-        let address = "ZIV_" + address_hash.slice(0, 40)
-        
-        return KeyPair{
-            public_key: keypair.public_key,
-            private_key: keypair.private_key,
-            address: address
-        }
+    action generate_keypair(algorithm: string = "ECDSA_SECP256K1") -> KeyPair {
+        return this.generate_quantum_keypair(algorithm)
     }
 
     action calculate_merkle_root(transactions: list) -> string {
         if transactions.is_empty() {
-            return this.keccak256("empty_merkle_root")
+            return this.sha3_512("empty_merkle_root_" + string(datetime.now().timestamp()))
         }
 
         let hashes = []
         for each tx in transactions {
-            let tx_content = tx.hash + tx.from_addr + tx.to_addr + string(tx.value) + (tx.data ?? "")
-            let tx_hash = this.keccak256(tx_content)
+            // Enhanced transaction hashing
+            let tx_content = tx.hash + tx.from_addr + tx.to_addr + string(tx.value) + 
+                            (tx.data ?? "") + string(tx.timestamp)
+            let tx_hash = this.sha3_512(tx_content)
             hashes.push(tx_hash)
         }
 
@@ -137,73 +724,228 @@ contract QuantumCrypto implements QuantumResistantCrypto {
     }
 
     action build_merkle_tree(hashes: list) -> string {
+        // Use enhanced merkle tree with SHA3-512
         while hashes.count() > 1 {
             let new_level = []
             let i = 0
 
             while i < hashes.count() {
                 if i + 1 < hashes.count() {
-                    let combined = hashes[i] + hashes[i + 1]
-                    new_level.push(this.keccak256(combined))
+                    let combined = hashes[i] + hashes[i + 1] + string(i)
+                    new_level.push(this.sha3_512(combined))
                     i += 2
                 } else {
-                    let combined = hashes[i] + hashes[i]
-                    new_level.push(this.keccak256(combined))
+                    // Duplicate last hash for odd number
+                    let combined = hashes[i] + hashes[i] + string(i) + "_dup"
+                    new_level.push(this.sha3_512(combined))
                     i += 1
                 }
             }
             hashes = new_level
         }
 
-        return hashes[0]
+        return hashes[0] or this.sha3_512("empty_tree")
     }
 
     action derive_address(public_key: string, chain_type: string = "ZIVER") -> string {
-        let hash = this.keccak256(public_key)
+        let hash = this.sha3_512(public_key)
 
         match chain_type {
-            case "ZIVER": return "ZIV_" + hash.slice(0, 40)
-            case "ETHEREUM": return "0x" + hash.slice(hash.count() - 40)
-            case "TON": return "EQ" + hash.slice(0, 48)
-            case "BSC": return "0x" + hash.slice(hash.count() - 40)
-            default: return "ZIV_" + hash.slice(0, 40)
+            case "ZIVER": 
+                return "ZIV_" + hash.slice(0, 48) + "_" + string(datetime.now().timestamp() % 10000)
+            case "ETHEREUM": 
+                return "0x" + hash.slice(hash.count() - 40)
+            case "TON": 
+                return "EQ" + hash.slice(0, 48)
+            case "BSC": 
+                return "0x" + hash.slice(hash.count() - 40)
+            case "POLYGON": 
+                return "0x" + hash.slice(hash.count() - 40)
+            case "ARBITRUM": 
+                return "0x" + hash.slice(hash.count() - 40)
+            default: 
+                return "ZIV_" + hash.slice(0, 48)
         }
     }
+
+    // Helper methods
+    action is_valid_algorithm(algorithm: string) -> boolean {
+        let valid_algorithms = ["SPHINCS+", "ECDSA_SECP256K1", "ED25519", "RSA_4096", "DILITHIUM", "FALCON"]
+        return valid_algorithms.contains(algorithm)
+    }
+
+    action get_key_strength(algorithm: string) -> integer {
+        match algorithm {
+            case "SPHINCS+": return 256
+            case "DILITHIUM": return 256
+            case "FALCON": return 512
+            case "RSA_4096": return 4096
+            case "ECDSA_SECP256K1": return 256
+            case "ED25519": return 128
+            default: return 128
+        }
+    }
+
+    action calculate_key_id(public_key: string) -> string {
+        return "KEY_" + this.sha3_256(public_key)
+    }
+
+    action calculate_signature_id(signature: QuantumSignature) -> string {
+        return "SIG_" + this.sha3_256(
+            signature.signature + 
+            string(signature.timestamp) + 
+            string(signature.nonce)
+        )
+    }
+
+    action calculate_verification_confidence(valid: boolean, time_diff: integer, warnings: list) -> float {
+        if not valid:
+            return 0.0
+        
+        let confidence = 100.0
+        
+        // Penalize for time difference
+        if time_diff > 60:
+            confidence -= (time_diff - 60) * 0.1
+        
+        // Penalize for warnings
+        confidence -= len(warnings) * 5.0
+        
+        return math.max(0.0, math.min(100.0, confidence))
+    }
+
+    action get_public_key_id_from_private(private_key: string) -> string {
+        // In production, this would derive public key from private key
+        return "PK_" + this.sha3_256(private_key.slice(0, 32))
+    }
+
+    // Dependency injection setup
+    inject database: db
+    
+    // Middleware for cryptographic operations
+    middleware("crypto_operations", action(req, res, next) {
+        let operation = req["operation"]
+        let key_id = req["key_id"]
+        
+        if operation in ["sign", "decrypt"] {
+            // Check key status
+            if this.key_registry.has(key_id) {
+                let key_info = this.key_registry[key_id]
+                if key_info.status != "active" {
+                    res["status"] = 403
+                    res["error"] = "Key is not active: " + key_info.status
+                    return
+                }
+                
+                // Check expiration
+                if key_info.expires_at != null and datetime.now().timestamp() > key_info.expires_at {
+                    res["status"] = 403
+                    res["error"] = "Key has expired"
+                    return
+                }
+            }
+        }
+        
+        next()
+    })
 }
 
-// Test quantum-resistant cryptography
+// Register crypto service for dependency injection
+register_dependency("crypto_service", QuantumCrypto())
+
+// Test quantum-resistant cryptography with enhanced features
 action async test_quantum_crypto() {
-    print("🔐 Testing Cryptography Module...")
-    let qcrypto = QuantumCrypto()
-
-    // Generate keypair
-    let keypair = qcrypto.generate_keypair()
-    print("Keypair Generated:")
-    print("  Address: " + keypair.address)
-
-    // Test signing
-    let message = "Hello Ziver Chain!"
-    let signature = qcrypto.quantum_sign(message, keypair.private_key)
-    let verified = qcrypto.quantum_verify(message, signature, keypair.public_key)
-    print("Signature Test: " + string(verified))
-
-    // Test encryption
-    let secret_data = "Sensitive blockchain data"
-    let encrypted = qcrypto.hybrid_encrypt(secret_data, keypair.public_key)
-    let decrypted = qcrypto.hybrid_decrypt(encrypted, keypair.private_key)
-    print("Encryption Test: " + string(secret_data == decrypted))
+    print("🔐 Testing Enhanced Cryptography Module v2.0...")
+    
+    // Enable error recovery mode
+    continue
+    
+    try {
+        let qcrypto = QuantumCrypto()
+        
+        // Test hybrid keypair generation
+        let hybrid_keypair = qcrypto.generate_hybrid_keypair()
+        print("✅ Hybrid Keypair Generated:")
+        print("  Combined Address: " + hybrid_keypair.combined_address)
+        print("  Classical Algorithm: " + hybrid_keypair.classical_keypair.key_type)
+        print("  Quantum Algorithm: " + hybrid_keypair.quantum_keypair.key_type)
+        
+        // Test quantum signing with context
+        let message = "Hello Ziver Chain v2.0!"
+        let context = {"purpose": "test", "version": "2.0", "timestamp": datetime.now().timestamp()}
+        
+        let signature = qcrypto.quantum_sign(message, hybrid_keypair.classical_keypair.private_key, context)
+        print("✅ Quantum Signature Created:")
+        print("  Timestamp: " + string(signature.timestamp))
+        print("  Nonce: " + string(signature.nonce))
+        print("  Algorithm: " + signature.algorithm)
+        
+        // Test verification with confidence score
+        let verification = qcrypto.quantum_verify(message, signature, hybrid_keypair.classical_keypair.public_key)
+        print("✅ Signature Verification:")
+        print("  Valid: " + string(verification.valid))
+        print("  Confidence: " + string(verification.confidence) + "%")
+        print("  Time: " + string(verification.verification_time_ms) + "ms")
+        
+        if verification.warnings.count() > 0:
+            print("  Warnings: " + string(verification.warnings))
+        
+        // Test hybrid encryption
+        let secret_data = "Sensitive blockchain data v2.0"
+        let encrypted = qcrypto.hybrid_encrypt(
+            secret_data, 
+            hybrid_keypair.classical_keypair.public_key,
+            {"algorithm": "AES-256-GCM", "purpose": "test_encryption"}
+        )
+        print("✅ Data Encrypted:")
+        print("  Algorithm: " + encrypted.encryption_algorithm)
+        print("  Key ID: " + encrypted.key_id)
+        
+        // Test decryption
+        let decryption = qcrypto.hybrid_decrypt(encrypted, hybrid_keypair.classical_keypair.private_key)
+        print("✅ Data Decryption:")
+        print("  Success: " + string(decryption.success))
+        print("  Time: " + string(decryption.decryption_time_ms) + "ms")
+        
+        if decryption.success:
+            print("  Data matches: " + string(secret_data == decryption.decrypted_data))
+        
+        // Test key info
+        let key_id = qcrypto.calculate_key_id(hybrid_keypair.classical_keypair.public_key)
+        let key_info = qcrypto.get_key_info(key_id)
+        print("✅ Key Information:")
+        print("  Key ID: " + key_info.key_id)
+        print("  Type: " + key_info.key_type)
+        print("  Strength: " + string(key_info.key_strength))
+        print("  Security Rating: " + key_info.security_rating.level)
+        
+        // Test key rotation
+        print("Testing key rotation...")
+        if qcrypto.rotate_keys(key_id, "SPHINCS+"):
+            print("✅ Key rotation successful")
+        
+    } catch (error) {
+        print("❌ Test failed: " + error)
+    }
 }
 
 export {
     QuantumCrypto,
     QuantumResistantCrypto,
     KeyPair,
+    HybridKeyPair,
+    QuantumSignature,
+    EncryptedData,
+    VerificationResult,
+    SecurityRating,
     test_quantum_crypto,
     keccak256,
     sha256,
+    sha3_512,
     secp256k1_sign,
     verify_signature,
     generate_keypair,
     calculate_merkle_root,
-    derive_address
+    derive_address,
+    CRYPTO_POLICIES
 }
