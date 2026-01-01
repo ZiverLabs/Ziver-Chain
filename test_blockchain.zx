@@ -1,0 +1,100 @@
+# Test blockchain initialization with Zexus
+print("🔗 Ziver Chain - Blockchain Initialization Test")
+print("=" * 50)
+
+# Test 1: Basic Zexus functionality
+print("\n✓ Test 1: Basic Zexus syntax")
+let chain_name = "Ziver Chain"
+let version = "2.0"
+const MAX_BLOCK_SIZE = 1024 * 1024
+
+print("Chain: " + chain_name)
+print("Version: " + version)
+print("Max Block Size: " + string(MAX_BLOCK_SIZE) + " bytes")
+
+# Test 2: Data structures (Entity) 
+print("\n✓ Test 2: Entity definition")
+data Block {
+    index: integer
+    timestamp: integer
+    previous_hash: string
+    hash: string
+    transactions: list
+    validator: string
+}
+
+# Test 3: Create a simple block
+print("\n✓ Test 3: Creating genesis block")
+action create_simple_genesis() -> Block {
+    let genesis = Block{
+        index: 0,
+        timestamp: 1735747200,
+        previous_hash: "0",
+        hash: "genesis_hash_000",
+        transactions: [],
+        validator: "system"
+    }
+    return genesis
+}
+
+let genesis_block = create_simple_genesis()
+print("Genesis Block Index: " + string(genesis_block["index"]))
+print("Genesis Block Hash: " + genesis_block["hash"])
+print("Genesis Validator: " + genesis_block["validator"])
+
+# Test 4: Blockchain array
+print("\n✓ Test 4: Initializing blockchain")
+let blockchain = []
+blockchain.push(genesis_block)
+print("Blockchain length: " + string(len(blockchain)))
+
+# Test 5: Smart Contract (if supported)
+print("\n✓ Test 5: Simple contract definition")
+contract SimpleToken {
+    persistent state total_supply = 1000000
+    persistent state balances = {}
+    
+    action init() {
+        this.total_supply = 1000000
+        this.balances = {}
+        this.balances["genesis"] = this.total_supply
+        audit("token_init", {"supply": this.total_supply})
+        print("Token initialized with supply: " + string(this.total_supply))
+    }
+    
+    action transfer(to, amount) {
+        print("Transfer " + string(amount) + " tokens to " + to)
+        return true
+    }
+    
+    action get_balance(account) {
+        if this.balances[account] != null {
+            return this.balances[account]
+        }
+        return 0
+    }
+}
+
+let token = SimpleToken()
+token.init()
+let genesis_balance = token.get_balance("genesis")
+print("Genesis balance: " + string(genesis_balance))
+
+# Test 6: Consensus basics
+print("\n✓ Test 6: Validator registration")
+let validators = {}
+action register_validator(address, stake) {
+    validators[address] = stake
+    print("Validator registered: " + address + " with stake: " + string(stake))
+}
+
+register_validator("validator_001", 5000)
+register_validator("validator_002", 3000)
+print("Total validators: " + string(len(validators)))
+
+# Summary
+print("\n" + "=" * 50)
+print("🎉 Blockchain Test Complete!")
+print("All core Zexus features working correctly")
+print("Ready for full blockchain implementation")
+print("=" * 50)

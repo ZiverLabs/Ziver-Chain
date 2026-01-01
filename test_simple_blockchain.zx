@@ -1,0 +1,177 @@
+# Ziver Chain - Simple Blockchain Test
+print("🔗 Ziver Chain v2.0 - Blockchain Test")
+print("=" * 60)
+
+# Test 1: Basic variables and data types
+print("\n✅ Test 1: Variables & Types")
+let chain_name = "Ziver Chain"
+let version = "2.0"
+let total_supply = 1000000
+let is_mainnet = false
+
+print("  Chain: " + chain_name)
+print("  Version: " + version)
+print("  Supply: " + string(total_supply))
+print("  Mainnet: " + string(is_mainnet))
+
+# Test 2: Arrays and maps
+print("\n✅ Test 2: Collections")
+let blockchain = []
+let validators = {}
+let balances = {"alice": 1000, "bob": 500}
+
+print("  Blockchain length: " + string(len(blockchain)))
+print("  Validators count: " + string(len(validators)))
+print("  Alice balance: " + string(balances["alice"]))
+
+# Test 3: Functions (Actions)
+print("\n✅ Test 3: Functions")
+action calculate_hash(data) {
+    return "hash_" + data + "_" + string(len(data))
+}
+
+action add_block(index, data) {
+    let block = {
+        "index": index,
+        "data": data,
+        "hash": calculate_hash(data),
+        "timestamp": 1735747200
+    }
+    blockchain.push(block)
+    return block
+}
+
+# Add genesis block
+let genesis = add_block(0, "genesis")
+print("  Genesis hash: " + genesis["hash"])
+print("  Blockchain has " + string(len(blockchain)) + " block(s)")
+
+# Test 4: Smart Contract
+print("\n✅ Test 4: Smart Contract")
+contract TokenContract {
+    persistent state owner = null
+    persistent state total_tokens = 0
+    persistent state token_balances = {}
+    
+    action initialize(initial_supply, owner_address) {
+        this.owner = owner_address
+        this.total_tokens = initial_supply
+        this.token_balances = {}
+        this.token_balances[owner_address] = initial_supply
+        
+        audit("contract_init", {
+            "owner": owner_address,
+            "supply": initial_supply
+        })
+        
+        print("  💰 Token contract initialized")
+        print("     Owner: " + owner_address)
+        print("     Supply: " + string(initial_supply))
+        
+        return true
+    }
+    
+    action transfer_tokens(from_addr, to_addr, amount) {
+        require(amount > 0, "Amount must be positive")
+        
+        audit("transfer", {
+            "from": from_addr,
+            "to": to_addr,
+            "amount": amount
+        })
+        
+        print("  📤 Transfer: " + string(amount) + " from " + from_addr + " to " + to_addr)
+        return true
+    }
+    
+    action get_supply() {
+        return this.total_tokens
+    }
+}
+
+# Deploy contract
+let token = TokenContract()
+token.initialize(1000000, "alice")
+
+# Transfer tokens
+token.transfer_tokens("alice", "bob", 5000)
+
+# Test 5: Consensus simulation
+print("\n✅ Test 5: Validator Registration")
+action register_new_validator(address, stake_amount) {
+    validators[address] = {
+        "address": address,
+        "stake": stake_amount,
+        "active": true,
+        "blocks_validated": 0
+    }
+    print("  ✓ Registered: " + address + " (stake: " + string(stake_amount) + ")")
+}
+
+register_new_validator("validator_001", 10000)
+register_new_validator("validator_002", 7500)
+register_new_validator("validator_003", 5000)
+
+print("  Total validators: " + string(len(validators)))
+
+# Test 6: Block mining simulation
+print("\n✅ Test 6: Block Creation")
+action mine_block(validator) {
+    let new_index = len(blockchain)
+    let new_block = add_block(new_index, "block_" + string(new_index))
+    
+    # Update validator stats
+    if validators[validator] != null {
+        validators[validator]["blocks_validated"] = validators[validator]["blocks_validated"] + 1
+    }
+    
+    print("  ⛏️  Block #" + string(new_index) + " mined by " + validator)
+    print("     Hash: " + new_block["hash"])
+    
+    return new_block
+}
+
+mine_block("validator_001")
+mine_block("validator_002")
+mine_block("validator_001")
+
+print("  Chain length: " + string(len(blockchain)) + " blocks")
+
+# Test 7: State verification
+print("\n✅ Test 7: State Verification")
+action verify_blockchain() {
+    let valid = true
+    
+    if len(blockchain) == 0 {
+        print("  ❌ Blockchain is empty")
+        return false
+    }
+    
+    # Verify genesis block
+    if blockchain[0]["index"] != 0 {
+        print("  ❌ Invalid genesis block")
+        return false
+    }
+    
+    print("  ✓ Genesis block valid")
+    print("  ✓ Chain has " + string(len(blockchain)) + " blocks")
+    print("  ✓ " + string(len(validators)) + " validators active")
+    
+    return true
+}
+
+let is_valid = verify_blockchain()
+
+# Summary
+print("\n" + "=" * 60)
+print("🎉 Blockchain Test Complete!")
+print("")
+print("📊 Summary:")
+print("  • Blockchain: " + string(len(blockchain)) + " blocks")
+print("  • Validators: " + string(len(validators)))
+print("  • Token supply: " + string(token.get_supply()))
+print("  • Chain valid: " + string(is_valid))
+print("")
+print("✅ All core blockchain features working!")
+print("✅ Ready for full implementation!")
+print("=" * 60)

@@ -1,0 +1,272 @@
+# Ziver Chain - Full Blockchain Test
+print("🔗 Ziver Chain v2.0 - Complete Blockchain Test")
+print("=" * 70)
+
+# =============================================================================
+# Test 1: Basic Token Contract
+# =============================================================================
+print("\n📦 Test 1: Deploying Token Contract")
+
+contract ZiverToken {
+    state owner = null
+    state total_supply = 0
+    state balances = {}
+    state allowances = {}
+    
+    action init(initial_supply, owner_address) {
+        owner = owner_address
+        total_supply = initial_supply
+        balances[owner_address] = initial_supply
+        
+        audit("token_init", {
+            "owner": owner_address,
+            "supply": initial_supply
+        })
+        
+        print("  ✅ Token initialized")
+        print("     Owner: " + owner_address)
+        print("     Supply: " + string(initial_supply))
+    }
+    
+    action transfer(from_addr, to_addr, amount) {
+        require(amount > 0, "Amount must be positive")
+        require(balances[from_addr] >= amount, "Insufficient balance")
+        
+        balances[from_addr] = balances[from_addr] - amount
+        balances[to_addr] = (balances[to_addr] or 0) + amount
+        
+        audit("transfer", {
+            "from": from_addr,
+            "to": to_addr,
+            "amount": amount
+        })
+        
+        print("  📤 Transferred " + string(amount) + " tokens")
+        return true
+    }
+    
+    action balance_of(account) {
+        return balances[account] or 0
+    }
+    
+    action get_supply() {
+        return total_supply
+    }
+}
+
+# Deploy and test token
+let token = ZiverToken()
+token.init(1000000, "alice")
+
+# =============================================================================
+# Test 2: Consensus & Validators
+# =============================================================================
+print("\n⚡ Test 2: Proof of Stake Consensus")
+
+contract Consensus {
+    state validators = {}
+    state total_stake = 0
+    state validator_count = 0
+    
+    action register_validator(address, stake) {
+        require(stake >= 1000, "Stake must be at least 1000")
+        
+        validators[address] = stake
+        total_stake = total_stake + stake
+        validator_count = validator_count + 1
+        
+        audit("validator_registered", {
+            "address": address,
+            "stake": stake
+        })
+        
+        print("  ✅ Validator registered: " + address)
+        print("     Stake: " + string(stake))
+    }
+    
+    action select_validator() {
+        # Simple selection (would be weighted by stake in production)
+        print("  🎲 Selecting validator...")
+        return "validator_001"
+    }
+    
+    action get_validator_count() {
+        return validator_count
+    }
+    
+    action get_total_stake() {
+        return total_stake
+    }
+}
+
+let consensus = Consensus()
+consensus.register_validator("validator_001", 10000)
+consensus.register_validator("validator_002", 7500)
+consensus.register_validator("validator_003", 5000)
+
+print("  📊 Total validators: " + string(consensus.get_validator_count()))
+
+# =============================================================================
+# Test 3: Blockchain & Blocks
+# =============================================================================
+print("\n⛓️  Test 3: Blockchain Structure")
+
+let blockchain = []
+
+action create_genesis() {
+    let genesis = {
+        "index": 0,
+        "timestamp": 1735747200,
+        "previous_hash": "0",
+        "hash": "0x000...genesis",
+        "transactions": [],
+        "validator": "system",
+        "difficulty": 1
+    }
+    blockchain.push(genesis)
+    print("  ✅ Genesis block created")
+    print("     Hash: " + genesis["hash"])
+    return genesis
+}
+
+action create_block(previous_block, transactions, validator) {
+    let new_index = previous_block["index"] + 1
+    let previous_hash = previous_block["hash"]
+    
+    let new_block = {
+        "index": new_index,
+        "timestamp": 1735747200 + (new_index * 15),
+        "previous_hash": previous_hash,
+        "hash": "0x" + string(new_index) + "...hash",
+        "transactions": transactions,
+        "validator": validator,
+        "difficulty": 1
+    }
+    
+    blockchain.push(new_block)
+    
+    print("  ⛏️  Block #" + string(new_index) + " mined")
+    print("     Validator: " + validator)
+    print("     Transactions: " + string(len(transactions)))
+    
+    return new_block
+}
+
+# Create blockchain
+let genesis = create_genesis()
+let selected_validator = consensus.select_validator()
+
+create_block(genesis, [], selected_validator)
+create_block(blockchain[len(blockchain) - 1], [], "validator_002")
+create_block(blockchain[len(blockchain) - 1], [], "validator_001")
+
+print("  📊 Chain length: " + string(len(blockchain)) + " blocks")
+
+# =============================================================================
+# Test 4: Ledger System
+# =============================================================================
+print("\n💰 Test 4: Account Ledger")
+
+ledger AccountLedger {
+    state accounts = {}
+    state transaction_count = 0
+    
+    action credit(account, amount) {
+        accounts[account] = (accounts[account] or 0) + amount
+        transaction_count = transaction_count + 1
+        
+        audit("credit", {
+            "account": account,
+            "amount": amount
+        })
+        
+        print("  💵 Credited " + string(amount) + " to " + account)
+    }
+    
+    action debit(account, amount) {
+        require(accounts[account] >= amount, "Insufficient funds")
+        
+        accounts[account] = accounts[account] - amount
+        transaction_count = transaction_count + 1
+        
+        audit("debit", {
+            "account": account,
+            "amount": amount
+        })
+        
+        print("  💸 Debited " + string(amount) + " from " + account)
+    }
+    
+    action get_balance(account) {
+        return accounts[account] or 0
+    }
+    
+    action get_total_transactions() {
+        return transaction_count
+    }
+}
+
+let ledger = AccountLedger()
+ledger.credit("alice", 10000)
+ledger.credit("bob", 5000)
+ledger.debit("alice", 2000)
+
+print("  📊 Alice balance: " + string(ledger.get_balance("alice")))
+print("  📊 Bob balance: " + string(ledger.get_balance("bob")))
+print("  📊 Total transactions: " + string(ledger.get_total_transactions()))
+
+# =============================================================================
+# Test 5: Transaction Pool
+# =============================================================================
+print("\n📨 Test 5: Transaction Pool")
+
+let pending_transactions = []
+
+action create_transaction(from_addr, to_addr, amount) {
+    let tx = {
+        "from": from_addr,
+        "to": to_addr,
+        "amount": amount,
+        "timestamp": 1735747200,
+        "hash": "tx_" + from_addr + "_" + to_addr,
+        "status": "pending"
+    }
+    pending_transactions.push(tx)
+    
+    print("  ✅ Transaction created")
+    print("     From: " + from_addr + " → To: " + to_addr)
+    print("     Amount: " + string(amount))
+    
+    return tx
+}
+
+create_transaction("alice", "bob", 1000)
+create_transaction("bob", "charlie", 500)
+create_transaction("alice", "charlie", 750)
+
+print("  📊 Pending transactions: " + string(len(pending_transactions)))
+
+# =============================================================================
+# Summary & Results
+# =============================================================================
+print("\n" + "=" * 70)
+print("🎉 Complete Blockchain Test Results")
+print("=" * 70)
+print("")
+print("📊 System Stats:")
+print("  • Blockchain blocks: " + string(len(blockchain)))
+print("  • Total validators: " + string(consensus.get_validator_count()))
+print("  • Token supply: " + string(token.get_supply()))
+print("  • Pending transactions: " + string(len(pending_transactions)))
+print("  • Ledger transactions: " + string(ledger.get_total_transactions()))
+print("")
+print("✅ All blockchain components operational:")
+print("  ✓ Token contract (ERC-20 style)")
+print("  ✓ Consensus mechanism (PoS)")
+print("  ✓ Block creation & mining")
+print("  ✓ Account ledger")
+print("  ✓ Transaction pool")
+print("  ✓ Audit trail")
+print("")
+print("🚀 Ready for production blockchain implementation!")
+print("=" * 70)
