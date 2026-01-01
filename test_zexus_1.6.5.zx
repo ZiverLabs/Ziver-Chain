@@ -1,0 +1,213 @@
+# Zexus 1.6.5 - Comprehensive Blockchain Test
+print("🔗 Zexus 1.6.5 - Complete Blockchain Verification")
+print("=" * 70)
+
+# =============================================================================
+# Test 1: Entity/Data Types (SHOULD BE FIXED)
+# =============================================================================
+print("\n✅ Test 1: Entity/Data Property Access")
+
+data Block {
+    index: integer
+    hash: string
+    validator: string
+}
+
+let genesis = Block{
+    index: 0,
+    hash: "0x000...genesis",
+    validator: "system"
+}
+
+let idx = genesis["index"]
+let hash = genesis["hash"]
+let validator = genesis["validator"]
+
+print("  Block index: " + string(idx))
+print("  Block hash: " + hash)
+print("  Block validator: " + validator)
+
+if idx == 0 and hash == "0x000...genesis" and validator == "system" {
+    print("  ✅ PASS: Entity property access working!")
+} else {
+    print("  ❌ FAIL: Entity properties not accessible")
+}
+
+# =============================================================================
+# Test 2: Smart Contract with Simple State
+# =============================================================================
+print("\n✅ Test 2: Smart Contract State Persistence")
+
+contract SimpleCounter {
+    state count = 0
+    
+    action increment() {
+        count = count + 1
+        print("  Count incremented to: " + string(count))
+    }
+    
+    action get_count() {
+        return count
+    }
+}
+
+let counter = SimpleCounter()
+counter.increment()
+counter.increment()
+counter.increment()
+let final_count = counter.get_count()
+
+print("  Final count: " + string(final_count))
+
+if final_count == 3 {
+    print("  ✅ PASS: Contract state persists across calls!")
+} else {
+    print("  ❌ FAIL: Contract state not persisting (expected 3, got " + string(final_count) + ")")
+}
+
+# =============================================================================
+# Test 3: Token Contract with Map State
+# =============================================================================
+print("\n✅ Test 3: Token Contract with Balance Tracking")
+
+contract TokenContract {
+    state total_supply = 1000000
+    state balances = {}
+    
+    action initialize(owner) {
+        balances[owner] = total_supply
+        print("  Initialized with owner: " + owner)
+    }
+    
+    action transfer(from, to, amount) {
+        # Get current balances
+        let from_balance = 0
+        if balances[from] != null {
+            from_balance = balances[from]
+        }
+        
+        let to_balance = 0
+        if balances[to] != null {
+            to_balance = balances[to]
+        }
+        
+        # Update balances
+        balances[from] = from_balance - amount
+        balances[to] = to_balance + amount
+        
+        print("  Transferred " + string(amount) + " from " + from + " to " + to)
+    }
+    
+    action balance_of(account) {
+        if balances[account] != null {
+            return balances[account]
+        }
+        return 0
+    }
+}
+
+let token = TokenContract()
+token.initialize("alice")
+let alice_initial = token.balance_of("alice")
+print("  Alice initial balance: " + string(alice_initial))
+
+token.transfer("alice", "bob", 50000)
+let alice_after = token.balance_of("alice")
+let bob_after = token.balance_of("bob")
+
+print("  Alice after transfer: " + string(alice_after))
+print("  Bob after transfer: " + string(bob_after))
+
+if alice_after == 950000 and bob_after == 50000 {
+    print("  ✅ PASS: Token transfers working perfectly!")
+} else {
+    print("  ❌ FAIL: Token balances incorrect")
+    print("     Expected: Alice=950000, Bob=50000")
+    print("     Got: Alice=" + string(alice_after) + ", Bob=" + string(bob_after))
+}
+
+# =============================================================================
+# Test 4: Using 'from' and 'to' as Parameters (SHOULD BE FIXED)
+# =============================================================================
+print("\n✅ Test 4: Using 'from' and 'to' as Parameter Names")
+
+let accounts = {"alice": 1000, "bob": 500}
+
+action transfer_funds(from, to, amount) {
+    accounts[from] = accounts[from] - amount
+    accounts[to] = accounts[to] + amount
+    print("  Sent " + string(amount) + " from " + from + " to " + to)
+}
+
+transfer_funds("alice", "bob", 200)
+let alice_balance = accounts["alice"]
+let bob_balance = accounts["bob"]
+
+print("  Alice: " + string(alice_balance) + ", Bob: " + string(bob_balance))
+
+if alice_balance == 800 and bob_balance == 700 {
+    print("  ✅ PASS: 'from' and 'to' work as parameters!")
+} else {
+    print("  ❌ FAIL: Parameter names issue")
+}
+
+# =============================================================================
+# Test 5: Module-Level Variable Reassignment (SHOULD BE FIXED)
+# =============================================================================
+print("\n✅ Test 5: Module Variable Reassignment")
+
+let pending_txs = [1, 2, 3, 4, 5]
+print("  Initial pending txs: " + string(len(pending_txs)))
+
+action clear_pending() {
+    pending_txs = []
+}
+
+clear_pending()
+print("  After clearing: " + string(len(pending_txs)))
+
+if len(pending_txs) == 0 {
+    print("  ✅ PASS: Module variable reassignment works!")
+} else {
+    print("  ❌ FAIL: Cannot reassign module variables")
+}
+
+# =============================================================================
+# Test 6: Multiple Map Assignments (SHOULD BE FIXED)
+# =============================================================================
+print("\n✅ Test 6: Multiple Consecutive Map Assignments")
+
+let storage = {}
+
+action multi_assign(key1, val1, key2, val2) {
+    storage[key1] = val1
+    storage[key2] = val2
+    print("  Assigned: " + key1 + "=" + string(val1) + ", " + key2 + "=" + string(val2))
+}
+
+multi_assign("x", 100, "y", 200)
+let x_val = storage["x"]
+let y_val = storage["y"]
+
+print("  Storage x: " + string(x_val) + ", y: " + string(y_val))
+
+if x_val == 100 and y_val == 200 {
+    print("  ✅ PASS: Multiple map assignments work!")
+} else {
+    print("  ❌ FAIL: Multiple assignments issue")
+}
+
+# =============================================================================
+# Summary
+# =============================================================================
+print("\n" + "=" * 70)
+print("🎉 Zexus 1.6.5 - Blockchain Test Suite Complete!")
+print("=" * 70)
+print("\nExpected Results:")
+print("  1. Entity property access ............ ✅ PASS")
+print("  2. Contract state persistence ......... ✅ PASS")
+print("  3. Token transfers .................... ✅ PASS")
+print("  4. 'from'/'to' parameters ............. ✅ PASS")
+print("  5. Module variable reassignment ....... ✅ PASS")
+print("  6. Multiple map assignments ........... ✅ PASS")
+print("\n" + "=" * 70)
