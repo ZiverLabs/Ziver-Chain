@@ -1,3 +1,0 @@
-print "🚀 ZIVER CHAIN TEST"
-let x = 10 + 20
-print "Result: " + string(x)
