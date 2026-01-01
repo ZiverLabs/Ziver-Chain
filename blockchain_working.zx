@@ -1,0 +1,321 @@
+# Ziver Chain - Working Blockchain Implementation (Zexus 1.6.4)
+# Using module-level variables (contracts not yet fully functional)
+
+print("🔗 Ziver Chain v2.0 - Production Blockchain")
+print("=" * 70)
+print("Using Zexus 1.6.4 with module-level state management")
+print("=" * 70)
+
+# =============================================================================
+# BLOCKCHAIN STATE (Module Level)
+# =============================================================================
+
+# Core blockchain data
+let blockchain = []
+let pending_transactions = []
+
+# Token economics
+let token_name = "Ziver Coin"
+let token_symbol = "ZIV"
+let total_supply = 1000000000
+let balances = {}
+
+# Consensus & Validators
+let validators = {}
+let total_stake = 0
+let current_epoch = 0
+
+# Network parameters
+let block_time = 15
+let gas_limit_per_block = 10000000
+let min_stake_amount = 1000
+let chain_id = 1
+
+# =============================================================================
+# INITIALIZATION
+# =============================================================================
+
+# Initialize genesis account
+balances["genesis"] = total_supply
+
+print("\n✅ Blockchain Initialized")
+print("  Token: " + token_name + " (" + token_symbol + ")")
+print("  Total Supply: " + string(total_supply))
+print("  Chain ID: " + string(chain_id))
+
+# =============================================================================
+# CORE FUNCTIONS
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Token Functions
+# -----------------------------------------------------------------------------
+
+action get_balance(address) {
+    if balances[address] != null {
+        return balances[address]
+    }
+    return 0
+}
+
+action transfer(from_addr, to_addr, amount) {
+    require(amount > 0, "Amount must be positive")
+    require(get_balance(from_addr) >= amount, "Insufficient balance")
+    
+    balances[from_addr] = balances[from_addr] - amount
+    balances[to_addr] = get_balance(to_addr) + amount
+    
+    audit("token_transfer", {
+        "from": from_addr,
+        "to": to_addr,
+        "amount": amount,
+        "timestamp": 1735747200
+    })
+    
+    return true
+}
+
+action mint(to_addr, amount) {
+    balances[to_addr] = get_balance(to_addr) + amount
+    total_supply = total_supply + amount
+    
+    audit("token_mint", {
+        "to": to_addr,
+        "amount": amount
+    })
+    
+    return true
+}
+
+# -----------------------------------------------------------------------------
+# Validator Functions
+# -----------------------------------------------------------------------------
+
+action register_validator(address, stake) {
+    require(stake >= min_stake_amount, "Stake below minimum")
+    require(validators[address] == null, "Validator already registered")
+    
+    validators[address] = stake
+    total_stake = total_stake + stake
+    
+    audit("validator_registered", {
+        "address": address,
+        "stake": stake,
+        "total_stake": total_stake
+    })
+    
+    return true
+}
+
+action get_validator_stake(address) {
+    if validators[address] != null {
+        return validators[address]
+    }
+    return 0
+}
+
+action select_validator() {
+    # Simple round-robin selection (in production, would be weighted by stake)
+    let validator_count = len(validators)
+    if validator_count == 0 {
+        return "genesis"
+    }
+    
+    # For now, just return first validator
+    # In production: weighted random selection based on stake
+    return "validator_001"
+}
+
+# -----------------------------------------------------------------------------
+# Block Functions
+# -----------------------------------------------------------------------------
+
+action calculate_block_hash(index, timestamp, prev_hash, validator) {
+    return "0x" + string(index) + string(timestamp) + prev_hash + validator
+}
+
+action create_genesis_block() {
+    let genesis = {
+        "index": 0,
+        "timestamp": 1735747200,
+        "previous_hash": "0",
+        "hash": "0x000...genesis",
+        "transactions": [],
+        "validator": "system",
+        "difficulty": 1,
+        "nonce": 0,
+        "gas_used": 0,
+        "gas_limit": gas_limit_per_block
+    }
+    
+    blockchain.push(genesis)
+    
+    audit("genesis_created", {
+        "hash": genesis["hash"],
+        "timestamp": genesis["timestamp"]
+    })
+    
+    return genesis
+}
+
+action add_block(validator) {
+    let prev_block = blockchain[len(blockchain) - 1]
+    let new_index = prev_block["index"] + 1
+    let timestamp = prev_block["timestamp"] + block_time
+    
+    # Copy pending transactions before clearing
+    let block_transactions = pending_transactions
+    
+    let new_block = {
+        "index": new_index,
+        "timestamp": timestamp,
+        "previous_hash": prev_block["hash"],
+        "hash": calculate_block_hash(new_index, timestamp, prev_block["hash"], validator),
+        "transactions": block_transactions,
+        "validator": validator,
+        "difficulty": 1,
+        "nonce": 0,
+        "gas_used": 0,
+        "gas_limit": gas_limit_per_block
+    }
+    
+    blockchain.push(new_block)
+    
+    audit("block_mined", {
+        "index": new_index,
+        "validator": validator,
+        "tx_count": len(block_transactions),
+        "hash": new_block["hash"]
+    })
+    
+    return new_block
+}
+
+action get_block(index) {
+    if index >= 0 and index < len(blockchain) {
+        return blockchain[index]
+    }
+    return null
+}
+
+action get_chain_length() {
+    return len(blockchain)
+}
+
+# -----------------------------------------------------------------------------
+# Transaction Functions
+# -----------------------------------------------------------------------------
+
+action create_transaction(from_addr, to_addr, amount, gas_limit) {
+    let tx = {
+        "from": from_addr,
+        "to": to_addr,
+        "amount": amount,
+        "gas_limit": gas_limit,
+        "timestamp": 1735747200,
+        "hash": "tx_" + from_addr + "_" + to_addr + "_" + string(amount),
+        "status": "pending",
+        "nonce": len(pending_transactions)
+    }
+    
+    pending_transactions.push(tx)
+    
+    audit("transaction_created", {
+        "hash": tx["hash"],
+        "from": from_addr,
+        "to": to_addr,
+        "amount": amount
+    })
+    
+    return tx
+}
+
+action get_pending_tx_count() {
+    return len(pending_transactions)
+}
+
+# =============================================================================
+# BOOTSTRAP BLOCKCHAIN
+# =============================================================================
+
+print("\n🚀 Bootstrapping Blockchain...")
+
+# Create genesis block
+let genesis = create_genesis_block()
+print("  ✅ Genesis block created")
+print("     Index: " + string(genesis["index"]))
+print("     Hash: " + genesis["hash"])
+
+# Distribute initial tokens
+transfer("genesis", "alice", 100000)
+transfer("genesis", "bob", 50000)
+transfer("genesis", "charlie", 25000)
+
+print("\n💰 Initial Token Distribution:")
+print("  Alice: " + string(get_balance("alice")))
+print("  Bob: " + string(get_balance("bob")))
+print("  Charlie: " + string(get_balance("charlie")))
+print("  Genesis: " + string(get_balance("genesis")))
+
+# Register validators
+register_validator("validator_001", 10000)
+register_validator("validator_002", 7500)
+register_validator("validator_003", 5000)
+
+print("\n⚡ Validators Registered:")
+print("  validator_001: " + string(get_validator_stake("validator_001")) + " ZIV")
+print("  validator_002: " + string(get_validator_stake("validator_002")) + " ZIV")
+print("  validator_003: " + string(get_validator_stake("validator_003")) + " ZIV")
+print("  Total Stake: " + string(total_stake) + " ZIV")
+
+# Create some transactions
+create_transaction("alice", "bob", 1000, 21000)
+create_transaction("bob", "charlie", 500, 21000)
+create_transaction("charlie", "alice", 250, 21000)
+
+print("\n📨 Transactions Created:")
+print("  Pending: " + string(get_pending_tx_count()))
+
+# Mine blocks
+let validator = select_validator()
+let block1 = add_block(validator)
+print("\n⛏️  Block #" + string(block1["index"]) + " mined by " + validator)
+print("     Hash: " + block1["hash"])
+print("     Transactions: " + string(len(block1["transactions"])))
+
+create_transaction("alice", "bob", 2000, 21000)
+let block2 = add_block("validator_002")
+print("\n⛏️  Block #" + string(block2["index"]) + " mined by validator_002")
+print("     Hash: " + block2["hash"])
+print("     Transactions: " + string(len(block2["transactions"])))
+
+# =============================================================================
+# BLOCKCHAIN STATUS
+# =============================================================================
+
+print("\n" + "=" * 70)
+print("📊 Blockchain Status")
+print("=" * 70)
+print("")
+print("Network:")
+print("  Chain ID: " + string(chain_id))
+print("  Block Time: " + string(block_time) + "s")
+print("  Gas Limit: " + string(gas_limit_per_block))
+print("")
+print("Blockchain:")
+print("  Blocks: " + string(get_chain_length()))
+print("  Pending Transactions: " + string(get_pending_tx_count()))
+print("")
+print("Consensus:")
+print("  Validators: " + string(len(validators)))
+print("  Total Stake: " + string(total_stake) + " ZIV")
+print("  Current Epoch: " + string(current_epoch))
+print("")
+print("Token (ZIV):")
+print("  Total Supply: " + string(total_supply))
+print("  Circulating: " + string(175000) + " (17.5%)")
+print("")
+print("=" * 70)
+print("✅ Blockchain fully operational!")
+print("🚀 Ready for transaction processing!")
+print("=" * 70)

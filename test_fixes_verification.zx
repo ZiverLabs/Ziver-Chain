@@ -1,0 +1,215 @@
+# Zexus 1.6.4 - Fix Verification Test
+print("🔗 Zexus 1.6.4 - Fix Verification Test")
+print("=" * 70)
+
+# =============================================================================
+# Test 1: Entity Property Access (Issue 1.1) - SHOULD BE FIXED
+# =============================================================================
+print("\n✅ Test 1: Entity Property Access")
+
+data Block {
+    index: integer
+    hash: string
+    validator: string
+}
+
+let block = Block{
+    index: 42,
+    hash: "0x123abc",
+    validator: "alice"
+}
+
+print("  Block index: " + string(block["index"]))
+print("  Block hash: " + block["hash"])
+print("  Block validator: " + block["validator"])
+
+if block["index"] == 42 {
+    print("  ✅ Entity property access WORKING!")
+} else {
+    print("  ❌ Entity property access FAILED")
+}
+
+# =============================================================================
+# Test 2: Map len() Function (Issue 2.1) - SHOULD BE FIXED
+# =============================================================================
+print("\n✅ Test 2: Map len() Function")
+
+let validators = {}
+validators["v1"] = 1000
+validators["v2"] = 2000
+validators["v3"] = 3000
+
+let count = len(validators)
+print("  Validator count: " + string(count))
+
+if count == 3 {
+    print("  ✅ Map len() WORKING!")
+} else {
+    print("  ❌ Map len() FAILED - expected 3, got " + string(count))
+}
+
+# =============================================================================
+# Test 3: Map State Persistence (Issue 4.1) - SHOULD BE FIXED  
+# =============================================================================
+print("\n✅ Test 3: Map State Persistence Across Functions")
+
+let balances = {"alice": 1000}
+
+action transfer(from_addr, to_addr, amount) {
+    balances[from_addr] = balances[from_addr] - amount
+    
+    let recipient_balance = 0
+    if balances[to_addr] != null {
+        recipient_balance = balances[to_addr]
+    }
+    balances[to_addr] = recipient_balance + amount
+    
+    return true
+}
+
+action get_balance(addr) {
+    if balances[addr] != null {
+        return balances[addr]
+    }
+    return 0
+}
+
+print("  Initial - Alice: " + string(get_balance("alice")))
+transfer("alice", "bob", 300)
+let alice_final = get_balance("alice")
+let bob_final = get_balance("bob")
+print("  After transfer - Alice: " + string(alice_final) + ", Bob: " + string(bob_final))
+
+if alice_final == 700 and bob_final == 300 {
+    print("  ✅ Map state persistence WORKING!")
+} else {
+    print("  ❌ Map state persistence FAILED")
+    print("     Expected: Alice=700, Bob=300")
+    print("     Got: Alice=" + string(alice_final) + ", Bob=" + string(bob_final))
+}
+
+# =============================================================================
+# Test 4: Contract State Assignment (Issues 1.2, 2.2) - SHOULD BE FIXED
+# =============================================================================
+print("\n✅ Test 4: Contract State Assignment")
+
+contract SimpleToken {
+    state owner = "genesis"
+    state total_supply = 1000000
+    state token_balances = {}
+    
+    action init(owner_addr) {
+        owner = owner_addr
+        token_balances[owner_addr] = total_supply
+        
+        print("  Token initialized")
+        print("    Owner: " + owner)
+        print("    Supply: " + string(total_supply))
+    }
+    
+    action get_balance(addr) {
+        if token_balances[addr] != null {
+            return token_balances[addr]
+        }
+        return 0
+    }
+}
+
+let token = SimpleToken()
+token.init("alice")
+let alice_tokens = token.get_balance("alice")
+print("  Alice token balance: " + string(alice_tokens))
+
+if alice_tokens == 1000000 {
+    print("  ✅ Contract state assignment WORKING!")
+} else {
+    print("  ❌ Contract state assignment FAILED")
+    print("     Expected: 1000000, Got: " + string(alice_tokens))
+}
+
+# =============================================================================
+# Test 5: Nested Maps in Contracts (Issue 3.2) - SHOULD BE FIXED
+# =============================================================================
+print("\n✅ Test 5: Nested Maps in Contract State")
+
+contract ValidatorRegistry {
+    state validators = {}
+    state count = 0
+    
+    action register(addr, stake, active) {
+        validators[addr] = {
+            "stake": stake,
+            "active": active,
+            "blocks": 0
+        }
+        count = count + 1
+        
+        print("  Registered validator: " + addr)
+        print("    Stake: " + string(stake))
+    }
+    
+    action get_count() {
+        return count
+    }
+}
+
+let registry = ValidatorRegistry()
+registry.register("validator_001", 10000, true)
+registry.register("validator_002", 7500, true)
+let validator_count = registry.get_count()
+print("  Total validators: " + string(validator_count))
+
+if validator_count == 2 {
+    print("  ✅ Nested maps in contracts WORKING!")
+} else {
+    print("  ❌ Nested maps in contracts FAILED")
+    print("     Expected: 2, Got: " + string(validator_count))
+}
+
+# =============================================================================
+# Test 6: State Variable Type Preservation (Issue 3.1) - SHOULD BE FIXED
+# =============================================================================
+print("\n✅ Test 6: State Variable Type Preservation")
+
+contract StakeManager {
+    state min_stake = 1000
+    state max_stake = 100000
+    
+    action can_stake(amount) {
+        if amount >= min_stake and amount <= max_stake {
+            print("  ✅ Stake amount " + string(amount) + " is valid")
+            return true
+        } else {
+            print("  ❌ Stake amount " + string(amount) + " is invalid")
+            return false
+        }
+    }
+}
+
+let stake_mgr = StakeManager()
+let result1 = stake_mgr.can_stake(5000)
+let result2 = stake_mgr.can_stake(500)
+
+if result1 == true and result2 == false {
+    print("  ✅ State variable type preservation WORKING!")
+} else {
+    print("  ❌ State variable type preservation FAILED")
+}
+
+# =============================================================================
+# Summary
+# =============================================================================
+print("\n" + "=" * 70)
+print("🎉 Zexus 1.6.4 Fix Verification Complete!")
+print("=" * 70)
+print("")
+print("Test Results:")
+print("  1. Entity property access .............. Expected: ✅")
+print("  2. Map len() function .................. Expected: ✅")
+print("  3. Map state persistence ............... Expected: ✅")
+print("  4. Contract state assignment ........... Expected: ✅")
+print("  5. Nested maps in contracts ............ Expected: ✅")
+print("  6. State variable type preservation .... Expected: ✅")
+print("")
+print("🚀 All critical blockchain issues should be resolved!")
+print("=" * 70)
