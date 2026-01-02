@@ -110,7 +110,7 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
     entity HealthComponents {
         consensus: ComponentHealth
         networking: ComponentHealth
-        storage: ComponentHealth
+        data_storage: ComponentHealth
         computation: ComponentHealth
         security: ComponentHealth
     }
@@ -602,7 +602,7 @@ contract SelfEvolvingState implements SelfEvolvingProtocol {
         let components = HealthComponents{
             consensus: this.assess_consensus_health(metrics),
             networking: this.assess_networking_health(metrics),
-            storage: this.assess_storage_health(metrics),
+            data_storage: this.assess_storage_health(metrics),
             computation: this.assess_computation_health(metrics),
             security: this.assess_security_health(metrics)
         }

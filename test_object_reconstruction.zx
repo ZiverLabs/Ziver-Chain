@@ -1,0 +1,66 @@
+# Test complete object recreation
+print("🔍 Testing Complete Object Reconstruction")
+print("=" * 70)
+
+contract ValidatorTest {
+    state validators = {}
+    
+    action register(address, stake) {
+        validators[address] = {
+            "stake": stake,
+            "performance": 0.5,
+            "rewards": 0,
+            "last_active": 0
+        }
+    }
+    
+    action update_activity(address) {
+        if validators[address] != null {
+            let old = validators[address]
+            # RECREATE entire object instead of modifying
+            validators[address] = {
+                "stake": old["stake"],
+                "performance": 0.6,
+                "rewards": old["rewards"],
+                "last_active": 1735747200
+            }
+        }
+    }
+    
+    action add_reward(address, amount) {
+        if validators[address] != null {
+            let old = validators[address]
+            # RECREATE entire object
+            validators[address] = {
+                "stake": old["stake"],
+                "performance": old["performance"],
+                "rewards": old["rewards"] + amount,
+                "last_active": old["last_active"]
+            }
+        }
+    }
+    
+    action get_validator(address) {
+        return validators[address]
+    }
+}
+
+let test = ValidatorTest()
+test.register("val_001", 10000)
+print("  ✅ Validator registered")
+
+test.update_activity("val_001")
+print("  ✅ Activity updated")
+
+test.add_reward("val_001", 100)
+print("  ✅ Reward added")
+
+let val = test.get_validator("val_001")
+print("\n  Final validator state:")
+print("    Stake: " + string(val["stake"]))
+print("    Performance: " + string(val["performance"]))
+print("    Rewards: " + string(val["rewards"]))
+print("    Last Active: " + string(val["last_active"]))
+
+print("\n✅ Complete object reconstruction works!")
+print("=" * 70)

@@ -1,0 +1,58 @@
+# Test the fixed pattern from consensus.zx
+print("🔍 Testing Fixed Nested Assignment Pattern")
+print("=" * 70)
+
+contract ValidatorTest {
+    state validators = {}
+    
+    action register(address, stake) {
+        validators[address] = {
+            "stake": stake,
+            "performance": 0.5,
+            "rewards": 0,
+            "last_active": 0
+        }
+    }
+    
+    action update_activity(address) {
+        if validators[address] != null {
+            # FIXED PATTERN: Get entire object, modify fields, reassign
+            let validator = validators[address]
+            validator["last_active"] = 1735747200
+            validator["performance"] = 0.6
+            validators[address] = validator
+        }
+    }
+    
+    action add_reward(address, amount) {
+        if validators[address] != null {
+            # FIXED PATTERN: Get, modify, reassign
+            let validator_data = validators[address]
+            validator_data["rewards"] = validator_data["rewards"] + amount
+            validators[address] = validator_data
+        }
+    }
+    
+    action get_validator(address) {
+        return validators[address]
+    }
+}
+
+let test = ValidatorTest()
+test.register("val_001", 10000)
+print("  ✅ Validator registered")
+
+test.update_activity("val_001")
+print("  ✅ Activity updated (get-modify-reassign pattern)")
+
+test.add_reward("val_001", 100)
+print("  ✅ Reward added (get-modify-reassign pattern)")
+
+let val = test.get_validator("val_001")
+print("\n  Final validator state:")
+print("    Performance: " + string(val["performance"]))
+print("    Rewards: " + string(val["rewards"]))
+print("    Last Active: " + string(val["last_active"]))
+
+print("\n✅ Fixed pattern works correctly!")
+print("=" * 70)

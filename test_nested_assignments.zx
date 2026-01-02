@@ -1,0 +1,134 @@
+# Test nested map field assignment patterns
+print("🔍 Testing Nested Map Assignment Patterns")
+print("=" * 70)
+
+# =============================================================================
+# Test 1: Direct nested field assignment (used in consensus.zx)
+# =============================================================================
+print("\n✅ Test 1: Direct nested field assignment")
+
+contract ValidatorRegistry {
+    state validators = {}
+    
+    action register(address, stake) {
+        validators[address] = {
+            "stake": stake,
+            "performance": 0.5,
+            "rewards": 0,
+            "active": true
+        }
+    }
+    
+    action update_performance(address) {
+        # This is the pattern used in consensus.zx line 272
+        validators[address].performance = validators[address].performance + 0.1
+    }
+    
+    action add_reward(address, amount) {
+        # This is the pattern used in consensus.zx line 412
+        validators[address].rewards += amount
+    }
+    
+    action get_validator(address) {
+        return validators[address]
+    }
+}
+
+let registry = ValidatorRegistry()
+registry.register("val_001", 10000)
+
+print("  Initial validator created")
+
+try {
+    registry.update_performance("val_001")
+    print("  ✅ Direct nested field assignment works!")
+} catch error {
+    print("  ❌ Direct nested field assignment failed: " + string(error))
+}
+
+try {
+    registry.add_reward("val_001", 100)
+    print("  ✅ Compound assignment (+=) works!")
+} catch error {
+    print("  ❌ Compound assignment failed: " + string(error))
+}
+
+let val = registry.get_validator("val_001")
+print("  Final performance: " + string(val["performance"]))
+print("  Final rewards: " + string(val["rewards"]))
+
+# =============================================================================
+# Test 2: Get-Modify-Set pattern (what I tried in test)
+# =============================================================================
+print("\n✅ Test 2: Get-Modify-Set pattern")
+
+contract ValidatorRegistry2 {
+    state validators = {}
+    
+    action register(address, stake) {
+        validators[address] = {
+            "stake": stake,
+            "rewards": 0
+        }
+    }
+    
+    action distribute_reward(address, amount) {
+        # This is the pattern I tried that failed
+        let val = validators[address]
+        val["rewards"] = val["rewards"] + amount
+        validators[address] = val
+    }
+}
+
+let registry2 = ValidatorRegistry2()
+registry2.register("val_001", 10000)
+
+try {
+    registry2.distribute_reward("val_001", 100)
+    print("  ✅ Get-Modify-Set pattern works!")
+} catch error {
+    print("  ❌ Get-Modify-Set pattern failed: " + string(error))
+}
+
+# =============================================================================
+# Test 3: Multiple field updates in one action
+# =============================================================================
+print("\n✅ Test 3: Multiple field updates in same action")
+
+contract ValidatorRegistry3 {
+    state validators = {}
+    
+    action register(address, stake) {
+        validators[address] = {
+            "stake": stake,
+            "performance": 0.5,
+            "rewards": 0
+        }
+    }
+    
+    action update_both(address) {
+        # Update multiple fields in same action
+        validators[address].performance = validators[address].performance + 0.1
+        validators[address].rewards = validators[address].rewards + 50
+    }
+}
+
+let registry3 = ValidatorRegistry3()
+registry3.register("val_001", 10000)
+
+try {
+    registry3.update_both("val_001")
+    print("  ✅ Multiple field updates in one action works!")
+} catch error {
+    print("  ❌ Multiple field updates failed: " + string(error))
+}
+
+# =============================================================================
+# Summary
+# =============================================================================
+print("\n" + "=" * 70)
+print("🎯 Test Results Summary")
+print("=" * 70)
+print("\nThis test verifies whether the nested assignment patterns")
+print("used in consensus.zx actually work in Zexus 1.6.6")
+print("=" * 70)

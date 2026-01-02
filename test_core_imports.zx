@@ -1,0 +1,21 @@
+# Quick syntax validation for core files
+print("🔍 Validating Core Files Syntax...")
+
+# Test importing core modules
+print("\n✅ Testing core module imports...")
+
+try {
+    use "src/core/block" as block_module
+    print("  ✅ block.zx - Import OK")
+} catch error {
+    print("  ❌ block.zx - Import failed: " + string(error))
+}
+
+try {
+    use "src/core/crypto" as crypto_module  
+    print("  ✅ crypto.zx - Import OK")
+} catch error {
+    print("  ❌ crypto.zx - Import failed: " + string(error))
+}
+
+print("\n🎉 Core files validation complete!")

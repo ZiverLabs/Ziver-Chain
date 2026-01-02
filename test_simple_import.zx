@@ -1,0 +1,10 @@
+# Simple import test
+print("Testing block.zx import...")
+
+use { create_genesis_block, Block } from "./src/core/block.zx"
+
+print("✅ Import successful!")
+
+let genesis = create_genesis_block()
+print("Genesis block index: " + string(genesis["index"]))
+print("✅ Test complete!")

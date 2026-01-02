@@ -266,13 +266,11 @@ contract PoSConsensus implements ConsensusProtocol {
 
     action update_validator_activity(address: string) {
         if this.validators.has(address) {
-            this.validators[address].last_active = datetime.now().timestamp()
-            
-            // Update performance score
-            this.validators[address].performance = math.min(
-                1.0, 
-                this.validators[address].performance + 0.01
-            )
+            // Get validator, modify, and reassign (Zexus 1.6.6 workaround)
+            let validator = this.validators[address]
+            validator.last_active = datetime.now().timestamp()
+            validator.performance = math.min(1.0, validator.performance + 0.01)
+            this.validators[address] = validator
         }
     }
 
@@ -407,9 +405,11 @@ contract PoSConsensus implements ConsensusProtocol {
             "timestamp": datetime.now().timestamp()
         })
         
-        // Update validator rewards
+        // Update validator rewards (Zexus 1.6.6 workaround)
         if this.validators.has(validator) {
-            this.validators[validator].total_rewards += final_reward
+            let validator_data = this.validators[validator]
+            validator_data.total_rewards = validator_data.total_rewards + final_reward
+            this.validators[validator] = validator_data
         }
 
         audit("block_reward_processed", reward_data)
