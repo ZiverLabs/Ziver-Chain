@@ -1,0 +1,180 @@
+# Zexus 1.6.7 Fix Verification - Critical Tests
+print("=" * 70)
+print("ZEXUS 1.6.7 FIX VERIFICATION")
+print("=" * 70)
+
+# ===========================================================================
+# TEST 1: Nested Map Literal in Contract State (CRITICAL BUG FIX)
+# This was returning NULL in 1.6.6 - PRODUCTION BLOCKER
+# ===========================================================================
+print("\n🔥 TEST 1: Contract State Nested Map Assignment (CRITICAL)")
+print("This was the bug blocking production deployment in 1.6.6")
+
+contract ValidatorRegistry {
+    state validators = {}
+    
+    action add_validator(addr, stake) {
+        # Pattern from consensus.zx line 269 - was returning NULL in 1.6.6
+        validators[addr] = {
+            "stake": stake,
+            "active": true,
+            "votes": 0
+        }
+        return validators[addr]
+    }
+    
+    action get_validator(addr) {
+        return validators[addr]
+    }
+}
+
+let registry = ValidatorRegistry()
+let result1 = registry.add_validator("0xABC", 1000)
+
+print("Adding validator with nested map literal...")
+if result1 == null {
+    print("❌ CRITICAL FAILURE: Nested map returned NULL!")
+    print("   The 1.6.6 bug still exists - NOT PRODUCTION READY")
+} else {
+    print("✅ PASS: Nested map literal works!")
+    print("   Data: " + string(result1))
+    
+    # Verify persistence
+    let stored = registry.get_validator("0xABC")
+    if stored != null and stored["stake"] == 1000 {
+        print("✅ PASS: Data persisted in contract state")
+        print("   Stake: " + string(stored["stake"]))
+        print("   Active: " + string(stored["active"]))
+    } else {
+        print("❌ FAIL: Data not properly persisted")
+    }
+}
+
+# ===========================================================================
+# TEST 2: Keywords as Variable Names  
+# ===========================================================================
+print("\n📝 TEST 2: Keywords as Variable Names")
+
+contract KeywordTest {
+    action test() {
+        let data = "works"
+        let action = 123
+        let block = true
+        return data
+    }
+}
+
+let kt = KeywordTest()
+let kr = kt.test()
+if kr == "works" {
+    print("✅ PASS: Keywords work as variable names")
+} else {
+    print("❌ FAIL: Keywords as variables failed")
+}
+
+# ===========================================================================
+# TEST 3: Standalone Blocks
+# ===========================================================================
+print("\n🔲 TEST 3: Standalone Block Statements")
+
+let x = 10
+let result3 = 0
+
+{
+    let y = x + 5
+    result3 = y * 2
+}
+
+if result3 == 30 {
+    print("✅ PASS: Standalone blocks work (result=" + string(result3) + ")")
+} else {
+    print("❌ FAIL: Standalone block failed (expected 30, got " + string(result3) + ")")
+}
+
+# ===========================================================================
+# TEST 4: Contract References
+# ===========================================================================
+print("\n🔗 TEST 4: Contract-to-Contract References")
+
+contract ContractA {
+    state value = 100
+    action get_value() {
+        return value
+    }
+    action set_value(v) {
+        value = v
+    }
+}
+
+contract ContractB {
+    action test_ref(other) {
+        other.set_value(200)
+        return other.get_value()
+    }
+}
+
+let ca = ContractA()
+let cb = ContractB()
+let cres = cb.test_ref(ca)
+
+if cres == 200 {
+    print("✅ PASS: Contract references work")
+} else {
+    print("❌ FAIL: Contract references failed (expected 200, got " + string(cres) + ")")
+}
+
+# ===========================================================================
+# TEST 5: Consensus.zx Pattern (Real Production Code)
+# ===========================================================================
+print("\n⚡ TEST 5: Production Pattern from consensus.zx")
+
+contract Consensus {
+    state validators = {}
+    
+    action add_validator(addr, stake, pk) {
+        # EXACT pattern from consensus.zx line 269
+        validators[addr] = {
+            "stake": stake,
+            "public_key": pk,
+            "is_active": true,
+            "last_block": 0,
+            "missed_blocks": 0
+        }
+        return validators[addr] != null
+    }
+    
+    action slash(addr, amount) {
+        # Pattern from consensus.zx line 412
+        if addr in validators {
+            let current = validators[addr]["stake"]
+            validators[addr]["stake"] = current - amount
+            validators[addr]["missed_blocks"] = validators[addr]["missed_blocks"] + 1
+            return true
+        }
+        return false
+    }
+}
+
+let cons = Consensus()
+let add_ok = cons.add_validator("0xVAL", 5000, "pk123")
+
+if add_ok {
+    print("✅ PASS: add_validator pattern works (consensus.zx:269)")
+    
+    let slash_ok = cons.slash("0xVAL", 500)
+    if slash_ok {
+        print("✅ PASS: slash_validator pattern works (consensus.zx:412)")
+    } else {
+        print("❌ FAIL: slash pattern failed")
+    }
+} else {
+    print("❌ CRITICAL FAILURE: add_validator failed!")
+    print("   This pattern is used throughout consensus.zx")
+    print("   NOT PRODUCTION READY!")
+}
+
+print("\n" + "=" * 70)
+print("VERIFICATION COMPLETE")
+print("=" * 70)
+print("\nIf all tests passed: Zexus 1.6.7 is PRODUCTION READY! ✅")
+print("If any failed: Report bugs to ZiverLabs team ❌")

@@ -1,18 +1,66 @@
-# Zexus 1.6.6 - Known Limitations & Workarounds
+# Zexus Limitations & Fixes Tracking
 
-**Version:** Zexus 1.6.6  
+**Latest Version Tested:** Zexus 1.6.7  
 **Date:** January 2, 2026  
-**Status:** 🚨 CRITICAL - Affects Production Code
+**Status:** ⚠️ PARTIAL - 1.6.7 has critical runtime bug
+
+---
+
+## 🚨 URGENT: Zexus 1.6.7 Critical Issue
+
+**Status:** 🔴 BROKEN - Do NOT use in production  
+**Bug:** Runtime environment fails to register builtin functions and keywords  
+**Error:** `Error: Identifier 'print' not found`, `Error: Identifier 'let' not found`  
+**Impact:** Code that parses successfully FAILS at runtime  
+**Recommendation:** **STAY ON 1.6.6** until 1.6.7.1/1.6.8 is released  
+**Report:** See [ZEXUS_1.6.7_VERIFICATION_REPORT.md](../ZEXUS_1.6.7_VERIFICATION_REPORT.md)
+
+### What Works in 1.6.7:
+- ✅ Syntax parsing
+- ✅ Contract instantiation  
+- ✅ Token generation
+
+### What's Broken in 1.6.7:
+- ❌ Builtin functions (`print`, `string`, etc.) not found
+- ❌ Keywords (`let`, `const`) not registered in environment
+- ❌ **ALL SCRIPTS FAIL AT RUNTIME**
+
+**Suspected Cause:** The "keywords as variable names" fix broke builtin registration.
 
 ---
 
 ## Table of Contents
 
-1. [Module System Limitations](#module-system-limitations)
-2. [Nested Map Update Limitations](#nested-map-update-limitations)
-3. [Reserved Keywords](#reserved-keywords)
-4. [Impact on Production Files](#impact-on-production-files)
-5. [Workarounds](#workarounds)
+1. [Zexus 1.6.7 Status](#urgent-zexus-167-critical-issue)
+2. [Module System Limitations](#module-system-limitations)
+3. [Nested Map Update Limitations](#nested-map-update-limitations)
+4. [Reserved Keywords](#reserved-keywords)
+5. [Impact on Production Files](#impact-on-production-files)
+6. [Workarounds](#workarounds)
+7. [Version History](#version-history)
+
+---
+
+## Version History
+
+### Zexus 1.6.7 (DO NOT USE)
+- ✅ Fixed: Nested map literal assignment in contract state (DATA keyword parser bug)
+- ✅ Fixed: Keywords as variable names (context-aware lexer)
+- ✅ Fixed: Standalone block statements
+- ✅ Added: Contract-to-contract references (new feature)
+- ❌ **REGRESSION:** Builtin functions and keywords not registered in runtime
+- **Status:** BLOCKED - Cannot verify fixes due to runtime bug
+
+### Zexus 1.6.6 (CURRENT RECOMMENDED VERSION)
+- ✅ All basic patterns work
+- ✅ Module imports work (with workaround)
+- ❌ Nested map updates in contract state return NULL (CRITICAL)
+- ❌ Reserved keyword 'storage' in state.zx (fixed manually)
+- **Status:** STABLE with known workarounds
+
+---
+
+## 1. Zexus 1.6.6 - Module System Limitations
 
 ---
 

@@ -1,0 +1,14 @@
+# Zexus 1.6.7 Nested Map Fix Test
+contract TestContract {
+    state mydata = {}
+    
+    action setdata(k, v) {
+        mydata[k] = {"val": v}
+        return mydata[k]
+    }
+}
+
+let tc = TestContract()
+let res = tc.setdata("key1", 123)
+
+print("Result: " + string(res))

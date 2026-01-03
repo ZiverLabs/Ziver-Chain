@@ -1,0 +1,192 @@
+// Critical Fix Verification for Zexus 1.6.7
+// Tests the nested map literal assignment bug that blocked production
+
+PRINT("Testing Zexus 1.6.7 Critical Fixes\n")
+
+// ==================================================================
+// CRITICAL TEST: Nested Map Literal in Contract State
+// This was returning NULL in 1.6.6 and blocking production
+// ==================================================================
+PRINT("TEST 1: Contract State Nested Map Assignment")
+
+contract ValidatorRegistry {
+    DATA validators = {}
+    
+    ACTION add_validator(addr, stake) {
+        // This exact pattern was failing in 1.6.6
+        validators[addr] = {
+            "stake": stake,
+            "active": TRUE,
+            "votes": 0
+        }
+        RETURN validators[addr]
+    }
+    
+    ACTION get_validator(addr) {
+        RETURN validators[addr]
+    }
+    
+    ACTION update_stake(addr, new_stake) {
+        validators[addr]["stake"] = new_stake
+        RETURN validators[addr]
+    }
+}
+
+registry = ValidatorRegistry()
+
+// Test 1a: Add validator with nested map literal
+result = registry.add_validator("0xABC123", 1000)
+IF result == NULL {
+    PRINT("  ❌ FAIL: Nested map literal returned NULL (bug still exists)")
+} ELSE {
+    PRINT("  ✅ PASS: Nested map literal assignment works")
+    PRINT("    Validator data: " + result)
+}
+
+// Test 1b: Verify persistence
+stored = registry.get_validator("0xABC123")
+IF stored == NULL {
+    PRINT("  ❌ FAIL: Data not persisted in contract state")
+} ELSE {
+    PRINT("  ✅ PASS: Data persisted correctly")
+    PRINT("    Stake: " + stored["stake"])
+    PRINT("    Active: " + stored["active"])
+}
+
+// Test 1c: Nested property update
+updated = registry.update_stake("0xABC123", 2000)
+IF updated["stake"] == 2000 {
+    PRINT("  ✅ PASS: Nested property updates work\n")
+} ELSE {
+    PRINT("  ❌ FAIL: Nested property update failed\n")
+}
+
+// ==================================================================
+// TEST 2: Keywords as Variable Names
+// ==================================================================
+PRINT("TEST 2: Keywords as Variable Names")
+
+contract KeywordTest {
+    ACTION test() {
+        // These were reserved keywords in 1.6.6
+        data = "test"
+        action = 123
+        block = TRUE
+        RETURN data + " " + action + " " + block
+    }
+}
+
+kt = KeywordTest()
+kresult = kt.test()
+IF kresult != NULL {
+    PRINT("  ✅ PASS: Can use keywords as variable names")
+    PRINT("    Result: " + kresult + "\n")
+} ELSE {
+    PRINT("  ❌ FAIL: Keywords as variables failed\n")
+}
+
+// ==================================================================
+// TEST 3: Standalone Blocks
+// ==================================================================
+PRINT("TEST 3: Standalone Block Statements")
+
+x = 10
+result3 = 0
+
+{
+    y = x + 5
+    result3 = y * 2
+}
+
+IF result3 == 30 {
+    PRINT("  ✅ PASS: Standalone blocks execute correctly")
+    PRINT("    Result: " + result3 + "\n")
+} ELSE {
+    PRINT("  ❌ FAIL: Standalone block failed")
+    PRINT("    Expected: 30, Got: " + result3 + "\n")
+}
+
+// ==================================================================
+// TEST 4: Contract-to-Contract References
+// ==================================================================
+PRINT("TEST 4: Contract-to-Contract References")
+
+contract ContractA {
+    DATA value = 100
+    
+    ACTION get_value() {
+        RETURN value
+    }
+    
+    ACTION set_value(v) {
+        value = v
+    }
+}
+
+contract ContractB {
+    ACTION interact(other) {
+        val = other.get_value()
+        other.set_value(200)
+        new_val = other.get_value()
+        RETURN new_val
+    }
+}
+
+ca = ContractA()
+cb = ContractB()
+c_result = cb.interact(ca)
+
+IF c_result == 200 {
+    PRINT("  ✅ PASS: Contract-to-contract references work")
+    PRINT("    Result: " + c_result + "\n")
+} ELSE {
+    PRINT("  ❌ FAIL: Contract references failed\n")
+}
+
+// ==================================================================
+// TEST 5: Consensus.zx Pattern (Real-World Test)
+// ==================================================================
+PRINT("TEST 5: Consensus.zx Validator Pattern")
+
+contract Consensus {
+    DATA validators = {}
+    
+    ACTION add_validator(address, stake, public_key) {
+        // Exact pattern from consensus.zx line 269
+        validators[address] = {
+            "stake": stake,
+            "public_key": public_key,
+            "is_active": TRUE,
+            "last_block": 0,
+            "missed_blocks": 0
+        }
+        RETURN validators[address] != NULL
+    }
+    
+    ACTION slash(address, amount) {
+        // Pattern from consensus.zx line 412
+        IF address IN validators {
+            current = validators[address]["stake"]
+            validators[address]["stake"] = current - amount
+            validators[address]["missed_blocks"] = validators[address]["missed_blocks"] + 1
+            RETURN TRUE
+        }
+        RETURN FALSE
+    }
+}
+
+cons = Consensus()
+
+IF cons.add_validator("0xVALIDATOR", 5000, "pk123") {
+    PRINT("  ✅ PASS: add_validator works (consensus.zx line 269)")
+    
+    IF cons.slash("0xVALIDATOR", 500) {
+        PRINT("  ✅ PASS: slash_validator works (consensus.zx line 412)\n")
+    } ELSE {
+        PRINT("  ❌ FAIL: slash_validator failed\n")
+    }
+} ELSE {
+    PRINT("  ❌ FAIL: add_validator failed (PRODUCTION BLOCKER)\n")
+}
+
+PRINT("=== VERIFICATION COMPLETE ===")

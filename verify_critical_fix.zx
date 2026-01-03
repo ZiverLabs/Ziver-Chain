@@ -1,0 +1,56 @@
+# Zexus 1.6.7 Critical Fix Verification
+print("=" * 70)
+print("ZEXUS 1.6.7 - TESTING CRITICAL BUG FIXES")
+print("=" * 70)
+
+# =============================================================================
+# CRITICAL TEST: Contract State Nested Map Literal Assignment
+# This was BROKEN in 1.6.6 - returned NULL - BLOCKED PRODUCTION
+# =============================================================================
+print("\n🔥 TEST: Contract State Nested Map Assignment")
+
+contract ValidatorRegistry {
+    state validators = {}
+    
+    action add_validator(addr, stake) {
+        # This pattern from consensus.zx line 269 was returning NULL in 1.6.6
+        validators[addr] = {
+            "stake": stake,
+            "active": true,
+            "votes": 0
+        }
+        return validators[addr]
+    }
+    
+    action get_validator(addr) {
+        return validators[addr]
+    }
+}
+
+let registry = ValidatorRegistry()
+let result = registry.add_validator("0xABC123", 1000)
+
+if result == null {
+    print("❌ CRITICAL BUG STILL EXISTS!")
+    print("   Nested map literal returned NULL")
+    print("   This blocks production deployment!")
+} else {
+    print("✅ Nested map literal assignment WORKS!")
+    
+    # Verify persistence
+    let stored = registry.get_validator("0xABC123")
+    if stored != null {
+        print("✅ Data persisted in contract state")
+        print("   stake=" + string(stored["stake"]) + ", active=" + string(stored["active"]))
+    } else {
+        print("❌ Data not persisted")
+    }
+}
+
+print("\n" + "=" * 70)
+if result != null {
+    print("✅ FIX VERIFIED - Zexus 1.6.7 is PRODUCTION READY!")
+} else {
+    print("❌ BUG NOT FIXED - Report to ZiverLabs")
+}
+print("=" * 70)

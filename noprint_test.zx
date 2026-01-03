@@ -1,0 +1,17 @@
+# Test without print
+contract TestContract {
+    state mydata = {}
+    
+    action setdata(k, v) {
+        mydata[k] = {"val": v}
+        return mydata[k]
+    }
+    
+    action getdata(k) {
+        return mydata[k]
+    }
+}
+
+let tc = TestContract()
+let res = tc.setdata("key1", 123)
+let retrieved = tc.getdata("key1")
