@@ -76,10 +76,124 @@ The following language features are not implemented in bytecode compiler:
 - ✗ `IfStatement` - Conditional logic
 - ✗ Loop statements (implied)
 
+#### Code Examples of Problematic Patterns:
+
+**UseStatement (BLOCKED):**
+```zexus
+# This fails in bytecode compiler
+use { JSONRPCServer } from "./rpc/server.zx"
+use "crypto" as crypto
+
+# Workaround: Inline all code in single file (not scalable)
+```
+
+**EntityStatement (BLOCKED):**
+```zexus
+# This fails in bytecode compiler
+entity ZiverNode {
+    rpc_server: JSONRPCServer
+    blockchain: list
+}
+
+# Workaround: Use plain maps/dictionaries
+let ziver_node = {
+    "rpc_server": null,
+    "blockchain": []
+}
+```
+
+**ActionStatement (BLOCKED):**
+```zexus
+# This fails in bytecode compiler
+action ZiverNode.init() -> boolean {
+    print("Initializing...")
+    return true
+}
+
+# Workaround: Inline logic, no reusable functions
+print("Initializing...")
+let init_result = true
+```
+
+**ContractStatement (BLOCKED):**
+```zexus
+# This fails in bytecode compiler
+contract ValidatorRegistry {
+    state validators = {}
+    
+    action add_validator(addr, stake) {
+        validators[addr] = {"stake": stake}
+    }
+}
+
+# Workaround: Use global state (loses contract encapsulation)
+let validators = {}
+validators["addr1"] = {"stake": 1000}
+```
+
+**IfStatement (BLOCKED):**
+```zexus
+# This fails in bytecode compiler
+if result == null {
+    print("Failed")
+} else {
+    print("Success")
+}
+
+# Workaround: Conditional expressions where possible
+let message = result == null ? "Failed" : "Success"
+print(message)
+```
+
 ### 2. Critical Bug in Bytecode Compiler
 **Error:** `'list' object has no attribute 'items'`
 
 This appears to be a Python-level bug in the Zexus bytecode compiler itself, likely in code that tries to iterate over a list as if it were a dictionary.
+
+#### Debugging the Compiler Bug:
+
+**Likely Problematic Code in Zexus Compiler:**
+```python
+# In Zexus bytecode compiler (Python)
+# WRONG - assumes everything is a dict:
+for key, value in some_collection.items():  # Crashes if some_collection is a list
+    process(key, value)
+
+# CORRECT - should check type first:
+if isinstance(some_collection, dict):
+    for key, value in some_collection.items():
+        process(key, value)
+elif isinstance(some_collection, list):
+    for item in some_collection:
+        process(item)
+```
+
+**Zexus Code That Triggers Bug:**
+```zexus
+# This pattern seems to trigger the 'list'.items() error:
+let my_list = []
+my_list.push(genesis_block)
+my_list.push(block_1)
+
+# Or:
+let blockchain = []
+for each tx in pending_transactions {
+    # Process tx
+}
+```
+
+**How to Find the Bug:**
+```bash
+# Get Zexus installation location
+pip show zexus
+
+# Look for bytecode compiler files:
+# - Check for .items() calls on variables that could be lists
+# - Search for: \.items\(\)
+# - Look in: compiler/, bytecode/, or vm/ directories
+
+grep -r "\.items()" $(pip show zexus | grep Location | cut -d' ' -f2)/zexus/
+```
 
 ---
 
@@ -150,6 +264,114 @@ Based on `zx run ./verify_1.6.7.zx` (Exit Code: 0), some features work:
 - Rewrite without entities/contracts (procedural style)
 - Wait for Zexus compiler updates
 
+#### Workaround Code Examples:
+
+**1. Try Interpreted Mode (if available):**
+```bash
+# Check if Zexus has interpreter-only mode
+zx --help | grep -i interpret
+zx --mode=interpret run src/main.zx
+zx --no-bytecode run src/main.zx
+```
+
+**2. Minimal Working Example (No Advanced Features):**
+```zexus
+# minimal_blockchain.zx - Uses only working features
+print("=" * 50)
+print("Minimal Ziver Blockchain")
+print("=" * 50)
+
+# Global state (no entities/contracts)
+let blockchain = []
+let validators = {}
+let pending_txs = []
+
+# Genesis block (no action definitions)
+let genesis = {
+    "index": 0,
+    "hash": "genesis_000",
+    "previous_hash": "0",
+    "transactions": [],
+    "timestamp": 1704672000
+}
+
+blockchain.push(genesis)
+
+# Add validator (no contract state)
+validators["validator_001"] = {
+    "stake": 1000,
+    "active": true
+}
+
+# Create transaction (no conditional logic, just direct assignment)
+let tx = {
+    "from": "0xABC",
+    "to": "0xDEF",
+    "value": 100
+}
+
+pending_txs.push(tx)
+
+# Create next block
+let block_1 = {
+    "index": 1,
+    "hash": "block_001",
+    "previous_hash": genesis["hash"],
+    "transactions": pending_txs,
+    "timestamp": 1704672100
+}
+
+blockchain.push(block_1)
+
+# Output results
+print("Blockchain Height: " + string(len(blockchain)))
+print("Total Validators: " + string(len(validators)))
+print("Latest Block: #" + string(block_1["index"]))
+print("\nStatus: Basic blockchain works!")
+```
+
+**3. Test Which Features Actually Work:**
+```zexus
+# test_features.zx - Systematic feature testing
+print("Testing Zexus Features...")
+
+# Test 1: Basic variables
+let test1 = "success"
+print("✓ Variables: " + test1)
+
+# Test 2: Maps
+let test2 = {"key": "value"}
+print("✓ Maps: " + test2["key"])
+
+# Test 3: Lists
+let test3 = []
+test3.push("item")
+print("✓ Lists: " + string(len(test3)))
+
+# Test 4: Nested structures
+let test4 = {"nested": {"data": 123}}
+print("✓ Nested: " + string(test4["nested"]["data"]))
+
+# Test 5: Ternary (instead of if)
+let test5 = len(test3) > 0 ? "has items" : "empty"
+print("✓ Ternary: " + test5)
+
+print("\nAll basic features work!")
+```
+
+**4. Check Zexus Execution Modes:**
+```bash
+# Try different execution flags
+zx --version
+zx run --help
+zx execute test_features.zx
+zx eval "print('hello')"
+
+# Check environment variables
+ZEXUS_MODE=interpret zx run test_features.zx
+ZEXUS_BYTECODE=off zx run test_features.zx
+```
+
 ---
 
 ## Testing Commands Reference
@@ -157,18 +379,68 @@ Based on `zx run ./verify_1.6.7.zx` (Exit Code: 0), some features work:
 ```bash
 # Node startup (BLOCKED)
 zx run scripts/start_node.zx
+# Expected: UseStatement/ActionStatement errors, early exit
 
 # Main blockchain (BLOCKED)
 zx run src/main.zx
+# Expected: 'list' object has no attribute 'items'
 
 # Contract tests (PARTIAL)
 zx run verify_critical_fix.zx
+# Expected: Prints headers, skips contract logic
 
 # Version tests (WORKS)
 zx run ./verify_1.6.7.zx
+# Expected: Exit code 0, successful execution
 
 # Simple tests (DEPENDS)
 zx run simple_test.zx
+# Expected: May work if no entities/contracts
+
+# Debug: Verbose output
+zx run --verbose src/main.zx 2>&1 | tee debug.log
+
+# Debug: Check Zexus version and capabilities
+zx --version
+zx --help
+pip show zexus
+
+# Debug: Find Zexus installation
+python3 -c "import zexus; print(zexus.__file__)"
+
+# Debug: Check for alternative execution modes
+strings $(which zx) | grep -i mode
+```
+
+### Quick Debug Script
+```bash
+#!/bin/bash
+# debug_zexus.sh
+
+echo "=== Zexus Installation ==="
+pip show zexus
+echo ""
+
+echo "=== Zexus Executable ==="
+which zx
+zx --version
+echo ""
+
+echo "=== Python Zexus Module ==="
+python3 -c "import zexus; print('Location:', zexus.__file__); print('Version:', getattr(zexus, '__version__', 'unknown'))"
+echo ""
+
+echo "=== Testing Simple Code ==="
+echo 'print("Hello from Zexus")' > /tmp/test_zexus.zx
+zx run /tmp/test_zexus.zx
+echo ""
+
+echo "=== Testing Map/List ==="
+echo 'let m = {"k": "v"}' > /tmp/test_struct.zx
+echo 'let l = []' >> /tmp/test_struct.zx
+echo 'l.push("item")' >> /tmp/test_struct.zx
+echo 'print(m["k"] + " " + string(len(l)))' >> /tmp/test_struct.zx
+zx run /tmp/test_struct.zx
 ```
 
 ---
