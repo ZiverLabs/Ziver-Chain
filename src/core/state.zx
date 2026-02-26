@@ -1,1323 +1,594 @@
 # src/core/state.zx
-use "datetime" as datetime
-use "math" as math
+# Self-Evolving State Management for Ziver Chain
+# Phase 0 rewrite — Zexus v1.8.2 compatible
+#
+# Layout: imports, constants, protocol, helpers, contract,
+#   module-level state, entities, test, exports
+
 use "crypto" as crypto
-use "json" as json
-use "../database/postgres" as db
-use "../ai/zaie_engine" as zaie
-use "../middleware/security_middleware" as security
+use "datetime" as dt
+use "math" as math
 
-// Enable memory tracking for state management
-track_memory()
+// ─── Constants ───
 
-// Security policies for state management
 const STATE_POLICIES = {
-    max_parameter_change_percentage: 0.2, // 20% maximum change
-    min_approval_confidence: 0.8,
-    emergency_change_threshold: 0.9,
-    change_cooldown_period: 3600, // 1 hour between changes
-    rollback_window: 86400, // 24-hour rollback window
-    audit_trail_retention: 30 // days
+    "max_parameter_change_percentage": 0.2,
+    "min_approval_confidence": 0.8,
+    "emergency_change_threshold": 0.9,
+    "change_cooldown_period": 3600,
+    "rollback_window": 86400,
+    "audit_trail_retention": 30
 }
 
-// Cache for frequently accessed parameters
-cache("network_parameters", { ttl: 60, strategy: "lru" })
-cache("state_snapshots", { ttl: 3600, max_entries: 100 })
+const DEFAULT_PARAMETERS = {
+    "block_time_target": 2.0,
+    "block_gas_limit": 8000000,
+    "max_block_size": 1048576,
+    "difficulty_adjustment_window": 100,
+    "validator_min_stake": 1000,
+    "validator_max_count": 100,
+    "consensus_timeout": 30,
+    "network_propagation_delay": 2,
+    "max_peer_connections": 50,
+    "peer_discovery_interval": 300,
+    "transaction_fee_base": 100,
+    "transaction_fee_multiplier": 1.0,
+    "block_reward": 1000,
+    "reward_halving_interval": 210000,
+    "inflation_rate": 0.02,
+    "max_validator_slash_percentage": 0.1,
+    "min_security_deposit": 10000,
+    "proposal_quorum": 0.6,
+    "voting_period": 604800,
+    "execution_delay": 86400,
+    "emergency_threshold": 0.8
+}
 
-// Throttle state operations
-throttle("parameter_changes", { requests_per_minute: 10 })
-throttle("ai_optimizations", { requests_per_minute: 5 })
+// ─── Protocol ───
 
-// Self-Evolving State Management with AI Optimization and Enhanced Security
 protocol SelfEvolvingProtocol {
-    action propose_parameter_adjustment(proposal: ParameterProposal) -> ProposalResult
-    action propose_parameter_adjustment_batch(proposals: list) -> list
-    action review_pending_adjustments() -> ReviewResult
-    action apply_ai_optimization(strategy: string?) -> OptimizationResult
-    action get_network_health(detailed: boolean?) -> NetworkHealth
-    action hot_patch_system(patch: SystemPatch) -> PatchResult
-    action rollback_parameter(parameter: string, target_timestamp: integer) -> RollbackResult
-    action get_state_history(parameter: string?, timeframe: Timeframe?) -> StateHistory
-    action validate_state_integrity() -> IntegrityCheck
-    action emergency_override(parameter: string, new_value: any, reason: string) -> EmergencyResult
+    action propose_parameter_adjustment(param_name, new_value, reason, proposed_by)
+    action review_pending_adjustments()
+    action get_network_health()
+    // rollback_parameter moved to module-level due to R-018
+    action get_state_history()
+    action validate_state_integrity()
+    action get_parameter(param_name)
+    action set_parameter(param_name, value)
 }
+
+// ─── Helper actions ───
+
+action calculate_change_pct(old_val, new_val) {
+    let old_f = old_val + 0.0
+    let new_f = new_val + 0.0
+    if old_f == 0.0 {
+        if new_f == 0.0 {
+            return 0.0
+        }
+        return 1.0
+    }
+    let diff = new_f - old_f
+    if diff < 0 {
+        diff = 0.0 - diff
+    }
+    return diff / old_f
+}
+
+action make_proposal(id, param_name, old_val, new_val, change_pct, reason, proposed_by, timestamp) {
+    return {
+        "id": id,
+        "parameter": param_name,
+        "old_value": old_val,
+        "new_value": new_val,
+        "change_percentage": change_pct,
+        "reason": reason,
+        "proposed_by": proposed_by,
+        "proposed_at": timestamp,
+        "ai_confidence": 0.0,
+        "status": "pending"
+    }
+}
+
+action make_snapshot(id, parameters_copy, timestamp, reason, hash_val) {
+    return {
+        "snapshot_id": id,
+        "parameters": parameters_copy,
+        "timestamp": timestamp,
+        "reason": reason,
+        "hash": hash_val
+    }
+}
+
+// ─── SelfEvolvingState Contract ───
 
 contract SelfEvolvingState implements SelfEvolvingProtocol {
-    persistent storage parameters: map
-    persistent storage adjustment_history: list
-    persistent storage pending_adjustments: list
-    persistent storage network_metrics: map
-    persistent storage patch_registry: map
-    persistent storage state_snapshots: map
-    persistent storage emergency_logs: map
-    persistent storage integrity_checks: map
-    
-    // Enhanced data structures
-    entity ParameterProposal {
-        id: string
-        parameter: string
-        old_value: any
-        new_value: any
-        change_percentage: float
-        reason: string
-        proposed_by: string
-        proposed_at: integer
-        ai_confidence: float = 0.0
-        risk_assessment: RiskAssessment?
-        impact_prediction: ImpactPrediction?
-        metadata: map?
-        status: string = "pending" // pending, approved, rejected, applied, failed
-    }
-    
-    entity ParameterAdjustment {
-        proposal_id: string
-        parameter: string
-        old_value: any
-        new_value: any
-        applied_by: string
-        applied_at: integer
-        rollback_data: map
-        verification_hash: string
-        confirmed: boolean = false
-        confirmation_count: integer = 0
-    }
-    
-    entity SystemPatch {
-        id: string
-        name: string
-        version: string
-        patch_code: string
-        signature: string
-        signer: string
-        target_component: string
-        priority: string = "normal" // low, normal, high, critical
-        dependencies: list?
-        rollback_plan: map?
-        validation_data: map?
-        created_at: integer
-    }
-    
-    entity NetworkHealth {
-        timestamp: integer
-        overall_health: float
-        components: HealthComponents
-        metrics: NetworkMetrics
-        recommendations: list
-        alerts: list
-        predictions: HealthPredictions
-    }
-    
-    entity HealthComponents {
-        consensus: ComponentHealth
-        networking: ComponentHealth
-        data_storage: ComponentHealth
-        computation: ComponentHealth
-        security: ComponentHealth
-    }
-    
-    entity OptimizationResult {
-        timestamp: integer
-        strategy: string
-        optimizations_applied: list
-        performance_gain: float
-        risk_assessment: RiskAssessment
-        rollback_plan: map?
-        verification_hash: string
-        confirmed: boolean = false
-    }
-    
-    entity RiskAssessment {
-        stability_risk: float
-        security_risk: float
-        performance_risk: float
-        economic_risk: float
-        total_risk: float
-        risk_level: string // low, medium, high, critical
-        mitigations: list
-        confidence: float
-    }
-    
-    entity ImpactPrediction {
-        predicted_performance_change: float
-        predicted_security_impact: float
-        predicted_economic_impact: float
-        predicted_user_impact: float
-        confidence: float
-        timeframe: string // immediate, short_term, long_term
-    }
-    
-    // Reactive state for monitoring
-    watch parameters {
-        print("⚙️ Network parameters updated, total: " + string(len(this.parameters)))
-        
-        // Take snapshot if significant change
-        this.take_state_snapshot("parameter_change")
-    }
-    
-    watch network_metrics {
-        let metrics = this.network_metrics
-        let health_score = this.calculate_health_score(metrics)
-        
-        if health_score < 0.7 {
-            print("⚠️ Network health critical: " + string(health_score))
-        }
+    state {
+        initialized: 0
     }
 
     action init() {
-        // Initialize with comprehensive default parameters
-        this.parameters = {
-            // Consensus parameters
-            "block_time_target": 2.0,
-            "block_gas_limit": 8000000,
-            "max_block_size": 1048576, // 1MB
-            "difficulty_adjustment_window": 100,
-            "validator_min_stake": 1000,
-            "validator_max_count": 100,
-            "consensus_timeout": 30,
-            
-            // Network parameters
-            "network_propagation_delay": 2,
-            "max_peer_connections": 50,
-            "peer_discovery_interval": 300,
-            "message_retry_limit": 3,
-            "connection_timeout": 30,
-            
-            // Economic parameters
-            "transaction_fee_base": 100,
-            "transaction_fee_multiplier": 1.0,
-            "block_reward": 1000,
-            "reward_halving_interval": 210000,
-            "inflation_rate": 0.02,
-            
-            // Security parameters
-            "max_validator_slash_percentage": 0.1,
-            "min_security_deposit": 10000,
-            "double_spend_window": 6,
-            "signature_verification_threshold": 0.99,
-            
-            // Performance parameters
-            "cache_size_limit": 1073741824, // 1GB
-            "database_connection_pool": 20,
-            "query_timeout": 10,
-            "max_concurrent_requests": 1000,
-            
-            // Governance parameters
-            "proposal_quorum": 0.6,
-            "voting_period": 604800, // 7 days
-            "execution_delay": 86400, // 1 day
-            "emergency_threshold": 0.8
-        }
-
-        this.adjustment_history = []
-        this.pending_adjustments = []
-        this.network_metrics = {}
-        this.patch_registry = {}
-        this.state_snapshots = {}
-        this.emergency_logs = {}
-        this.integrity_checks = {}
-        
-        // Initialize database tables
-        try {
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS state_parameters (
-                    parameter_name VARCHAR(100) PRIMARY KEY,
-                    current_value JSONB NOT NULL,
-                    default_value JSONB NOT NULL,
-                    min_value JSONB,
-                    max_value JSONB,
-                    data_type VARCHAR(20) NOT NULL,
-                    category VARCHAR(50) NOT NULL,
-                    last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    modified_by VARCHAR(100) DEFAULT 'system',
-                    metadata JSONB
-                )
-            """)
-            
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS state_adjustments (
-                    adjustment_id VARCHAR(64) PRIMARY KEY,
-                    parameter_name VARCHAR(100) NOT NULL,
-                    old_value JSONB NOT NULL,
-                    new_value JSONB NOT NULL,
-                    change_percentage FLOAT NOT NULL,
-                    reason TEXT NOT NULL,
-                    applied_by VARCHAR(100) NOT NULL,
-                    applied_at TIMESTAMP NOT NULL,
-                    ai_confidence FLOAT,
-                    risk_assessment JSONB,
-                    rollback_data JSONB,
-                    confirmed BOOLEAN DEFAULT FALSE,
-                    confirmation_count INTEGER DEFAULT 0,
-                    INDEX idx_parameter_time (parameter_name, applied_at)
-                )
-            """)
-            
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS state_snapshots (
-                    snapshot_id VARCHAR(64) PRIMARY KEY,
-                    snapshot_data JSONB NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    reason VARCHAR(100),
-                    hash VARCHAR(128) NOT NULL,
-                    previous_hash VARCHAR(128),
-                    INDEX idx_timestamp (timestamp)
-                )
-            """)
-            
-            // Insert default parameters
-            for each param_name, param_value in this.parameters {
-                db.execute("""
-                    INSERT INTO state_parameters (parameter_name, current_value, default_value, data_type, category)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT (parameter_name) DO NOTHING
-                """, [
-                    param_name,
-                    json.stringify(param_value),
-                    json.stringify(param_value),
-                    this.get_value_type(param_value),
-                    this.get_parameter_category(param_name)
-                ])
-            }
-        } catch (error) {
-            print("⚠️ Failed to initialize state database: " + error)
-        }
-        
-        // Take initial snapshot
-        this.take_state_snapshot("initialization")
+        this.initialized = 1
     }
 
-    action protect propose_parameter_adjustment(proposal: ParameterProposal) -> ProposalResult {
-        """
-        Propose a parameter adjustment with comprehensive validation and AI analysis
-        """
-        let start_time = datetime.now().timestamp()
-        
-        try {
-            // Validate proposal
-            verify(this.parameters.has(proposal.parameter), "Unknown parameter: " + proposal.parameter)
-            verify(proposal.new_value != null, "New value is required")
-            verify(proposal.reason != null and len(proposal.reason) > 0, "Reason is required")
-            
-            // Get current value
-            let current_value = this.parameters[proposal.parameter]
-            proposal.old_value = current_value
-            
-            // Calculate change percentage
-            let change_pct = this.calculate_change_percentage(current_value, proposal.new_value)
-            proposal.change_percentage = change_pct
-            
-            // Validate change limits
-            verify(
-                change_pct <= STATE_POLICIES.max_parameter_change_percentage,
-                "Change exceeds maximum allowed percentage: " + string(change_pct * 100) + "%"
-            )
-            
-            // Check cooldown period
-            if not this.can_change_parameter(proposal.parameter) {
-                throw "Parameter change cooldown active"
-            }
-            
-            // Generate proposal ID
-            proposal.id = "PROP_" + crypto.sha3_256(
-                proposal.parameter + 
-                string(proposal.new_value) + 
-                string(datetime.now().timestamp()) + 
-                proposal.proposed_by
-            )
-            
-            proposal.proposed_at = datetime.now().timestamp()
-            proposal.status = "pending"
-            
-            // AI validation and risk assessment
-            let ai_validation = await this.validate_proposal_with_ai(proposal)
-            proposal.ai_confidence = ai_validation.confidence
-            proposal.risk_assessment = ai_validation.risk_assessment
-            proposal.impact_prediction = ai_validation.impact_prediction
-            
-            // Check if immediate application is safe
-            let immediate_apply = (
-                ai_validation.confidence > STATE_POLICIES.min_approval_confidence and
-                ai_validation.risk_assessment.total_risk < 0.3
-            )
-            
-            if immediate_apply {
-                // Apply immediately if safe
-                let result = this.apply_parameter_adjustment(proposal)
-                return ProposalResult{
-                    proposal_id: proposal.id,
-                    status: "applied_immediately",
-                    reason: "AI validation passed with high confidence",
-                    confidence: ai_validation.confidence,
-                    risk_assessment: ai_validation.risk_assessment,
-                    applied_at: datetime.now().timestamp(),
-                    processing_time_ms: datetime.now().timestamp_ms() - start_time
-                }
-            } else {
-                // Add to pending adjustments for review
-                this.pending_adjustments.push(proposal)
-                
-                // Notify stakeholders if risk is high
-                if ai_validation.risk_assessment.total_risk > 0.6 {
-                    this.notify_stakeholders(proposal, ai_validation.risk_assessment)
-                }
-                
-                return ProposalResult{
-                    proposal_id: proposal.id,
-                    status: "pending_review",
-                    reason: "Requires manual review due to risk factors",
-                    confidence: ai_validation.confidence,
-                    risk_assessment: ai_validation.risk_assessment,
-                    review_required: true,
-                    estimated_review_time: 3600, // 1 hour
-                    processing_time_ms: datetime.now().timestamp_ms() - start_time
-                }
-            }
-            
-        } catch (error) {
-            audit("proposal_failed", {
-                "parameter": proposal?.parameter,
-                "error": error,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return ProposalResult{
-                proposal_id: proposal?.id or "unknown",
-                status: "failed",
-                reason: "Proposal validation failed: " + error,
-                confidence: 0.0,
-                risk_assessment: null,
-                processing_time_ms: datetime.now().timestamp_ms() - start_time
-            }
-        }
+    action get_parameter(param_name) {
+        return _parameters[param_name]
     }
 
-    action protect propose_parameter_adjustment_batch(proposals: list) -> list {
-        """
-        Propose multiple parameter adjustments in batch with optimization
-        """
-        let results = []
-        let successful_proposals = []
-        let failed_proposals = []
-        
-        for each proposal in proposals {
-            let result = await this.propose_parameter_adjustment(proposal)
-            results.push(result)
-            
-            if result.status == "applied_immediately" or result.status == "pending_review" {
-                successful_proposals.push(proposal.parameter)
-            } else {
-                failed_proposals.push({
-                    "parameter": proposal.parameter,
-                    "reason": result.reason
-                })
-            }
-        }
-        
-        // Log batch results
-        if len(failed_proposals) > 0 {
-            print("⚠️ " + string(len(failed_proposals)) + " proposals failed in batch")
-        }
-        
-        return results
-    }
+    action set_parameter(param_name, value) {
+        let old_val = _parameters[param_name]
 
-    action protect review_pending_adjustments() -> ReviewResult {
-        """
-        Review pending parameter adjustments with AI assistance
-        """
-        let pending_count = len(this.pending_adjustments)
-        if pending_count == 0 {
-            return ReviewResult{
-                timestamp: datetime.now().timestamp(),
-                pending_count: 0,
-                reviewed_count: 0,
-                applied_count: 0,
-                rejected_count: 0,
-                average_confidence: 0.0,
-                highest_risk: null
-            }
-        }
-        
-        let reviewed_count = 0
-        let applied_count = 0
-        let rejected_count = 0
-        let total_confidence = 0.0
-        let highest_risk = null
-        
-        for each proposal in this.pending_adjustments {
-            // Skip if recently added (allow time for manual review)
-            let time_since_proposal = datetime.now().timestamp() - proposal.proposed_at
-            if time_since_proposal < 300 { // 5 minutes
-                continue
-            }
-            
-            reviewed_count += 1
-            total_confidence += proposal.ai_confidence
-            
-            // Track highest risk proposal
-            if highest_risk == null or proposal.risk_assessment.total_risk > highest_risk.total_risk {
-                highest_risk = proposal.risk_assessment
-            }
-            
-            // Apply if confidence is high and risk is low
-            if proposal.ai_confidence > STATE_POLICIES.min_approval_confidence and 
-               proposal.risk_assessment.total_risk < 0.4 {
-                
-                let success = this.apply_parameter_adjustment(proposal)
-                if success {
-                    applied_count += 1
-                    // Remove from pending list
-                    this.pending_adjustments = this.pending_adjustments.filter(action(p) { 
-                        return p.id != proposal.id 
-                    })
-                } else {
-                    rejected_count += 1
-                }
-            }
-        }
-        
-        let average_confidence = total_confidence / math.max(1, reviewed_count)
-        
-        return ReviewResult{
-            timestamp: datetime.now().timestamp(),
-            pending_count: pending_count,
-            reviewed_count: reviewed_count,
-            applied_count: applied_count,
-            rejected_count: rejected_count,
-            average_confidence: average_confidence,
-            highest_risk: highest_risk
-        }
-    }
-
-    action protect apply_ai_optimization(strategy: string? = "balanced") -> OptimizationResult {
-        """
-        Apply AI-driven optimization to network parameters based on current performance
-        """
-        let start_time = datetime.now().timestamp()
-        
-        // Get current network health
-        let health = this.get_network_health(true)
-        
-        // Get AI optimization recommendations
-        let ai_recommendations = await zaie.optimize_network_parameters(
-            this.parameters, 
-            health, 
-            strategy
-        )
-        
-        let optimizations_applied = []
-        let total_performance_gain = 0.0
-        let highest_risk = null
-        
-        // Apply recommended optimizations
-        for each recommendation in ai_recommendations.optimizations {
-            // Validate recommendation
-            if recommendation.confidence > STATE_POLICIES.min_approval_confidence and
-               recommendation.risk_assessment.total_risk < 0.4 {
-                
-                let proposal = ParameterProposal{
-                    parameter: recommendation.parameter,
-                    new_value: recommendation.new_value,
-                    reason: "AI optimization: " + recommendation.reason,
-                    proposed_by: "ai_engine",
-                    ai_confidence: recommendation.confidence,
-                    risk_assessment: recommendation.risk_assessment,
-                    impact_prediction: recommendation.impact_prediction
-                }
-                
-                let result = this.propose_parameter_adjustment(proposal)
-                
-                if result.status == "applied_immediately" {
-                    optimizations_applied.push({
-                        "parameter": recommendation.parameter,
-                        "old_value": proposal.old_value,
-                        "new_value": recommendation.new_value,
-                        "performance_gain": recommendation.performance_gain,
-                        "confidence": recommendation.confidence
-                    })
-                    
-                    total_performance_gain += recommendation.performance_gain
-                    
-                    // Track highest risk
-                    if highest_risk == null or recommendation.risk_assessment.total_risk > highest_risk.total_risk {
-                        highest_risk = recommendation.risk_assessment
-                    }
-                }
-            }
-        }
-        
-        // Calculate overall performance gain
-        let performance_gain = total_performance_gain / math.max(1, len(optimizations_applied))
-        
-        // Create rollback plan
-        let rollback_plan = this.create_rollback_plan(optimizations_applied)
-        
-        // Generate verification hash
-        let verification_data = {
-            "optimizations": optimizations_applied,
-            "timestamp": datetime.now().timestamp(),
-            "strategy": strategy,
-            "performance_gain": performance_gain
-        }
-        let verification_hash = crypto.sha3_256(json.stringify(verification_data))
-        
-        let processing_time_ms = datetime.now().timestamp_ms() - start_time
-        
-        return OptimizationResult{
-            timestamp: datetime.now().timestamp(),
-            strategy: strategy,
-            optimizations_applied: optimizations_applied,
-            performance_gain: performance_gain,
-            risk_assessment: highest_risk or {"total_risk": 0.0, "risk_level": "low"},
-            rollback_plan: rollback_plan,
-            verification_hash: verification_hash,
-            processing_time_ms: processing_time_ms
-        }
-    }
-
-    action protect get_network_health(detailed: boolean? = false) -> NetworkHealth {
-        """
-        Get comprehensive network health assessment with predictions and recommendations
-        """
-        let timestamp = datetime.now().timestamp()
-        
-        // Collect real-time metrics (simplified for example)
-        let metrics = {
-            "throughput_tps": this.get_throughput(),
-            "latency_ms": this.get_average_latency(),
-            "block_production_time": this.get_block_production_time(),
-            "validator_participation": this.get_validator_participation(),
-            "transaction_success_rate": this.get_transaction_success_rate(),
-            "network_utilization": this.get_network_utilization(),
-            "pending_transactions": this.get_pending_transactions(),
-            "memory_usage": this.get_memory_usage(),
-            "cpu_usage": this.get_cpu_usage(),
-            "storage_usage": this.get_storage_usage()
-        }
-        
-        // Store metrics
-        this.network_metrics[timestamp] = metrics
-        
-        // Calculate component health
-        let components = HealthComponents{
-            consensus: this.assess_consensus_health(metrics),
-            networking: this.assess_networking_health(metrics),
-            data_storage: this.assess_storage_health(metrics),
-            computation: this.assess_computation_health(metrics),
-            security: this.assess_security_health(metrics)
-        }
-        
-        // Calculate overall health score
-        let overall_health = this.calculate_health_score(metrics)
-        
-        // Get AI predictions
-        let predictions = await zaie.predict_network_health(metrics, components, this.parameters)
-        
-        // Generate recommendations
-        let recommendations = this.generate_health_recommendations(metrics, components, overall_health)
-        
-        // Check for alerts
-        let alerts = this.check_for_alerts(metrics, components, overall_health)
-        
-        let result = NetworkHealth{
-            timestamp: timestamp,
-            overall_health: overall_health,
-            components: components,
-            metrics: metrics,
-            recommendations: recommendations,
-            alerts: alerts,
-            predictions: predictions
-        }
-        
-        // Cache the result
-        cache_set("network_health", result)
-        
-        return result
-    }
-
-    action protect hot_patch_system(patch: SystemPatch) -> PatchResult {
-        """
-        Apply a hot patch to the system with comprehensive safety checks and rollback capability
-        """
-        let start_time = datetime.now().timestamp()
-        
-        try {
-            // Validate patch structure
-            verify(patch.id != null, "Patch ID is required")
-            verify(patch.name != null, "Patch name is required")
-            verify(patch.patch_code != null, "Patch code is required")
-            verify(patch.signature != null, "Patch signature is required")
-            verify(patch.signer != null, "Patch signer is required")
-            verify(patch.target_component != null, "Target component is required")
-            
-            // Verify signature
-            let signature_valid = this.verify_patch_signature(patch)
-            if not signature_valid {
-                throw "Invalid patch signature"
-            }
-            
-            // Check if patch already applied
-            if this.patch_registry.has(patch.id) {
-                throw "Patch already applied: " + patch.id
-            }
-            
-            // Create snapshot before applying patch
-            let snapshot_id = this.take_state_snapshot("pre_patch_" + patch.id)
-            
-            // Validate patch safety with AI
-            let safety_validation = await this.validate_patch_safety(patch)
-            if not safety_validation.safe {
-                throw "Patch validation failed: " + safety_validation.reason
-            }
-            
-            // Check dependencies
-            if patch.dependencies != null {
-                let dependencies_met = this.check_dependencies(patch.dependencies)
-                if not dependencies_met {
-                    throw "Patch dependencies not met"
-                }
-            }
-            
-            // Create rollback plan if not provided
-            if patch.rollback_plan == null {
-                patch.rollback_plan = this.create_patch_rollback_plan(patch)
-            }
-            
-            // Execute patch
-            let execution_result = this.execute_patch(patch)
-            if not execution_result.success {
-                // Rollback immediately
-                this.rollback_patch(patch.id, snapshot_id)
-                throw "Patch execution failed: " + execution_result.error
-            }
-            
-            // Verify patch application
-            let verification_result = this.verify_patch_application(patch)
-            if not verification_result.verified {
-                // Rollback if verification fails
-                this.rollback_patch(patch.id, snapshot_id)
-                throw "Patch verification failed: " + verification_result.reason
-            }
-            
-            // Register successful patch
-            patch.created_at = patch.created_at or datetime.now().timestamp()
-            this.patch_registry[patch.id] = {
-                "patch": patch,
-                "applied_at": datetime.now().timestamp(),
-                "snapshot_id": snapshot_id,
-                "rollback_plan": patch.rollback_plan,
-                "verification_data": verification_result,
-                "status": "applied"
-            }
-            
-            // Invalidate related caches
-            cache_delete_pattern("network_*")
-            cache_delete("state_snapshots")
-            
-            let processing_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("patch_applied", {
-                "patch_id": patch.id,
-                "patch_name": patch.name,
-                "target_component": patch.target_component,
-                "processing_time_ms": processing_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return PatchResult{
-                success: true,
-                patch_id: patch.id,
-                snapshot_id: snapshot_id,
-                verification_hash: verification_result.verification_hash,
-                applied_at: datetime.now().timestamp(),
-                processing_time_ms: processing_time_ms,
-                warnings: verification_result.warnings
-            }
-            
-        } catch (error) {
-            let processing_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("patch_failed", {
-                "patch_id": patch?.id or "unknown",
-                "error": error,
-                "processing_time_ms": processing_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return PatchResult{
-                success: false,
-                error: error,
-                processing_time_ms: processing_time_ms
-            }
-        }
-    }
-
-    action protect rollback_parameter(parameter: string, target_timestamp: integer) -> RollbackResult {
-        """
-        Rollback a parameter to a previous state using snapshot data
-        """
-        let start_time = datetime.now().timestamp()
-        
-        try {
-            verify(this.parameters.has(parameter), "Unknown parameter: " + parameter)
-            verify(target_timestamp > 0, "Valid target timestamp required")
-            
-            // Find closest snapshot
-            let snapshot = this.find_closest_snapshot(target_timestamp)
-            if snapshot == null {
-                throw "No snapshot found near target timestamp"
-            }
-            
-            // Get parameter value from snapshot
-            let snapshot_data = snapshot.snapshot_data
-            if not snapshot_data.parameters.has(parameter) {
-                throw "Parameter not found in snapshot"
-            }
-            
-            let old_value = this.parameters[parameter]
-            let target_value = snapshot_data.parameters[parameter]
-            
-            // Validate rollback is possible
-            if not this.can_rollback_parameter(parameter, old_value, target_value) {
-                throw "Rollback not allowed for this parameter"
-            }
-            
-            // Check rollback window
-            let time_since_snapshot = datetime.now().timestamp() - snapshot.timestamp
-            if time_since_snapshot > STATE_POLICIES.rollback_window {
-                throw "Rollback window expired"
-            }
-            
-            // Apply rollback
-            this.parameters[parameter] = target_value
-            
-            // Record rollback in history
-            let rollback_record = {
-                "parameter": parameter,
-                "old_value": old_value,
-                "new_value": target_value,
-                "rollback_from": datetime.now().timestamp(),
-                "rollback_to": snapshot.timestamp,
-                "snapshot_id": snapshot.snapshot_id,
-                "applied_by": "rollback_system",
-                "reason": "Manual rollback to timestamp: " + string(target_timestamp)
-            }
-            
-            this.adjustment_history.push(rollback_record)
-            
-            // Update database
-            try {
-                db.execute("""
-                    UPDATE state_parameters 
-                    SET current_value = ?, last_modified = CURRENT_TIMESTAMP 
-                    WHERE parameter_name = ?
-                """, [json.stringify(target_value), parameter])
-                
-                db.execute("""
-                    INSERT INTO state_adjustments (
-                        adjustment_id, parameter_name, old_value, new_value, 
-                        change_percentage, reason, applied_by, applied_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, [
-                    "ROLLBACK_" + crypto.sha3_256(parameter + string(datetime.now().timestamp())),
-                    parameter,
-                    json.stringify(old_value),
-                    json.stringify(target_value),
-                    this.calculate_change_percentage(old_value, target_value),
-                    rollback_record.reason,
-                    rollback_record.applied_by
-                ])
-            } catch (error) {
-                print("⚠️ Failed to update rollback in database: " + error)
-            }
-            
-            // Take new snapshot after rollback
-            this.take_state_snapshot("post_rollback_" + parameter)
-            
-            let processing_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("parameter_rolled_back", {
-                "parameter": parameter,
-                "old_value": old_value,
-                "new_value": target_value,
-                "snapshot_timestamp": snapshot.timestamp,
-                "processing_time_ms": processing_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return RollbackResult{
-                success: true,
-                parameter: parameter,
-                old_value: old_value,
-                new_value: target_value,
-                snapshot_id: snapshot.snapshot_id,
-                snapshot_timestamp: snapshot.timestamp,
-                processing_time_ms: processing_time_ms
-            }
-            
-        } catch (error) {
-            let processing_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("rollback_failed", {
-                "parameter": parameter,
-                "target_timestamp": target_timestamp,
-                "error": error,
-                "processing_time_ms": processing_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return RollbackResult{
-                success: false,
-                parameter: parameter,
-                error: error,
-                processing_time_ms: processing_time_ms
-            }
-        }
-    }
-
-    action protect get_state_history(parameter: string? = null, timeframe: Timeframe? = null) -> StateHistory {
-        """
-        Get comprehensive state history with filtering and analysis
-        """
-        let default_timeframe = Timeframe{
-            start_time: datetime.now().timestamp() - (7 * 24 * 60 * 60), // 7 days
-            end_time: datetime.now().timestamp(),
-            interval: "hourly"
-        }
-        
-        let tf = timeframe or default_timeframe
-        
-        // Get adjustments from database
-        let adjustments = []
-        try {
-            if parameter != null {
-                adjustments = db.query("""
-                    SELECT * FROM state_adjustments 
-                    WHERE parameter_name = ? AND applied_at >= ? AND applied_at <= ?
-                    ORDER BY applied_at DESC
-                """, [parameter, tf.start_time, tf.end_time])
-            } else {
-                adjustments = db.query("""
-                    SELECT * FROM state_adjustments 
-                    WHERE applied_at >= ? AND applied_at <= ?
-                    ORDER BY applied_at DESC
-                """, [tf.start_time, tf.end_time])
-            }
-        } catch (error) {
-            print("⚠️ Failed to get state history from database: " + error)
-        }
-        
-        // Get snapshots
-        let snapshots = []
-        try {
-            snapshots = db.query("""
-                SELECT * FROM state_snapshots 
-                WHERE timestamp >= ? AND timestamp <= ?
-                ORDER BY timestamp DESC
-            """, [tf.start_time, tf.end_time])
-        } catch (error) {
-            print("⚠️ Failed to get snapshots from database: " + error)
-        }
-        
-        // Analyze trends
-        let trend_analysis = this.analyze_state_trends(adjustments, parameter)
-        
-        // Generate summary
-        let summary = this.generate_state_history_summary(adjustments, snapshots, tf)
-        
-        return StateHistory{
-            parameter: parameter,
-            timeframe: tf,
-            adjustments: adjustments,
-            snapshots: snapshots,
-            trend_analysis: trend_analysis,
-            summary: summary,
-            current_state: parameter != null ? this.parameters.get(parameter) : this.parameters,
-            timestamp: datetime.now().timestamp()
-        }
-    }
-
-    action protect validate_state_integrity() -> IntegrityCheck {
-        """
-        Validate the integrity of the entire state system
-        """
-        let start_time = datetime.now().timestamp()
-        
-        let checks = []
-        let errors = []
-        let warnings = []
-        
-        // Check 1: Parameter consistency
-        let param_check = this.check_parameter_consistency()
-        checks.push({"check": "parameter_consistency", "result": param_check.result})
-        if not param_check.valid {
-            errors.push("Parameter consistency check failed: " + param_check.error)
-        } else if param_check.warnings.count() > 0 {
-            warnings = warnings + param_check.warnings
-        }
-        
-        // Check 2: Database synchronization
-        let db_check = this.check_database_synchronization()
-        checks.push({"check": "database_synchronization", "result": db_check.result})
-        if not db_check.valid {
-            errors.push("Database synchronization check failed: " + db_check.error)
-        }
-        
-        // Check 3: History integrity
-        let history_check = this.check_history_integrity()
-        checks.push({"check": "history_integrity", "result": history_check.result})
-        if not history_check.valid {
-            errors.push("History integrity check failed: " + history_check.error)
-        }
-        
-        // Check 4: Snapshot integrity
-        let snapshot_check = this.check_snapshot_integrity()
-        checks.push({"check": "snapshot_integrity", "result": snapshot_check.result})
-        if not snapshot_check.valid {
-            errors.push("Snapshot integrity check failed: " + snapshot_check.error)
-        }
-        
-        // Check 5: Access control
-        let access_check = this.check_access_control()
-        checks.push({"check": "access_control", "result": access_check.result})
-        if not access_check.valid {
-            errors.push("Access control check failed: " + access_check.error)
-        }
-        
-        let overall_valid = len(errors) == 0
-        let health_score = overall_valid ? 1.0 : math.max(0.0, 1.0 - (len(errors) / 10.0))
-        
-        let processing_time_ms = datetime.now().timestamp_ms() - start_time
-        
-        // Store integrity check result
-        let check_id = "INTEGRITY_" + crypto.sha3_256(string(datetime.now().timestamp()))
-        this.integrity_checks[check_id] = {
-            "timestamp": datetime.now().timestamp(),
-            "valid": overall_valid,
-            "health_score": health_score,
-            "errors": errors,
-            "warnings": warnings,
-            "processing_time_ms": processing_time_ms
-        }
-        
-        return IntegrityCheck{
-            id: check_id,
-            timestamp: datetime.now().timestamp(),
-            valid: overall_valid,
-            health_score: health_score,
-            checks_performed: checks.count(),
-            errors: errors,
-            warnings: warnings,
-            processing_time_ms: processing_time_ms,
-            recommendations: this.generate_integrity_recommendations(errors, warnings)
-        }
-    }
-
-    action protect emergency_override(parameter: string, new_value: any, reason: string) -> EmergencyResult {
-        """
-        Emergency override for critical parameter changes (bypasses normal validation)
-        """
-        verify(this.parameters.has(parameter), "Unknown parameter: " + parameter)
-        verify(reason != null and len(reason) > 10, "Detailed reason required for emergency override")
-        
-        let old_value = this.parameters[parameter]
-        let timestamp = datetime.now().timestamp()
-        
-        // Log emergency override
-        if not this.emergency_logs.has(parameter) {
-            this.emergency_logs[parameter] = []
-        }
-        
-        let emergency_record = {
-            "parameter": parameter,
-            "old_value": old_value,
-            "new_value": new_value,
-            "reason": reason,
-            "timestamp": timestamp,
-            "override_by": "emergency_system"
-        }
-        
-        this.emergency_logs[parameter].push(emergency_record)
-        
-        // Apply override immediately
-        this.parameters[parameter] = new_value
-        
-        // Take emergency snapshot
-        let snapshot_id = this.take_state_snapshot("emergency_override_" + parameter)
-        
-        // Record in adjustment history with emergency flag
-        let adjustment = ParameterAdjustment{
-            proposal_id: "EMERGENCY_" + crypto.sha3_256(parameter + string(timestamp)),
-            parameter: parameter,
-            old_value: old_value,
-            new_value: new_value,
-            applied_by: "emergency_system",
-            applied_at: timestamp,
-            rollback_data: {"snapshot_id": snapshot_id, "emergency": true},
-            verification_hash: crypto.sha3_256(parameter + string(new_value) + string(timestamp)),
-            confirmed: true
-        }
-        
-        this.adjustment_history.push(adjustment)
-        
-        // Update database
-        try {
-            db.execute("""
-                UPDATE state_parameters 
-                SET current_value = ?, last_modified = CURRENT_TIMESTAMP, modified_by = 'emergency_system'
-                WHERE parameter_name = ?
-            """, [json.stringify(new_value), parameter])
-        } catch (error) {
-            print("⚠️ Failed to update emergency override in database: " + error)
-        }
-        
-        // Trigger emergency notifications
-        this.trigger_emergency_notifications(parameter, old_value, new_value, reason)
-        
-        audit("emergency_override_applied", {
-            "parameter": parameter,
-            "old_value": old_value,
-            "new_value": new_value,
-            "reason": reason,
-            "timestamp": timestamp,
-            "snapshot_id": snapshot_id
+        // R-015: push BEFORE map assignment
+        _adjustment_history.push({
+            "parameter": param_name,
+            "old_value": old_val,
+            "new_value": value,
+            "timestamp": dt.timestamp(),
+            "applied_by": "direct_set"
         })
-        
-        return EmergencyResult{
-            success: true,
-            parameter: parameter,
-            old_value: old_value,
-            new_value: new_value,
-            snapshot_id: snapshot_id,
-            emergency_record_id: emergency_record.id,
-            timestamp: timestamp,
-            requires_confirmation: true,
-            confirmation_deadline: timestamp + 86400 // 24 hours to confirm
-        }
-    }
 
-    // Internal helper methods (simplified for example)
-    action apply_parameter_adjustment(proposal: ParameterProposal) -> boolean {
-        // Implementation would apply the adjustment
-        // Update parameters, record history, update database, etc.
+        // Map assignment AFTER push
+        _parameters[param_name] = value
+
+        audit("parameter_set", {
+            "parameter": param_name,
+            "old_value": string(old_val),
+            "new_value": string(value),
+            "timestamp": dt.timestamp()
+        })
+
         return true
     }
-    
-    action validate_proposal_with_ai(proposal: ParameterProposal) -> map {
-        // Implementation would use ZAIE engine to validate
+
+    action propose_parameter_adjustment(param_name, new_value, reason, proposed_by) {
+        let old_val = _parameters[param_name]
+        if old_val == null {
+            throw "Unknown parameter: " + param_name
+        }
+        verify(new_value != null, "New value is required")
+        verify(reason != null, "Reason is required")
+
+        let change_pct = calculate_change_pct(old_val, new_value)
+
+        let max_change = STATE_POLICIES["max_parameter_change_percentage"]
+        if change_pct > max_change {
+            throw "Change exceeds maximum allowed: " + string(change_pct)
+        }
+
+        // Check cooldown
+        let last_change = _last_change_times[param_name]
+        if last_change != null {
+            let elapsed = dt.timestamp() - last_change
+            let cooldown = STATE_POLICIES["change_cooldown_period"]
+            if elapsed < cooldown {
+                throw "Parameter change cooldown active"
+            }
+        }
+
+        let timestamp = dt.timestamp()
+        _proposal_counter = _proposal_counter + 1
+        let proposal_id = "PROP_" + crypto.keccak256(param_name + string(new_value) + string(timestamp))
+
+        let proposal = make_proposal(
+            proposal_id, param_name, old_val, new_value,
+            change_pct, reason, proposed_by, timestamp
+        )
+
+        // For Phase 0: auto-apply safe proposals (low change %)
+        if change_pct < 0.1 {
+            // R-015: push BEFORE all map/property assignments
+            _adjustment_history.push({
+                "proposal_id": proposal_id,
+                "parameter": param_name,
+                "old_value": old_val,
+                "new_value": new_value,
+                "timestamp": timestamp,
+                "applied_by": proposed_by
+            })
+
+            // Map assignments AFTER push
+            _parameters[param_name] = new_value
+            proposal["status"] = "applied"
+            _last_change_times[param_name] = timestamp
+
+            audit("parameter_adjusted", {
+                "proposal_id": proposal_id,
+                "parameter": param_name,
+                "change_pct": change_pct,
+                "timestamp": timestamp
+            })
+
+            return { "proposal_id": proposal_id, "status": "applied" }
+        }
+
+        // Add to pending for review
+        _pending_adjustments.push(proposal)
+        return { "proposal_id": proposal_id, "status": "pending_review" }
+    }
+
+    action review_pending_adjustments() {
+        let applied_count = 0
+        let rejected_count = 0
+        let still_pending = []
+
+        let idx = 0
+        while idx < len(_pending_adjustments) {
+            let proposal = _pending_adjustments[idx]
+            idx = idx + 1
+
+            let time_since = dt.timestamp() - proposal["proposed_at"]
+            if time_since < 300 {
+                still_pending.push(proposal)
+                continue
+            }
+
+            // Auto-approve after review period if change is moderate
+            let change_pct = proposal["change_percentage"]
+            if change_pct <= STATE_POLICIES["max_parameter_change_percentage"] {
+                let pname = proposal["parameter"]
+                let new_val = proposal["new_value"]
+                // R-015: push BEFORE map assignments
+                _adjustment_history.push({
+                    "proposal_id": proposal["id"],
+                    "parameter": pname,
+                    "old_value": proposal["old_value"],
+                    "new_value": new_val,
+                    "timestamp": dt.timestamp(),
+                    "applied_by": "review_system"
+                })
+                _parameters[pname] = new_val
+                proposal["status"] = "applied"
+                applied_count = applied_count + 1
+            } else {
+                proposal["status"] = "rejected"
+                rejected_count = rejected_count + 1
+            }
+        }
+
+        _pending_adjustments = still_pending
+
         return {
-            "valid": true,
-            "confidence": 0.9,
-            "risk_assessment": {
-                "total_risk": 0.2,
-                "risk_level": "low"
-            },
-            "impact_prediction": {
-                "predicted_performance_change": 0.1,
-                "confidence": 0.8
-            }
+            "pending_count": len(still_pending),
+            "applied_count": applied_count,
+            "rejected_count": rejected_count,
+            "timestamp": dt.timestamp()
         }
     }
-    
-    action take_state_snapshot(reason: string) -> string {
-        // Implementation would create a snapshot
-        return "SNAPSHOT_" + crypto.sha3_256(string(datetime.now().timestamp()) + reason)
-    }
-    
-    // Many more internal methods would be here...
 
-    // Dependency injection setup
-    inject database: db
-    inject ai_engine: zaie
-    
-    // Middleware for state operations
-    middleware("state_operations", action(req, res, next) {
-        let operation = req["operation"]
-        
-        if operation in ["emergency_override", "hot_patch_system"] {
-            // Verify authorization
-            if not security.has_emergency_access(req["user"]) {
-                res["status"] = 403
-                res["error"] = "Insufficient privileges for emergency operations"
-                return
-            }
-            
-            // Check if system is in maintenance mode
-            if this.parameters.get("maintenance_mode", false) {
-                res["status"] = 503
-                res["error"] = "System is in maintenance mode"
-                return
-            }
+    action take_state_snapshot(reason) {
+        let timestamp = dt.timestamp()
+
+        // Copy via helper to isolate map assignments (R-015)
+        let params_copy = copy_current_parameters(_parameter_keys, _parameters)
+
+        let snapshot_data = string(params_copy) + string(timestamp) + reason
+        let hash_val = crypto.keccak256(snapshot_data)
+
+        _snapshot_counter = _snapshot_counter + 1
+        let snapshot_id = "SNAP_" + string(_snapshot_counter)
+
+        let snapshot = make_snapshot(snapshot_id, params_copy, timestamp, reason, hash_val)
+
+        // R-015: push before map
+        _snapshot_keys.push(snapshot_id)
+        _snapshots[snapshot_id] = snapshot
+
+        return snapshot_id
+    }
+
+    // rollback_parameter removed — use module-level rollback_parameter() instead (R-018)
+
+    action get_network_health() {
+        let active_params = len(_parameter_keys)
+        let history_size = len(_adjustment_history)
+        let pending_count = len(_pending_adjustments)
+        let snapshot_count = len(_snapshot_keys)
+
+        let health_score = 100.0
+        if pending_count > 10 {
+            health_score = health_score - 10.0
         }
-        
-        next()
+        if history_size > 1000 {
+            health_score = health_score - 5.0
+        }
+
+        return {
+            "overall_health": health_score,
+            "active_parameters": active_params,
+            "adjustment_history_size": history_size,
+            "pending_adjustments": pending_count,
+            "snapshot_count": snapshot_count,
+            "timestamp": dt.timestamp()
+        }
+    }
+
+    action get_state_history() {
+        return _adjustment_history
+    }
+
+    action validate_state_integrity() {
+        let issues = []
+
+        // Check all parameter keys have values
+        let idx = 0
+        while idx < len(_parameter_keys) {
+            let key = _parameter_keys[idx]
+            let val = _parameters[key]
+            if val == null {
+                issues.push("Missing value for: " + key)
+            }
+            idx = idx + 1
+        }
+
+        // Check snapshot chain
+        let snap_idx = 0
+        while snap_idx < len(_snapshot_keys) {
+            let sid = _snapshot_keys[snap_idx]
+            let snap = _snapshots[sid]
+            if snap == null {
+                issues.push("Missing snapshot: " + sid)
+            }
+            snap_idx = snap_idx + 1
+        }
+
+        let valid = len(issues) == 0
+        return {
+            "valid": valid,
+            "issues": issues,
+            "parameters_checked": len(_parameter_keys),
+            "snapshots_checked": len(_snapshot_keys),
+            "timestamp": dt.timestamp()
+        }
+    }
+
+    action get_all_parameters() {
+        return _parameters
+    }
+
+    action get_parameter_count() {
+        return len(_parameter_keys)
+    }
+
+    action get_snapshot_count() {
+        return len(_snapshot_keys)
+    }
+
+    action get_adjustment_count() {
+        return len(_adjustment_history)
+    }
+}
+
+// ─── Module-level state (after contract per R-014) ───
+
+let _parameter_keys = [
+    "block_time_target",
+    "block_gas_limit",
+    "max_block_size",
+    "difficulty_adjustment_window",
+    "validator_min_stake",
+    "validator_max_count",
+    "consensus_timeout",
+    "network_propagation_delay",
+    "max_peer_connections",
+    "peer_discovery_interval",
+    "transaction_fee_base",
+    "transaction_fee_multiplier",
+    "block_reward",
+    "reward_halving_interval",
+    "inflation_rate",
+    "max_validator_slash_percentage",
+    "min_security_deposit",
+    "proposal_quorum",
+    "voting_period",
+    "execution_delay",
+    "emergency_threshold"
+]
+
+let _parameters = {
+    "block_time_target": 2.0,
+    "block_gas_limit": 8000000,
+    "max_block_size": 1048576,
+    "difficulty_adjustment_window": 100,
+    "validator_min_stake": 1000,
+    "validator_max_count": 100,
+    "consensus_timeout": 30,
+    "network_propagation_delay": 2,
+    "max_peer_connections": 50,
+    "peer_discovery_interval": 300,
+    "transaction_fee_base": 100,
+    "transaction_fee_multiplier": 1.0,
+    "block_reward": 1000,
+    "reward_halving_interval": 210000,
+    "inflation_rate": 0.02,
+    "max_validator_slash_percentage": 0.1,
+    "min_security_deposit": 10000,
+    "proposal_quorum": 0.6,
+    "voting_period": 604800,
+    "execution_delay": 86400,
+    "emergency_threshold": 0.8
+}
+
+let _adjustment_history = []
+let _pending_adjustments = []
+let _snapshots = {}
+let _snapshot_keys = []
+let _last_change_times = {}
+let _proposal_counter = 0
+let _snapshot_counter = 0
+
+// ─── Module-level helpers (after let vars so they can access them) ───
+
+action copy_current_parameters(keys, params) {
+    let result = {}
+    let idx = 0
+    while idx < len(keys) {
+        let key = keys[idx]
+        result[key] = params[key]
+        idx = idx + 1
+    }
+    return result
+}
+
+action _do_rollback(param_name, snapshot_id) {
+    let snapshot = _snapshots[snapshot_id]
+    if snapshot == null {
+        return null
+    }
+    let params_data = snapshot["parameters"]
+    let target_value = params_data[param_name]
+    if target_value == null {
+        return null
+    }
+    let old_val = _parameters[param_name]
+
+    // R-015: push BEFORE map assignment
+    _adjustment_history.push({
+        "type": "rollback",
+        "parameter": param_name,
+        "old_value": old_val,
+        "new_value": target_value,
+        "timestamp": dt.timestamp()
     })
-}
 
-// Additional entity definitions for completeness
-entity ProposalResult {
-    proposal_id: string
-    status: string // pending_review, applied_immediately, failed
-    reason: string
-    confidence: float
-    risk_assessment: RiskAssessment?
-    applied_at: integer?
-    review_required: boolean?
-    estimated_review_time: integer?
-    processing_time_ms: integer
-}
+    // Map assignment AFTER push
+    _parameters[param_name] = target_value
 
-entity ReviewResult {
-    timestamp: integer
-    pending_count: integer
-    reviewed_count: integer
-    applied_count: integer
-    rejected_count: integer
-    average_confidence: float
-    highest_risk: RiskAssessment?
-}
-
-entity PatchResult {
-    success: boolean
-    patch_id: string?
-    snapshot_id: string?
-    verification_hash: string?
-    applied_at: integer?
-    processing_time_ms: integer
-    error: string?
-    warnings: list?
-}
-
-entity RollbackResult {
-    success: boolean
-    parameter: string?
-    old_value: any?
-    new_value: any?
-    snapshot_id: string?
-    snapshot_timestamp: integer?
-    processing_time_ms: integer
-    error: string?
-}
-
-entity StateHistory {
-    parameter: string?
-    timeframe: Timeframe
-    adjustments: list
-    snapshots: list
-    trend_analysis: map
-    summary: map
-    current_state: any
-    timestamp: integer
-}
-
-entity IntegrityCheck {
-    id: string
-    timestamp: integer
-    valid: boolean
-    health_score: float
-    checks_performed: integer
-    errors: list
-    warnings: list
-    processing_time_ms: integer
-    recommendations: list
-}
-
-entity EmergencyResult {
-    success: boolean
-    parameter: string
-    old_value: any
-    new_value: any
-    snapshot_id: string
-    emergency_record_id: string
-    timestamp: integer
-    requires_confirmation: boolean
-    confirmation_deadline: integer
-}
-
-// Register state service for dependency injection
-register_dependency("state_service", SelfEvolvingState())
-
-// Test self-evolving state with enhanced features
-action async test_self_evolving_state() {
-    print("🔄 Testing Enhanced Self-Evolving State v2.0...")
-    
-    // Enable error recovery mode
-    continue
-    
-    try {
-        let state = SelfEvolvingState()
-        
-        // Test parameter adjustment proposal
-        let proposal = ParameterProposal{
-            parameter: "block_gas_limit",
-            new_value: 8500000,
-            reason: "Increase for higher throughput and DeFi scalability",
-            proposed_by: "test_suite",
-            metadata: {"test": true, "priority": "medium"}
-        }
-        
-        let proposal_result = await state.propose_parameter_adjustment(proposal)
-        print("✅ Parameter Proposal:")
-        print("  Status: " + proposal_result.status)
-        print("  Reason: " + proposal_result.reason)
-        print("  Confidence: " + string(proposal_result.confidence))
-        
-        // Test AI optimization
-        let optimization_result = await state.apply_ai_optimization("balanced")
-        print("✅ AI Optimization Result:")
-        print("  Strategy: " + optimization_result.strategy)
-        print("  Optimizations Applied: " + string(len(optimization_result.optimizations_applied)))
-        print("  Performance Gain: " + string(optimization_result.performance_gain * 100) + "%")
-        print("  Risk Level: " + optimization_result.risk_assessment.risk_level)
-        
-        // Test network health assessment
-        let network_health = await state.get_network_health(true)
-        print("✅ Network Health Assessment:")
-        print("  Overall Health: " + string(network_health.overall_health * 100) + "%")
-        print("  Consensus Health: " + string(network_health.components.consensus.score * 100) + "%")
-        print("  Alerts: " + string(len(network_health.alerts)))
-        print("  Recommendations: " + string(len(network_health.recommendations)))
-        
-        // Test state history
-        let state_history = await state.get_state_history("block_gas_limit")
-        print("✅ State History:")
-        print("  Parameter: block_gas_limit")
-        print("  Adjustments: " + string(len(state_history.adjustments)))
-        print("  Snapshots: " + string(len(state_history.snapshots)))
-        
-        // Test integrity check
-        let integrity_check = await state.validate_state_integrity()
-        print("✅ Integrity Check:")
-        print("  Valid: " + string(integrity_check.valid))
-        print("  Health Score: " + string(integrity_check.health_score * 100) + "%")
-        print("  Checks Performed: " + string(integrity_check.checks_performed))
-        
-        if integrity_check.errors.count() > 0:
-            print("  ⚠️ Errors: " + string(integrity_check.errors))
-        if integrity_check.warnings.count() > 0:
-            print("  ⚠️ Warnings: " + string(integrity_check.warnings))
-        
-        // Test review of pending adjustments
-        let review_result = await state.review_pending_adjustments()
-        print("✅ Pending Adjustments Review:")
-        print("  Pending Count: " + string(review_result.pending_count))
-        print("  Reviewed Count: " + string(review_result.reviewed_count))
-        print("  Applied Count: " + string(review_result.applied_count))
-        
-        // Note: We won't test emergency override or hot patches in automated tests
-        // as they require special authorization and could be dangerous
-        
-    } catch (error) {
-        print("❌ Test failed: " + error)
+    return {
+        "success": true,
+        "parameter": param_name,
+        "old_value": old_val,
+        "new_value": target_value
     }
 }
+
+// Module-level rollback function (R-018: can't call state-modifying helpers from contract methods)
+action rollback_parameter(param_name, snapshot_id) {
+    let result = _do_rollback(param_name, snapshot_id)
+    if result == null {
+        throw "Rollback failed: snapshot or parameter not found"
+    }
+    return result
+}
+
+// ─── Entities (after contract per R-012) ───
+
+entity ParameterProposal {
+    id: "",
+    parameter: "",
+    old_value: 0,
+    new_value: 0,
+    change_percentage: 0.0,
+    reason: "",
+    proposed_by: "",
+    proposed_at: 0,
+    ai_confidence: 0.0,
+    status: "pending"
+}
+
+entity ParameterAdjustment {
+    proposal_id: "",
+    parameter: "",
+    old_value: 0,
+    new_value: 0,
+    applied_by: "",
+    applied_at: 0,
+    confirmed: false
+}
+
+entity NetworkHealth {
+    timestamp: 0,
+    overall_health: 0.0,
+    active_parameters: 0,
+    pending_adjustments: 0,
+    snapshot_count: 0
+}
+
+// ─── Test ───
+
+action test_state_module() {
+    print("=== Testing State Module v2.0 ===")
+
+    try {
+        let state = SelfEvolvingState{}
+        state.init()
+
+        // Test 1: parameter access
+        let block_time = state.get_parameter("block_time_target")
+        print("[1] block_time_target: " + string(block_time))
+
+        // Test 2: parameter count
+        let param_count = state.get_parameter_count()
+        print("[2] Parameter count: " + string(param_count))
+
+        // Test 3: set parameter
+        state.set_parameter("block_time_target", 3.0)
+        let updated = state.get_parameter("block_time_target")
+        print("[3] Updated block_time_target: " + string(updated))
+
+        // Test 4: adjustment count after set
+        let adj1 = state.get_adjustment_count()
+        print("[4] Adjustment count after set: " + string(adj1))
+
+        // Test 5: proposal (small change, auto-applied)
+        let result = state.propose_parameter_adjustment(
+            "block_reward", 1050, "Slight increase for testing", "admin"
+        )
+        print("[5] Proposal status: " + result["status"])
+
+        // Test 6: adjustment count after proposal
+        let adj2 = state.get_adjustment_count()
+        print("[6] Adjustment count after propose: " + string(adj2))
+
+        // Test 7: snapshot
+        let snap_id = state.take_state_snapshot("test_snapshot")
+        print("[7] Snapshot ID: " + string(snap_id))
+
+        // Test 8: snapshot count
+        let snap_count = state.get_snapshot_count()
+        print("[8] Snapshot count: " + string(snap_count))
+
+        // Test 9: integrity
+        let integrity = state.validate_state_integrity()
+        print("[9] State integrity valid: " + string(integrity["valid"]))
+
+        // Test 10: health
+        let health = state.get_network_health()
+        print("[10] Network health: " + string(health["overall_health"]))
+
+        // Test 11: rollback using module-level function (R-018 workaround)
+        state.set_parameter("block_time_target", 5.0)
+        let rb_result = rollback_parameter("block_time_target", snap_id)
+        let rolled = state.get_parameter("block_time_target")
+        print("[11] After rollback block_time: " + string(rolled))
+
+        // Take post-rollback snapshot explicitly (self-call removed from rollback method)
+        let snap2 = state.take_state_snapshot("post_rollback")
+
+        // Test 12: final counts
+        let final_adj = state.get_adjustment_count()
+        let final_snap = state.get_snapshot_count()
+        print("[12] Final adjustments: " + string(final_adj) + " snapshots: " + string(final_snap))
+
+        print("=== State Tests PASSED ===")
+
+    } catch (error) {
+        print("[FAIL] " + string(error))
+    }
+}
+
+// ─── Exports ───
 
 export {
     SelfEvolvingState,
     SelfEvolvingProtocol,
-    STATE_POLICIES,
-    test_self_evolving_state,
     ParameterProposal,
+    ParameterAdjustment,
     NetworkHealth,
-    OptimizationResult
+    STATE_POLICIES,
+    DEFAULT_PARAMETERS,
+    calculate_change_pct,
+    make_proposal,
+    make_snapshot,
+    copy_current_parameters,
+    test_state_module
 }

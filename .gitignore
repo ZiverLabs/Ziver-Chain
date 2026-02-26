@@ -1,0 +1,43 @@
+# Build / compiled output
+target/
+*.o
+*.so
+*.wasm
+*.pyc
+__pycache__/
+node_modules/
+
+# Zexus cache / build
+.zx_cache/
+*.zxc
+*.zxo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp test files (Phase 0 debug)
+src/test_*_runner.zx
+src/test_*_debug.zx
+/tmp/test_*.zx
+
+# Logs
+*.log
+src/main.logs
+
+# Rust build (if using Cargo)
+/target/
+Cargo.lock
+
+# Backup directory (originals preserved locally)
+src/.backup/
+
+# Chain data (runtime generated)
+chain_data/
