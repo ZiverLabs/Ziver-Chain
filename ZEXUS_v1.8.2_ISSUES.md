@@ -57,6 +57,11 @@ print(items.is_empty())  // false
 | R-018 | Interpreter / contract-call | Module-level helper functions that modify module-level state (`push`, `map[k]=v`) have their side-effects silently ignored when called FROM a contract method | **High** | ✅ **Fixed in v1.8.3** — `clone_for_closure` now references live env |
 | R-019 | Interpreter / push-in-func | `push()` / `map[k]=v` inside a module-level `action` called from init or action-chain sometimes silently fails | **High** | ✅ **Fixed in v1.8.3** — Same closure env fix as R-018 |
 | R-020 | Interpreter / chained-assign | `self.field[key] = val` causes "Invalid assignment target" — chained property + bracket assign on contract state | **High** | Use intermediate var: `let f = self.field; f[key] = val` |
+| R-021 | Interpreter / operators | `+=` operator silent no-op (value unchanged); `not` keyword "Identifier not found" | **High** | Use `x = x + 1` for +=; use `!flag` for negation |
+| R-022 | Interpreter / state-init | `state { items: [], data: {} }` — list/map initial values become `null`; only primitives work | **High** | Store lists/maps as module-level `let` vars; state fields primitives only |
+| R-023 | Interpreter / methods | `.slice()`, `.contains()` (string), `.remove()`/`.delete()` (map), `.filter()`/`.sort()` (callback) — all "Method not supported" | Medium | Manual while/for-each loops |
+| R-024 | Interpreter / range-loop | `for i in 0..N {}` — "Identifier 'i' not found" inside body | Medium | Use `while` loop with counter |
+| R-025 | Interpreter / builtins | `cache_set()`/`cache_get()` standalone not found; `math.floor()` not found | Low | Use maps for cache; `int()` for floor |
 
 ### R-003 Fix Details
 **File:** `src/zexus/evaluator/expressions.py` (eval_identifier, ~line 92)  
@@ -240,6 +245,17 @@ print(remainder)  // 1.5
 19. ~~Use list/map **literals** for bulk initialization instead of loops of `push()`/`map[k]=v` (R-019)~~ → **Fixed v1.8.3**: Same closure env fix as R-018
 20. Preferred file layout order: `imports → constants → protocol → helper actions → contract → module-level let vars → module-level helpers → entities → test → exports`
 21. Use intermediate variable for `self.field[key] = val` — do `let f = self.field; f[key] = val` (R-020)
+22. `+=` operator is broken — use `x = x + 1` instead (R-021)
+23. `not` keyword not recognized — use `!` for negation (R-021)
+24. State fields cannot be initialized with `[]` or `{}` — they become `null`. Use primitive defaults in `state {}`, store lists/maps as module-level `let` vars (R-022)
+25. `.slice()` not supported on lists — use manual while-loop copy
+26. `.contains()` not supported on strings — use `==` comparison
+27. `.remove()` / `.delete()` not supported on maps — set key to `null` or rebuild map
+28. `.filter()` / `.sort()` with callbacks not supported — "Identifier 'action' not found" — use manual loops
+29. `for i in 0..N` range loop broken — "Identifier 'i' not found" — use `while` loop with counter
+30. `cache_set()` / `cache_get()` standalone functions not found — use maps as cache
+31. `math.floor()` not found — use `int()` for truncation
+32. Skip separate key-tracking lists for maps — iterate maps directly with `for each key, val in map` (R-015 still drops pushes interleaved with map bracket-assigns even on different variables)
 
 ## Phase 0 Rewrite Progress
 
@@ -249,7 +265,7 @@ print(remainder)  // 1.5
 | src/core/crypto.zx | ~370 | ✅ Done | Quantum-resistant crypto, keypairs, signing |
 | src/core/consensus.zx | ~420 | ✅ Done | PoS consensus, validators, rewards, slashing |
 | src/core/state.zx | ~600 | ✅ Done | Self-evolving state, parameters, snapshots, rollback |
-| src/core/zvm.zx | ~1674 | ❌ Not started | Ziver Virtual Machine |
+| src/core/zvm.zx | ~1674 | ✅ Done | Ziver Virtual Machine — deploy, execute, upgrade, security, metrics |
 | src/core/social_capital.zx | ~1238 | ❌ Not started | Social capital scoring |
 | src/core/seb_defi.zx | ~1213 | ❌ Not started | SEB DeFi protocols |
 | src/network/network.zx | ~1819 | ❌ Not started | P2P networking |
@@ -284,4 +300,4 @@ Added missing range(start, end, step), typeof(val), and abs(num) built-in functi
 Test results: 24 .zx test files all passing, 300 unit tests passing, 0 CodeQL alerts.
 
 ---
-*Last updated: 2026-03-02 — v1.8.3 installed, verified 4 rewritten files pass, R-015 partially remains, R-020 new*
+*Last updated: 2026-03-02 — v1.8.3, zvm.zx rewrite in progress, R-021 through R-025 new*
