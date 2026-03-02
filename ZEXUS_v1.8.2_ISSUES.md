@@ -51,11 +51,12 @@ print(items.is_empty())  // false
 | R-012 | Interpreter / order | Entity declarations before a contract make the contract identifier invisible ("Identifier not found") | **High** | ✅ **Fixed in v1.8.3** — Closure env fix (`outer=self`) |
 | R-013 | Interpreter / state | Multiple fields in `state { }` causes "Invalid assignment target" — only ONE field allowed | **Critical** | ✅ **Fixed in v1.8.3** |
 | R-014 | Interpreter / order | `let` variable declarations before a contract also break contract visibility | **High** | ✅ **Fixed in v1.8.3** — Same closure env fix as R-012 |
-| R-015 | Interpreter / push+map | After `map[key] = val` in a contract method, subsequent `list.push()` is silently ignored | **High** | ✅ **Fixed in v1.8.3** — Improved storage sync-back in `call_method` |
+| R-015 | Interpreter / push+map | After `map[key] = val` in a contract method, subsequent `list.push()` is silently ignored | **High** | ⚠️ **Partially fixed in v1.8.3** — Module-level state sync fixed (R-018), but local-variable push after map bracket-assign still drops in both contract methods AND module-level actions |
 | R-016 | Interpreter / types | `INTEGER * FLOAT` causes "Type mismatch" — no implicit coercion | **High** | ✅ **Fixed in v1.8.3** |
 | R-017 | Interpreter / modulo | `%` operator doesn't work with floats ("Unknown float operator: %") | Medium | ✅ **Fixed in v1.8.3** |
 | R-018 | Interpreter / contract-call | Module-level helper functions that modify module-level state (`push`, `map[k]=v`) have their side-effects silently ignored when called FROM a contract method | **High** | ✅ **Fixed in v1.8.3** — `clone_for_closure` now references live env |
 | R-019 | Interpreter / push-in-func | `push()` / `map[k]=v` inside a module-level `action` called from init or action-chain sometimes silently fails | **High** | ✅ **Fixed in v1.8.3** — Same closure env fix as R-018 |
+| R-020 | Interpreter / chained-assign | `self.field[key] = val` causes "Invalid assignment target" — chained property + bracket assign on contract state | **High** | Use intermediate var: `let f = self.field; f[key] = val` |
 
 ### R-003 Fix Details
 **File:** `src/zexus/evaluator/expressions.py` (eval_identifier, ~line 92)  
@@ -232,12 +233,13 @@ print(remainder)  // 1.5
 12. ~~Declare all entities AFTER contracts (entity before contract breaks contract visibility — R-012)~~ → **Fixed v1.8.3**: Closure env now references live module env
 13. ~~Only ONE field in `state { }` — use module-level `let` vars for additional state (R-013)~~ → **Fixed v1.8.3**: Multiple fields in `state { }` now work
 14. ~~Declare module-level `let` vars AFTER contract — contract can forward-reference them (R-014)~~ → **Fixed v1.8.3**: Same closure env fix as R-012
-15. ~~In contract methods: always `list.push()` BEFORE `map[key] = val` (R-015)~~ → **Fixed v1.8.3**: Improved storage sync-back
+15. ~~In contract methods: always `list.push()` BEFORE `map[key] = val` (R-015)~~ → **Partially fixed v1.8.3**: Module-level state sync works, but **local-variable push after local map bracket-assign still drops** — keep push-before-map order for local vars
 16. ~~Convert integers to float before multiplying with floats: `(int_val + 0.0) * float_val` (R-016)~~ → **Fixed v1.8.3**: Implicit Integer/Float coercion now works for `*`
 17. ~~Avoid `%` with floats; simulate modulo or convert first (R-017)~~ → **Fixed v1.8.3**: `%` now works with floats
 18. ~~State-modifying helpers called from contract methods have side-effects silently dropped — call them at module level instead (R-018)~~ → **Fixed v1.8.3**: `clone_for_closure` now references live env
 19. ~~Use list/map **literals** for bulk initialization instead of loops of `push()`/`map[k]=v` (R-019)~~ → **Fixed v1.8.3**: Same closure env fix as R-018
 20. Preferred file layout order: `imports → constants → protocol → helper actions → contract → module-level let vars → module-level helpers → entities → test → exports`
+21. Use intermediate variable for `self.field[key] = val` — do `let f = self.field; f[key] = val` (R-020)
 
 ## Phase 0 Rewrite Progress
 
@@ -282,4 +284,4 @@ Added missing range(start, end, step), typeof(val), and abs(num) built-in functi
 Test results: 24 .zx test files all passing, 300 unit tests passing, 0 CodeQL alerts.
 
 ---
-*Last updated: 2026-02-27 — v1.8.3 fixes applied*
+*Last updated: 2026-03-02 — v1.8.3 installed, verified 4 rewritten files pass, R-015 partially remains, R-020 new*
