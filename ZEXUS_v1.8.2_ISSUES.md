@@ -9,7 +9,7 @@
 |----|----------|-------------|----------|--------|
 | Q-001 | map.has() | Returns `None` instead of `true/false` | Minor | ✅ **Fixed in v1.8.3** |
 | Q-002 | list.is_empty() | Returns `None` instead of `true/false` | Minor | ✅ **Fixed in v1.8.3** |
-| Q-003 | bc.createChain() | Returns `false` | Needs investigation | ⚠️ Open — May require config params |
+| Q-003 | bc.createChain() | Returns `false` | Needs investigation |**✅ fixed**|
 
 ### Q-001 Fix Details
 **File:** `src/zexus/object.py` (Map.has method, ~line 244)  
