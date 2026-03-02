@@ -266,7 +266,7 @@ print(remainder)  // 1.5
 | src/core/consensus.zx | ~420 | ✅ Done | PoS consensus, validators, rewards, slashing |
 | src/core/state.zx | ~600 | ✅ Done | Self-evolving state, parameters, snapshots, rollback |
 | src/core/zvm.zx | ~1674 | ✅ Done | Ziver Virtual Machine — deploy, execute, upgrade, security, metrics |
-| src/core/social_capital.zx | ~1238 | ❌ Not started | Social capital scoring |
+| src/core/social_capital.zx | ~1238→~530 | ✅ Done | 15/15 tests pass |
 | src/core/seb_defi.zx | ~1213 | ❌ Not started | SEB DeFi protocols |
 | src/network/network.zx | ~1819 | ❌ Not started | P2P networking |
 | src/network/p2p.zx | ~2870 | ❌ Not started | Peer discovery |
