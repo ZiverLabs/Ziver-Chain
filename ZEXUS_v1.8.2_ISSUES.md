@@ -62,6 +62,7 @@ print(items.is_empty())  // false
 | R-023 | Interpreter / methods | `.slice()`, `.contains()` (string), `.remove()`/`.delete()` (map), `.filter()`/`.sort()` (callback) — all "Method not supported" | Medium | Manual while/for-each loops |
 | R-024 | Interpreter / range-loop | `for i in 0..N {}` — "Identifier 'i' not found" inside body | Medium | Use `while` loop with counter |
 | R-025 | Interpreter / builtins | `cache_set()`/`cache_get()` standalone not found; `math.floor()` not found | Low | Use maps for cache; `int()` for floor |
+| R-026 | Interpreter / entity-defaults | Entity fields not explicitly set during construction become `null` instead of declared defaults — `Foo{name: "test"}` leaves `value`, `weight` etc. as `null` | **High** | Always specify ALL entity fields during construction |
 
 ### R-003 Fix Details
 **File:** `src/zexus/evaluator/expressions.py` (eval_identifier, ~line 92)  
@@ -256,6 +257,7 @@ print(remainder)  // 1.5
 30. `cache_set()` / `cache_get()` standalone functions not found — use maps as cache
 31. `math.floor()` not found — use `int()` for truncation
 32. Skip separate key-tracking lists for maps — iterate maps directly with `for each key, val in map` (R-015 still drops pushes interleaved with map bracket-assigns even on different variables)
+33. Always specify ALL entity fields during construction — unset fields become `null` even if entity declares defaults (R-026)
 
 ## Phase 0 Rewrite Progress
 
@@ -267,7 +269,7 @@ print(remainder)  // 1.5
 | src/core/state.zx | ~600 | ✅ Done | Self-evolving state, parameters, snapshots, rollback |
 | src/core/zvm.zx | ~1674 | ✅ Done | Ziver Virtual Machine — deploy, execute, upgrade, security, metrics |
 | src/core/social_capital.zx | ~1238→~530 | ✅ Done | 15/15 tests pass |
-| src/core/seb_defi.zx | ~1213 | ❌ Not started | SEB DeFi protocols |
+| src/core/seb_defi.zx | ~1213→~750 | ✅ Done | 18/18 tests pass |
 | src/network/network.zx | ~1819 | ❌ Not started | P2P networking |
 | src/network/p2p.zx | ~2870 | ❌ Not started | Peer discovery |
 | src/rpc/server.zx | ~2753 | ❌ Not started | JSON-RPC server |
@@ -300,4 +302,4 @@ Added missing range(start, end, step), typeof(val), and abs(num) built-in functi
 Test results: 24 .zx test files all passing, 300 unit tests passing, 0 CodeQL alerts.
 
 ---
-*Last updated: 2026-03-02 — v1.8.3, zvm.zx rewrite in progress, R-021 through R-025 new*
+*Last updated: 2026-03-04 — v1.8.3, seb_defi.zx rewrite complete, R-026 new*

@@ -20,48 +20,109 @@
 
 | Aspect | Status |
 |---|---|
-| Total `.zx` code | ~20,000 lines across 17 files |
-| Architecture | Well-structured: core, network, rpc, runtime, contracts |
-| Runs? | **No** — fails on first import (`Module not found: ./rpc/server.zx`) |
-| Phantom imports | `../database/postgres`, `../middleware/security_middleware`, `../ai/zaie_engine` — none exist |
-| Real crypto | Calls to `crypto` stdlib — partially available in Zexus runtime |
-| Real networking | None — only data structures, no socket/TLS code |
-| Real storage | None — `persistent storage` declarations but no backend |
-| Real consensus loop | None — no block production timer or fork choice |
-| TX context | Hardcoded `"context.caller"` strings instead of `TX.caller` |
-| Events | `print()` statements instead of `emit` / event log |
+| Zexus version | **v1.8.3** (installed & verified) |
+| Total `.zx` code | ~20,000 lines across 17 files (original); shrinking as files are rewritten |
+| Phase 0 progress | **7/17 files rewritten and passing** |
+| Architecture | Well-structured: core/, network/, rpc/, runtime/, contracts/ |
+| Runs? | **Not yet** — individual files pass standalone, `main.zx` integration pending |
+| Known bugs | 25 issues tracked (R-001–R-025); R-001–R-019 fixed in v1.8.3 except R-015 partial |
+| Bug tracker | [ZEXUS_v1.8.2_ISSUES.md](ZEXUS_v1.8.2_ISSUES.md) — full details, workarounds, rewrite rules |
+
+### Phase 0 Rewrite Progress
+
+| File | Original | Rewritten | Tests | Status |
+|------|----------|-----------|-------|--------|
+| src/core/block.zx | ~440 | ~300 | All pass | ✅ Done |
+| src/core/crypto.zx | ~370 | ~280 | All pass | ✅ Done |
+| src/core/consensus.zx | ~420 | ~320 | All pass | ✅ Done |
+| src/core/state.zx | ~600 | ~400 | All pass | ✅ Done |
+| src/core/zvm.zx | ~1674 | ~1131 | 18/18 pass | ✅ Done |
+| src/core/social_capital.zx | ~1238 | ~530 | 15/15 pass | ✅ Done |
+| src/core/seb_defi.zx | ~1213 | ~750 | 18/18 pass | ✅ Done |
+| src/network/network.zx | ~1819 | — | — | 🔄 Next |
+| src/network/p2p.zx | ~2870 | — | — | ❌ Pending |
+| src/rpc/server.zx | ~2753 | — | — | ❌ Pending |
+| src/rpc/websocket.zx | ~3006 | — | — | ❌ Pending |
+| src/runtime/contract_runtime.zx | ~583 | — | — | ❌ Pending |
+| src/runtime/state_manager.zx | ~462 | — | — | ❌ Pending |
+| src/contracts/token_standard.zx | ~198 | — | — | ❌ Pending |
+| src/contracts/wallet.zx | ~239 | — | — | ❌ Pending |
+| src/contracts/bridge.zx | ~174 | — | — | ❌ Pending |
+| src/contracts/test_contract.zx | ~20 | — | — | ❌ Pending |
+| src/main.zx | ~263 | — | — | ❌ Pending (last) |
+
+### Proven Rewrite Pattern
+
+Every rewritten file follows this structure and passes all tests on first run:
+
+```
+imports (crypto, dt, json) → constants → protocol →
+module-level let vars (R-022: maps/lists can't be in state{}) →
+contract (state: primitives only) →
+module-level helper actions →
+entities (outside contract) →
+test_xxx() function →
+exports
+```
+
+### Key Workarounds Applied in Every File
+
+| Bug | Workaround |
+|-----|-----------|
+| R-015 | Iterate maps with `for each k,v in map` — no parallel key-tracking lists |
+| R-020 | `self.field[k]=v` → `let f = self.field; f[k]=v` |
+| R-021 | `+=` → `x = x + 1`; `not` → `!` |
+| R-022 | State fields primitives only; maps/lists as module-level `let` vars |
+| R-023 | `.filter()`/`.sort()`/`.slice()` → manual while/for-each loops |
+| R-024 | `for i in 0..N` → `while` loop with counter |
+| R-025 | `cache_*()` → maps; `math.floor()` → `int()` |
+| R-026 | Always specify ALL entity fields during construction — unset fields become `null` |
+
+### What Gets Removed in Every File
+
+- Phantom imports: `db`, `zaie`, `security`
+- `track_memory()`, `cache()`, `throttle()`
+- `async`/`await`, `verify()`, `audit()`
+- `watch` blocks, `inject`, `middleware()`, `register_dependency()`
+- DB calls (CREATE TABLE, INSERT, SELECT, etc.)
+- AI calls (`zaie.*`) → replaced with deterministic logic
+- `persistent storage` → module-level `let` vars
+- `crypto.sha3_256` → `crypto.keccak256`
+- `datetime.now().timestamp()` → `dt.timestamp()`
 
 ---
 
 ## Phase 0: Foundation — Make It Run (Critical Path)
 
-**Goal:** Get `zx run src/main.zx` to execute without errors.
+**Goal:** Rewrite all 17 `.zx` files to use only working Zexus v1.8.3 features, then get `zx run src/main.zx` to execute without errors.
 
-### 0.1 — Fix Module Import System
-- [ ] Audit which `use` import syntax actually works in Zexus 1.8.0 (`use "file.zx"` vs `use { X } from "file.zx"`)
-- [ ] Run `zexus check` on each `.zx` file to identify syntax errors
-- [ ] Normalize all inter-file imports to a working pattern
-- [ ] Create an import test file that validates each module loads
+### 0.1 — Rewrite All Source Files *(in progress)*
+- [x] Comprehensive v1.8.3 feature probing (12 test files, all features catalogued)
+- [x] Establish rewrite pattern and workaround rules (32 rules documented)
+- [x] Rewrite src/core/block.zx — all tests pass
+- [x] Rewrite src/core/crypto.zx — all tests pass
+- [x] Rewrite src/core/consensus.zx — all tests pass
+- [x] Rewrite src/core/state.zx — all tests pass
+- [x] Rewrite src/core/zvm.zx — 18/18 tests pass
+- [x] Rewrite src/core/social_capital.zx — 15/15 tests pass
+- [x] Rewrite src/core/seb_defi.zx — 18/18 tests pass
+- [ ] Rewrite src/network/network.zx
+- [ ] Rewrite src/network/p2p.zx
+- [ ] Rewrite src/rpc/server.zx
+- [ ] Rewrite src/rpc/websocket.zx
+- [ ] Rewrite src/runtime/contract_runtime.zx
+- [ ] Rewrite src/runtime/state_manager.zx
+- [ ] Rewrite src/contracts/token_standard.zx
+- [ ] Rewrite src/contracts/wallet.zx
+- [ ] Rewrite src/contracts/bridge.zx
+- [ ] Rewrite src/contracts/test_contract.zx
 
-### 0.2 — Remove or Stub Phantom Dependencies
-- [ ] Remove all imports of `../database/postgres` (does not exist)
-- [ ] Remove all imports of `../middleware/security_middleware` (does not exist)
-- [ ] Remove all imports of `../ai/zaie_engine` (does not exist)
-- [ ] Replace removed functionality with:
-  - Inline stubs for audit/security (simple print-based logging)
-  - Built-in Zexus `"crypto"` module for crypto operations
-  - Built-in Zexus `"blockchain"` module for chain operations
-- [ ] Remove or stub references to `track_memory()`, `cache()`, `throttle()`, `audit()`, `verify()`, `watch` blocks (Zexus-specific features that may not exist in 1.8.0)
+### 0.2 — Integration
+- [ ] Rewrite src/main.zx to import all rewritten modules
+- [ ] Get `zx run src/main.zx` to print "Node initialized" without errors
 
-### 0.3 — Simplify main.zx Entry Point
-- [ ] Create a minimal `main.zx` that imports one module at a time
-- [ ] Verify each module loads independently
-- [ ] Build up to full node initialization incrementally
-- [ ] Get `zx run src/main.zx` to print "Node initialized" successfully
-
-### 0.4 — Establish Test Harness
-- [ ] Create `tests/smoke_test.zx` — imports all modules, creates basic objects
-- [ ] Create `tests/run_tests.sh` — runs all test files and reports pass/fail
+### 0.3 — Smoke Test
+- [ ] Create integration test that exercises all modules together
 - [ ] Validate with `zx run tests/smoke_test.zx`
 
 **Exit Criteria:** `zx run src/main.zx` executes and prints initialization messages without errors.
@@ -464,6 +525,11 @@ Phase 4       Phase 5          Phase 6
 
 - [ZEXUS_BLOCKCHAIN.md](docs/reference/ZEXUS_BLOCKCHAIN.md) — Complete API reference for all 21 blockchain modules
 - [Zexus Interpreter](https://github.com/Zaidux/zexus-interpreter) — The Zexus language runtime
-- Built-in modules: `use "crypto" as crypto`, `use "blockchain" as bc`
+- Built-in modules: `use "crypto" as crypto`, `use "blockchain" as bc`, `use "datetime" as dt`, `use "json" as json`
 - Built-in globals: `hash()`, `keccak256()`, `generateKeypair()`, `signature()`, `verify_sig()`, `deriveAddress()`, `randomBytes()`
+- Bug tracker: [ZEXUS_v1.8.2_ISSUES.md](ZEXUS_v1.8.2_ISSUES.md) — 25 issues, 32 rewrite rules
 - Runtime Python modules: `chain.py`, `node.py`, `consensus.py`, `contract_vm.py`, `crypto.py`, `wallet.py`, `tokens.py`, `network.py`, `multichain.py`, `events.py`, `mpt.py`, `transaction.py`, `rpc.py`, `ledger.py`, `upgradeable.py`, `verification.py`, `accelerator.py`, `monitoring.py`, `storage.py`
+
+---
+
+*Last updated: 2026-03-04 — Phase 0 in progress, 6/17 files rewritten, Zexus v1.8.3*
