@@ -1,1819 +1,1139 @@
-# src/network/network.zx
+// src/network/network.zx
+// P2P Network Layer for Ziver Chain
+// Phase 0 rewrite — in-memory, no DB, no AI, no async
+
 use "crypto" as crypto
-use "datetime" as datetime
-use "math" as math
+use "datetime" as dt
 use "json" as json
-use "../database/postgres" as db
-use "../middleware/security_middleware" as security
-use "../ai/zaie_engine" as zaie
 
-// Enable memory tracking for network operations
-track_memory()
-
-// Security policies for P2P network
-const NETWORK_POLICIES = {
-    max_peer_connections: 100,
-    max_message_size: 1048576, // 1MB
-    max_peers_per_chain: 50,
-    peer_timeout_seconds: 300,
-    connection_retry_limit: 3,
-    message_rate_limit: 1000, // messages per minute per peer
-    blacklist_threshold: 0.2, // 20% failure rate
-    min_peer_score: 0.3,
-    encryption_required: true,
-    heartbeat_interval: 30 // seconds
+// -------------------------------------------------------------------
+// Constants
+// -------------------------------------------------------------------
+let NETWORK_POLICIES = {
+    "max_peer_connections": 100,
+    "max_message_size": 1048576,
+    "max_peers_per_chain": 50,
+    "peer_timeout_seconds": 300,
+    "connection_retry_limit": 3,
+    "message_rate_limit": 1000,
+    "blacklist_threshold": 0.2,
+    "min_peer_score": 0.3,
+    "heartbeat_interval": 30
 }
 
-// Cache for peer information and network state
-cache("peer_cache", { ttl: 300, strategy: "lru", max_entries: 1000 })
-cache("dns_discovery_cache", { ttl: 600, strategy: "fifo" })
-cache("network_metrics", { ttl: 60, strategy: "lfu" })
+let _SUPPORTED_CHAINS = ["ZIVER", "ETHEREUM", "TON", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "AVALANCHE", "SOLANA", "COSMOS"]
 
-// Throttle network operations
-throttle("peer_connections", { requests_per_minute: 100, burst: 20 })
-throttle("message_broadcast", { requests_per_minute: 500 })
-throttle("peer_discovery", { requests_per_minute: 10 })
+let _PROTOCOL_VERSIONS = {
+    "2.0": 1,
+    "1.5": 1,
+    "1.0": 0
+}
 
-// Advanced P2P Network Layer with Multi-Chain Support and Enhanced Security
+let _DEFAULT_BOOTSTRAP = [
+    {"address": "bootnode1.ziver.io:30303", "chain_type": "ZIVER"},
+    {"address": "bootnode2.ziver.io:30303", "chain_type": "ZIVER"},
+    {"address": "bootnode3.ziver.io:30303", "chain_type": "ZIVER"}
+]
+
+// -------------------------------------------------------------------
+// Protocol
+// -------------------------------------------------------------------
 protocol P2PNetworkProtocol {
-    action start_node(config: NodeConfig) -> NodeStartResult
-    action stop_node() -> NodeStopResult
-    action connect_to_peer(connection: PeerConnection) -> ConnectionResult
-    action disconnect_from_peer(peer_id: string, reason: string) -> DisconnectionResult
-    action broadcast_message(broadcast: NetworkBroadcast) -> BroadcastResult
-    action broadcast_message_batch(broadcasts: list) -> list
-    action discover_peers(options: DiscoveryOptions) -> DiscoveryResult
-    action get_network_status() -> NetworkStatus
-    action get_peer_metrics(peer_id: string?) -> PeerMetrics
-    action validate_peer(peer_info: PeerInfo) -> ValidationResult
-    action emergency_isolate(reason: string) -> EmergencyResult
-    action upgrade_protocol(version: string) -> UpgradeResult
+    action start_node(config)
+    action stop_node()
+    action connect_to_peer(peer_id, address, chain_type)
+    action disconnect_from_peer(peer_id, reason)
+    action broadcast_message(msg_type, data, target_chain)
+    action discover_peers(chain_type)
+    action get_network_status()
+    action validate_peer(peer_id, address, chain_type)
+    action emergency_isolate(reason)
+    action get_peer_metrics()
+    action upgrade_protocol(version)
 }
 
+// -------------------------------------------------------------------
+// Module-level storage (R-022)
+// -------------------------------------------------------------------
+let _peers = {}
+let _message_queue = []
+let _chain_connections = {}
+let _blacklisted_peers = {}
+let _connection_history = []
+let _network_stats = {
+    "messages_sent": 0,
+    "messages_received": 0,
+    "bytes_sent": 0,
+    "bytes_received": 0,
+    "connection_attempts": 0,
+    "successful_connections": 0,
+    "failed_connections": 0
+}
+
+// -------------------------------------------------------------------
+// Contract
+// -------------------------------------------------------------------
 contract P2PNetwork implements P2PNetworkProtocol {
-    persistent storage peers: map
-    persistent storage node_id: string
-    persistent storage node_config: NodeConfig
-    persistent storage is_listening: boolean = false
-    persistent storage message_queue: list
-    persistent storage chain_connections: map
-    persistent storage blacklisted_peers: map
-    persistent storage connection_history: list
-    persistent storage network_stats: map
-    persistent storage protocol_versions: map
-    
-    // Enhanced data structures
-    entity NodeConfig {
-        port: integer
-        host: string = "0.0.0.0"
-        network_type: string = "mainnet"
-        max_connections: integer = 100
-        enable_encryption: boolean = true
-        enable_nat_traversal: boolean = true
-        enable_upnp: boolean = false
-        bootstrap_nodes: list
-        whitelist: list?
-        blacklist: list?
-        protocol_version: string = "2.0"
-        heartbeat_interval: integer = 30
-        peer_discovery_interval: integer = 300
-        metrics_collection: boolean = true
-        security_level: string = "high" // low, medium, high
-        created_at: integer
-        updated_at: integer
+    state {
+        node_id: ""
+        listening: 0
+        protocol_version: ""
+        port: 30303
+        host: ""
+        network_type: ""
+        max_connections: 100
+        security_level: ""
+        started_at: 0
+        total_peers: 0
     }
-    
-    entity PeerInfo {
-        id: string
-        address: string
-        chain_type: string
-        public_key: string?
-        protocol_version: string
-        capabilities: list
-        metadata: map?
-        first_seen: integer
-        last_seen: integer
-        connection_count: integer = 0
-        reputation_score: float = 1.0
-        is_whitelisted: boolean = false
-        is_blacklisted: boolean = false
+
+    action init() {
+        let node_hash = crypto.keccak256("node_" + string(dt.timestamp()))
+        self.node_id = "NODE_" + node_hash
+        self.listening = 0
+        self.protocol_version = "2.0"
+        self.port = 30303
+        self.host = "0.0.0.0"
+        self.network_type = "mainnet"
+        self.max_connections = 100
+        self.security_level = "high"
+        self.started_at = 0
+        self.total_peers = 0
+
+        // Initialize chain connections for all supported chains
+        let idx = 0
+        while idx < len(_SUPPORTED_CHAINS) {
+            let chain = _SUPPORTED_CHAINS[idx]
+            _chain_connections[chain] = 0
+            idx = idx + 1
+        }
     }
-    
-    entity PeerConnection {
-        peer_info: PeerInfo
-        connection_type: string = "outbound" // inbound, outbound, relay
-        encryption_key: string?
-        session_id: string?
-        established_at: integer
-        latency_ms: integer?
-        bandwidth_kbps: integer?
-        is_encrypted: boolean = false
-        is_authenticated: boolean = false
-        connection_score: float = 1.0
-    }
-    
-    entity NetworkBroadcast {
-        message_type: string // block, transaction, state_update, peer_list, custom
-        data: any
-        target_chain: string
-        target_peers: list? // Specific peers, null for broadcast to all
-        priority: string = "normal" // low, normal, high, critical
-        encryption_required: boolean = true
-        ttl: integer = 3600 // Time to live in seconds
-        signature: string?
-        timestamp: integer
-    }
-    
-    entity DiscoveryOptions {
-        discovery_methods: list // dns, bootstrap, peer_exchange, multicast
-        chain_types: list
-        max_peers: integer = 50
-        timeout_seconds: integer = 30
-        use_cache: boolean = true
-        validate_peers: boolean = true
-        timestamp: integer
-    }
-    
-    entity NodeStartResult {
-        success: boolean
-        node_id: string
-        listening_address: string
-        started_at: integer
-        bootstrap_peers_connected: integer
-        warnings: list
-        errors: list
-        metrics_endpoint: string?
-    }
-    
-    entity ConnectionResult {
-        success: boolean
-        peer_id: string
-        session_id: string?
-        connection_time_ms: integer
-        encryption_established: boolean
-        latency_ms: integer?
-        warnings: list
-        error: string?
-        timestamp: integer
-    }
-    
-    entity BroadcastResult {
-        success: boolean
-        message_id: string
-        target_peers_count: integer
-        successful_deliveries: integer
-        failed_deliveries: integer
-        average_latency_ms: float
-        encryption_used: boolean
-        broadcast_time_ms: integer
-        timestamp: integer
-    }
-    
-    entity DiscoveryResult {
-        success: boolean
-        discovered_peers: integer
-        validated_peers: integer
-        connected_peers: integer
-        discovery_methods_used: list
-        discovery_time_ms: integer
-        new_peers: list
-        cached_peers: list
-        timestamp: integer
-    }
-    
-    entity NetworkStatus {
-        node_id: string
-        is_listening: boolean
-        uptime_seconds: integer
-        total_connections: integer
-        active_connections: integer
-        chain_distribution: map
-        message_queue_size: integer
-        network_throughput: NetworkThroughput
-        peer_health: PeerHealthStats
-        security_status: SecurityStatus
-        resource_usage: ResourceUsage
-        alerts: list
-        timestamp: integer
-    }
-    
-    entity NetworkThroughput {
-        messages_per_second: float
-        bytes_per_second: float
-        broadcast_success_rate: float
-        average_latency_ms: float
-        peak_load: float
-    }
-    
-    entity PeerHealthStats {
-        total_peers: integer
-        healthy_peers: integer
-        degraded_peers: integer
-        unhealthy_peers: integer
-        average_reputation: float
-        connection_stability: float
-    }
-    
-    // Reactive state for network monitoring
-    watch peers {
-        let healthy_count = 0
-        for each peer_id, peer in this.peers {
-            if peer.connection_score > 0.7 {
-                healthy_count += 1
+
+    // ---------------------------------------------------------------
+    // start_node
+    // ---------------------------------------------------------------
+    action start_node(config) {
+        if self.listening == 1 {
+            return NodeStartResult{
+                success: false,
+                node_id: self.node_id,
+                listening_address: "",
+                started_at: 0,
+                bootstrap_peers_connected: 0,
+                explanation: "Node is already running"
             }
         }
-        print("🌐 Network Peers: " + string(len(this.peers)) + " total, " + 
-              string(healthy_count) + " healthy")
-    }
-    
-    watch message_queue {
-        if len(this.message_queue) > 1000 {
-            print("⚠️ Message queue growing: " + string(len(this.message_queue)) + " messages")
+
+        // Apply config
+        if config != null {
+            if config.port != null {
+                self.port = config.port
+            }
+            if config.host != null {
+                self.host = config.host
+            }
+            if config.network_type != null {
+                self.network_type = config.network_type
+            }
+            if config.max_connections != null {
+                self.max_connections = config.max_connections
+            }
+            if config.protocol_version != null {
+                let pv = _PROTOCOL_VERSIONS[config.protocol_version]
+                if pv != null {
+                    if pv == 1 {
+                        self.protocol_version = config.protocol_version
+                    }
+                }
+            }
+            if config.security_level != null {
+                self.security_level = config.security_level
+            }
+        }
+
+        self.listening = 1
+        self.started_at = int(dt.timestamp())
+
+        let listening_addr = self.host + ":" + string(self.port)
+
+        // Simulate connecting to bootstrap nodes
+        let bootstrap_connected = 0
+        let b_idx = 0
+        while b_idx < len(_DEFAULT_BOOTSTRAP) {
+            let bn = _DEFAULT_BOOTSTRAP[b_idx]
+            let boot_id = "BOOT_" + crypto.keccak256(bn["address"])
+            let result = self.connect_to_peer(boot_id, bn["address"], bn["chain_type"])
+            if result.success {
+                bootstrap_connected = bootstrap_connected + 1
+            }
+            b_idx = b_idx + 1
+        }
+
+        return NodeStartResult{
+            success: true,
+            node_id: self.node_id,
+            listening_address: listening_addr,
+            started_at: self.started_at,
+            bootstrap_peers_connected: bootstrap_connected,
+            explanation: "Node started on " + listening_addr
         }
     }
 
-    action init(node_id: string, initial_config: map? = null) {
-        this.node_id = node_id
-        this.peers = {}
-        this.message_queue = []
-        this.chain_connections = {}
-        this.blacklisted_peers = {}
-        this.connection_history = []
-        this.network_stats = {
+    // ---------------------------------------------------------------
+    // stop_node
+    // ---------------------------------------------------------------
+    action stop_node() {
+        if self.listening == 0 {
+            return NodeStopResult{
+                success: false,
+                node_id: self.node_id,
+                uptime_seconds: 0,
+                disconnected_peers: 0,
+                explanation: "Node is not running"
+            }
+        }
+
+        // Disconnect all peers
+        let disconnected = 0
+        for each pid, peer in _peers {
+            if peer["connected"] == 1 {
+                peer["connected"] = 0
+                disconnected = disconnected + 1
+            }
+        }
+
+        let uptime = int(dt.timestamp()) - self.started_at
+        self.listening = 0
+
+        return NodeStopResult{
+            success: true,
+            node_id: self.node_id,
+            uptime_seconds: uptime,
+            disconnected_peers: disconnected,
+            explanation: "Node stopped after " + string(uptime) + "s"
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // connect_to_peer
+    // ---------------------------------------------------------------
+    action connect_to_peer(peer_id, address, chain_type) {
+        // Check if node is listening
+        if self.listening == 0 {
+            if self.started_at > 0 {
+                // Do nothing, caller should start first
+            }
+        }
+
+        // Check if already connected
+        let existing = _peers[peer_id]
+        if existing != null {
+            if existing["connected"] == 1 {
+                return ConnectionResult{
+                    success: true,
+                    peer_id: peer_id,
+                    session_id: existing["session_id"],
+                    latency_ms: existing["latency_ms"],
+                    explanation: "Already connected",
+                    timestamp: int(dt.timestamp())
+                }
+            }
+        }
+
+        // Check blacklist
+        let bl = _blacklisted_peers[peer_id]
+        if bl != null {
+            _network_stats["connection_attempts"] = _network_stats["connection_attempts"] + 1
+            _network_stats["failed_connections"] = _network_stats["failed_connections"] + 1
+            return ConnectionResult{
+                success: false,
+                peer_id: peer_id,
+                session_id: "",
+                latency_ms: 0,
+                explanation: "Peer is blacklisted",
+                timestamp: int(dt.timestamp())
+            }
+        }
+
+        // Check connection limit
+        let current_count = self.total_peers
+        if current_count >= self.max_connections {
+            _network_stats["connection_attempts"] = _network_stats["connection_attempts"] + 1
+            _network_stats["failed_connections"] = _network_stats["failed_connections"] + 1
+            return ConnectionResult{
+                success: false,
+                peer_id: peer_id,
+                session_id: "",
+                latency_ms: 0,
+                explanation: "Connection limit reached",
+                timestamp: int(dt.timestamp())
+            }
+        }
+
+        // Check chain limit
+        let chain_count = _chain_connections[chain_type]
+        if chain_count == null {
+            chain_count = 0
+        }
+        let max_per_chain = NETWORK_POLICIES["max_peers_per_chain"]
+        if chain_count >= max_per_chain {
+            _network_stats["connection_attempts"] = _network_stats["connection_attempts"] + 1
+            _network_stats["failed_connections"] = _network_stats["failed_connections"] + 1
+            return ConnectionResult{
+                success: false,
+                peer_id: peer_id,
+                session_id: "",
+                latency_ms: 0,
+                explanation: "Chain connection limit reached for " + chain_type,
+                timestamp: int(dt.timestamp())
+            }
+        }
+
+        // Validate address
+        if address == "" {
+            return ConnectionResult{
+                success: false,
+                peer_id: peer_id,
+                session_id: "",
+                latency_ms: 0,
+                explanation: "Address is empty",
+                timestamp: int(dt.timestamp())
+            }
+        }
+
+        // Create session
+        let session_id = "SES_" + crypto.keccak256(peer_id + string(dt.timestamp()))
+        let simulated_latency = 20 + int(random() * 80)
+
+        // Store peer
+        _peers[peer_id] = {
+            "peer_id": peer_id,
+            "address": address,
+            "chain_type": chain_type,
+            "connected": 1,
+            "session_id": session_id,
+            "established_at": int(dt.timestamp()),
+            "latency_ms": simulated_latency,
+            "reputation_score": 1.0,
             "messages_sent": 0,
             "messages_received": 0,
             "bytes_sent": 0,
-            "bytes_received": 0,
-            "connection_attempts": 0,
-            "successful_connections": 0,
-            "failed_connections": 0
+            "bytes_received": 0
         }
-        this.protocol_versions = {
-            "2.0": {"supported": true, "default": true},
-            "1.5": {"supported": true, "default": false},
-            "1.0": {"supported": false, "default": false}
-        }
-        
-        // Initialize configuration
-        let timestamp = datetime.now().timestamp()
-        this.node_config = NodeConfig{
-            port: 30303,
-            host: "0.0.0.0",
-            network_type: "mainnet",
-            max_connections: NETWORK_POLICIES.max_peer_connections,
-            enable_encryption: NETWORK_POLICIES.encryption_required,
-            bootstrap_nodes: this.get_default_bootstrap_nodes("mainnet"),
-            protocol_version: "2.0",
-            heartbeat_interval: NETWORK_POLICIES.heartbeat_interval,
-            peer_discovery_interval: 300,
-            security_level: "high",
-            created_at: timestamp,
-            updated_at: timestamp,
-            ...initial_config or {}
-        }
-        
-        // Initialize database tables
-        try {
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS network_peers (
-                    peer_id VARCHAR(64) PRIMARY KEY,
-                    address VARCHAR(256) NOT NULL,
-                    chain_type VARCHAR(20) NOT NULL,
-                    public_key TEXT,
-                    protocol_version VARCHAR(10) NOT NULL,
-                    capabilities JSONB,
-                    reputation_score FLOAT DEFAULT 1.0,
-                    connection_count INTEGER DEFAULT 0,
-                    first_seen TIMESTAMP NOT NULL,
-                    last_seen TIMESTAMP NOT NULL,
-                    last_connected TIMESTAMP,
-                    metadata JSONB,
-                    is_whitelisted BOOLEAN DEFAULT FALSE,
-                    is_blacklisted BOOLEAN DEFAULT FALSE,
-                    INDEX idx_chain_type (chain_type),
-                    INDEX idx_reputation (reputation_score),
-                    INDEX idx_last_seen (last_seen)
-                )
-            """)
-            
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS network_connections (
-                    connection_id VARCHAR(64) PRIMARY KEY,
-                    peer_id VARCHAR(64) NOT NULL,
-                    connection_type VARCHAR(20) NOT NULL,
-                    established_at TIMESTAMP NOT NULL,
-                    disconnected_at TIMESTAMP,
-                    duration_seconds INTEGER,
-                    bytes_sent BIGINT DEFAULT 0,
-                    bytes_received BIGINT DEFAULT 0,
-                    messages_sent INTEGER DEFAULT 0,
-                    messages_received INTEGER DEFAULT 0,
-                    average_latency_ms INTEGER,
-                    disconnect_reason VARCHAR(100),
-                    session_data JSONB,
-                    INDEX idx_peer (peer_id),
-                    INDEX idx_established (established_at)
-                )
-            """)
-            
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS network_messages (
-                    message_id VARCHAR(64) PRIMARY KEY,
-                    message_type VARCHAR(50) NOT NULL,
-                    sender_id VARCHAR(64),
-                    receiver_id VARCHAR(64),
-                    chain_type VARCHAR(20) NOT NULL,
-                    data_hash VARCHAR(128) NOT NULL,
-                    size_bytes INTEGER NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
-                    delivered BOOLEAN DEFAULT FALSE,
-                    delivery_time_ms INTEGER,
-                    encryption_used BOOLEAN DEFAULT FALSE,
-                    priority VARCHAR(20) DEFAULT 'normal',
-                    metadata JSONB,
-                    INDEX idx_timestamp (timestamp),
-                    INDEX idx_chain_type (chain_type),
-                    INDEX idx_delivered (delivered, timestamp)
-                )
-            """)
-        } catch (error) {
-            print("⚠️ Failed to initialize network database: " + error)
-        }
-        
-        // Initialize chain connections
-        this.initialize_chain_connections()
-    }
 
-    action protect start_node(config: NodeConfig) -> NodeStartResult {
-        """
-        Start the P2P node with comprehensive configuration and security setup
-        """
-        let start_time = datetime.now().timestamp_ms()
-        let warnings = []
-        let errors = []
-        
-        try {
-            // Validate configuration
-            verify(config.port > 0 and config.port < 65536, "Invalid port number")
-            verify(config.max_connections > 0, "Maximum connections must be positive")
-            verify(this.protocol_versions.has(config.protocol_version), 
-                   "Unsupported protocol version: " + config.protocol_version)
-            
-            // Update node configuration
-            config.updated_at = datetime.now().timestamp()
-            this.node_config = config
-            this.is_listening = true
-            
-            // Initialize listening socket
-            let listening_address = config.host + ":" + string(config.port)
-            print("🔄 Starting P2P Node v" + config.protocol_version)
-            print("  Address: " + listening_address)
-            print("  Network: " + config.network_type)
-            print("  Max Connections: " + string(config.max_connections))
-            print("  Security Level: " + config.security_level)
-            print("  Encryption: " + string(config.enable_encryption))
-            
-            // Start background services
-            let services_started = this.start_background_services()
-            if not services_started.all_success {
-                errors.push("Failed to start some background services")
-                warnings = warnings + services_started.warnings
-            }
-            
-            // Connect to bootstrap nodes
-            let bootstrap_results = this.connect_to_bootstrap_nodes()
-            let bootstrap_connected = bootstrap_results.connected_count
-            
-            // Initialize network metrics collection
-            if config.metrics_collection {
-                this.initialize_metrics_collection()
-            }
-            
-            // Set up security monitoring
-            this.initialize_security_monitoring()
-            
-            let start_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("node_started", {
-                "node_id": this.node_id,
-                "config": config,
-                "bootstrap_peers_connected": bootstrap_connected,
-                "start_time_ms": start_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return NodeStartResult{
-                success: true,
-                node_id: this.node_id,
-                listening_address: listening_address,
-                started_at: datetime.now().timestamp(),
-                bootstrap_peers_connected: bootstrap_connected,
-                warnings: warnings,
-                errors: errors,
-                metrics_endpoint: config.metrics_collection ? "/metrics" : null
-            }
-            
-        } catch (error) {
-            let start_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("node_start_failed", {
-                "node_id": this.node_id,
-                "error": error,
-                "start_time_ms": start_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return NodeStartResult{
-                success: false,
-                errors: ["Node startup failed: " + error],
-                started_at: datetime.now().timestamp()
-            }
+        // Update chain count
+        _chain_connections[chain_type] = chain_count + 1
+
+        // Record history
+        _connection_history.push({
+            "peer_id": peer_id,
+            "action": "connect",
+            "timestamp": int(dt.timestamp())
+        })
+
+        // Update stats
+        self.total_peers = self.total_peers + 1
+        _network_stats["connection_attempts"] = _network_stats["connection_attempts"] + 1
+        _network_stats["successful_connections"] = _network_stats["successful_connections"] + 1
+
+        return ConnectionResult{
+            success: true,
+            peer_id: peer_id,
+            session_id: session_id,
+            latency_ms: simulated_latency,
+            explanation: "Connected to " + address,
+            timestamp: int(dt.timestamp())
         }
     }
 
-    action protect stop_node() -> NodeStopResult {
-        """
-        Gracefully stop the P2P node with connection cleanup
-        """
-        let stop_time = datetime.now().timestamp_ms()
-        
-        try {
-            print("🛑 Stopping P2P Node...")
-            
-            // Set listening flag to false
-            this.is_listening = false
-            
-            // Gracefully disconnect from all peers
-            let disconnection_results = this.disconnect_from_all_peers("node_shutdown")
-            
-            // Stop background services
-            this.stop_background_services()
-            
-            // Save network state to database
-            this.save_network_state()
-            
-            // Clear caches
-            cache_delete("peer_cache")
-            cache_delete("network_metrics")
-            
-            let stop_time_ms = datetime.now().timestamp_ms() - stop_time
-            let uptime_seconds = datetime.now().timestamp() - this.node_config.created_at
-            
-            audit("node_stopped", {
-                "node_id": this.node_id,
-                "uptime_seconds": uptime_seconds,
-                "disconnected_peers": disconnection_results.disconnected_count,
-                "stop_time_ms": stop_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return NodeStopResult{
-                success: true,
-                node_id: this.node_id,
-                uptime_seconds: uptime_seconds,
-                disconnected_peers: disconnection_results.disconnected_count,
-                stop_time_ms: stop_time_ms,
-                timestamp: datetime.now().timestamp()
-            }
-            
-        } catch (error) {
-            let stop_time_ms = datetime.now().timestamp_ms() - stop_time
-            
-            audit("node_stop_failed", {
-                "node_id": this.node_id,
-                "error": error,
-                "stop_time_ms": stop_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return NodeStopResult{
-                success: false,
-                error: error,
-                stop_time_ms: stop_time_ms
-            }
-        }
-    }
-
-    action protect connect_to_peer(connection: PeerConnection) -> ConnectionResult {
-        """
-        Establish a secure connection to a peer with authentication and encryption
-        """
-        let start_time = datetime.now().timestamp_ms()
-        
-        try {
-            let peer_info = connection.peer_info
-            
-            // Validate peer
-            let validation = this.validate_peer(peer_info)
-            if not validation.valid {
-                throw "Peer validation failed: " + validation.reason
-            }
-            
-            // Check if already connected
-            if this.peers.has(peer_info.id) {
-                let existing_peer = this.peers[peer_info.id]
-                if existing_peer.is_connected {
-                    return ConnectionResult{
-                        success: true,
-                        peer_id: peer_info.id,
-                        connection_time_ms: 0,
-                        encryption_established: existing_peer.is_encrypted,
-                        warnings: ["Already connected to peer"],
-                        timestamp: datetime.now().timestamp()
-                    }
-                }
-            }
-            
-            // Check connection limits
-            if not this.can_establish_connection(peer_info.chain_type) {
-                throw "Connection limit reached for chain: " + peer_info.chain_type
-            }
-            
-            // Check if peer is blacklisted
-            if this.is_peer_blacklisted(peer_info.id) {
-                throw "Peer is blacklisted: " + peer_info.id
-            }
-            
-            print("🔗 Connecting to peer: " + peer_info.address + 
-                  " (" + peer_info.chain_type + ")")
-            
-            // Establish connection
-            let connection_result = this.establish_connection(peer_info, connection)
-            
-            // Setup encryption if required
-            let encryption_established = false
-            if this.node_config.enable_encryption and connection.encryption_key != null {
-                encryption_established = this.establish_encryption(
-                    peer_info.id, 
-                    connection.encryption_key,
-                    connection.session_id
-                )
-                
-                if not encryption_established and this.node_config.security_level == "high" {
-                    throw "Encryption establishment failed for high security mode"
-                }
-            }
-            
-            // Create peer connection record
-            let peer_connection = {
-                "peer_info": peer_info,
-                "connection_type": connection.connection_type,
-                "established_at": datetime.now().timestamp(),
-                "is_encrypted": encryption_established,
-                "is_authenticated": connection.is_authenticated,
-                "connection_score": 1.0,
-                "latency_ms": null,
-                "bandwidth_kbps": null,
-                "session_id": connection.session_id,
-                "last_heartbeat": datetime.now().timestamp(),
-                "bytes_sent": 0,
-                "bytes_received": 0,
-                "messages_sent": 0,
-                "messages_received": 0
-            }
-            
-            // Store peer connection
-            this.peers[peer_info.id] = peer_connection
-            
-            // Update chain connections
-            this.add_to_chain_connections(peer_info.chain_type, peer_info.id)
-            
-            // Update peer info in database
-            try {
-                db.execute("""
-                    INSERT INTO network_peers (
-                        peer_id, address, chain_type, public_key, protocol_version,
-                        capabilities, reputation_score, first_seen, last_seen, last_connected,
-                        metadata, is_whitelisted, is_blacklisted
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 
-                              CURRENT_TIMESTAMP, ?, ?, ?)
-                    ON CONFLICT (peer_id) DO UPDATE SET
-                        last_seen = CURRENT_TIMESTAMP,
-                        last_connected = CURRENT_TIMESTAMP,
-                        connection_count = network_peers.connection_count + 1,
-                        reputation_score = GREATEST(0.1, network_peers.reputation_score + 0.01),
-                        metadata = EXCLUDED.metadata
-                """, [
-                    peer_info.id,
-                    peer_info.address,
-                    peer_info.chain_type,
-                    peer_info.public_key,
-                    peer_info.protocol_version,
-                    json.stringify(peer_info.capabilities or []),
-                    peer_info.reputation_score,
-                    json.stringify(peer_info.metadata or {}),
-                    peer_info.is_whitelisted,
-                    peer_info.is_blacklisted
-                ])
-                
-                // Record connection
-                db.execute("""
-                    INSERT INTO network_connections (
-                        connection_id, peer_id, connection_type, established_at, session_data
-                    ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-                """, [
-                    "CONN_" + crypto.sha3_256(peer_info.id + string(datetime.now().timestamp())),
-                    peer_info.id,
-                    connection.connection_type,
-                    json.stringify({
-                        "encryption_established": encryption_established,
-                        "session_id": connection.session_id,
-                        "security_level": this.node_config.security_level
-                    })
-                ])
-            } catch (error) {
-                print("⚠️ Failed to update peer in database: " + error)
-            }
-            
-            // Update network stats
-            this.network_stats.connection_attempts += 1
-            this.network_stats.successful_connections += 1
-            
-            let connection_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            // Measure initial latency
-            let latency_ms = await this.measure_latency(peer_info.id)
-            if latency_ms != null {
-                peer_connection.latency_ms = latency_ms
-            }
-            
-            // Start heartbeat for this connection
-            this.start_heartbeat_monitor(peer_info.id)
-            
-            audit("peer_connected", {
-                "peer_id": peer_info.id,
-                "address": peer_info.address,
-                "chain_type": peer_info.chain_type,
-                "connection_type": connection.connection_type,
-                "encryption_established": encryption_established,
-                "connection_time_ms": connection_time_ms,
-                "latency_ms": latency_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            let warnings = []
-            if not encryption_established and this.node_config.enable_encryption {
-                warnings.push("Encryption not established for connection")
-            }
-            if peer_info.reputation_score < 0.5 {
-                warnings.push("Low reputation peer: " + string(peer_info.reputation_score))
-            }
-            
-            return ConnectionResult{
-                success: true,
-                peer_id: peer_info.id,
-                session_id: connection.session_id,
-                connection_time_ms: connection_time_ms,
-                encryption_established: encryption_established,
-                latency_ms: latency_ms,
-                warnings: warnings,
-                timestamp: datetime.now().timestamp()
-            }
-            
-        } catch (error) {
-            let connection_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            // Update network stats
-            this.network_stats.connection_attempts += 1
-            this.network_stats.failed_connections += 1
-            
-            audit("peer_connection_failed", {
-                "peer_address": connection?.peer_info?.address or "unknown",
-                "error": error,
-                "connection_time_ms": connection_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return ConnectionResult{
-                success: false,
-                peer_id: connection?.peer_info?.id or "unknown",
-                connection_time_ms: connection_time_ms,
-                encryption_established: false,
-                error: error,
-                timestamp: datetime.now().timestamp()
-            }
-        }
-    }
-
-    action protect disconnect_from_peer(peer_id: string, reason: string) -> DisconnectionResult {
-        """
-        Gracefully disconnect from a peer with cleanup
-        """
-        let start_time = datetime.now().timestamp_ms()
-        
-        try {
-            if not this.peers.has(peer_id) {
-                throw "Peer not found: " + peer_id
-            }
-            
-            let peer = this.peers[peer_id]
-            let peer_info = peer.peer_info
-            
-            print("🔌 Disconnecting from peer: " + peer_info.address + 
-                  " (" + peer_info.chain_type + ") - Reason: " + reason)
-            
-            // Send disconnect notification if possible
-            if peer.is_connected {
-                this.send_disconnect_notification(peer_id, reason)
-            }
-            
-            // Update connection record
-            peer.is_connected = false
-            peer.disconnected_at = datetime.now().timestamp()
-            peer.disconnect_reason = reason
-            
-            // Remove from active connections
-            this.remove_from_chain_connections(peer_info.chain_type, peer_id)
-            
-            // Update database
-            try {
-                db.execute("""
-                    UPDATE network_connections 
-                    SET disconnected_at = CURRENT_TIMESTAMP,
-                        duration_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - established_at)),
-                        disconnect_reason = ?
-                    WHERE peer_id = ? AND disconnected_at IS NULL
-                    ORDER BY established_at DESC LIMIT 1
-                """, [reason, peer_id])
-            } catch (error) {
-                print("⚠️ Failed to update disconnection in database: " + error)
-            }
-            
-            // Stop heartbeat monitor
-            this.stop_heartbeat_monitor(peer_id)
-            
-            let connection_duration = datetime.now().timestamp() - peer.established_at
-            let disconnection_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("peer_disconnected", {
-                "peer_id": peer_id,
-                "address": peer_info.address,
-                "chain_type": peer_info.chain_type,
-                "reason": reason,
-                "connection_duration_seconds": connection_duration,
-                "disconnection_time_ms": disconnection_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
+    // ---------------------------------------------------------------
+    // disconnect_from_peer
+    // ---------------------------------------------------------------
+    action disconnect_from_peer(peer_id, reason) {
+        let peer = _peers[peer_id]
+        if peer == null {
             return DisconnectionResult{
-                success: true,
+                success: false,
                 peer_id: peer_id,
                 reason: reason,
-                connection_duration_seconds: connection_duration,
-                bytes_sent: peer.bytes_sent or 0,
-                bytes_received: peer.bytes_received or 0,
-                disconnection_time_ms: disconnection_time_ms,
-                timestamp: datetime.now().timestamp()
+                connection_duration: 0,
+                explanation: "Peer not found",
+                timestamp: int(dt.timestamp())
             }
-            
-        } catch (error) {
-            let disconnection_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("peer_disconnection_failed", {
-                "peer_id": peer_id,
-                "error": error,
-                "disconnection_time_ms": disconnection_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
+        }
+
+        if peer["connected"] == 0 {
             return DisconnectionResult{
                 success: false,
                 peer_id: peer_id,
-                error: error,
-                disconnection_time_ms: disconnection_time_ms
+                reason: reason,
+                connection_duration: 0,
+                explanation: "Peer already disconnected",
+                timestamp: int(dt.timestamp())
             }
+        }
+
+        // Mark disconnected
+        peer["connected"] = 0
+
+        // Update chain count
+        let chain_type = peer["chain_type"]
+        let cc = _chain_connections[chain_type]
+        if cc != null {
+            if cc > 0 {
+                _chain_connections[chain_type] = cc - 1
+            }
+        }
+
+        // Record history
+        _connection_history.push({
+            "peer_id": peer_id,
+            "action": "disconnect",
+            "reason": reason,
+            "timestamp": int(dt.timestamp())
+        })
+
+        self.total_peers = self.total_peers - 1
+        if self.total_peers < 0 {
+            self.total_peers = 0
+        }
+
+        let duration = int(dt.timestamp()) - peer["established_at"]
+
+        return DisconnectionResult{
+            success: true,
+            peer_id: peer_id,
+            reason: reason,
+            connection_duration: duration,
+            explanation: "Disconnected: " + reason,
+            timestamp: int(dt.timestamp())
         }
     }
 
-    action protect broadcast_message(broadcast: NetworkBroadcast) -> BroadcastResult {
-        """
-        Broadcast a message to peers with delivery tracking and encryption
-        """
-        let start_time = datetime.now().timestamp_ms()
-        
-        try {
-            // Validate message
-            verify(broadcast.message_type != null, "Message type is required")
-            verify(broadcast.data != null, "Message data is required")
-            verify(broadcast.target_chain != null, "Target chain is required")
-            
-            // Check message size
-            let message_size = this.calculate_message_size(broadcast.data)
-            if message_size > NETWORK_POLICIES.max_message_size {
-                throw "Message size exceeds limit: " + string(message_size) + " bytes"
-            }
-            
-            // Get target peers
-            let target_peers = broadcast.target_peers or this.get_peers_by_chain(broadcast.target_chain)
-            if target_peers.is_empty() {
-                return BroadcastResult{
-                    success: false,
-                    message_id: "none",
-                    target_peers_count: 0,
-                    successful_deliveries: 0,
-                    failed_deliveries: 0,
-                    broadcast_time_ms: datetime.now().timestamp_ms() - start_time,
-                    timestamp: datetime.now().timestamp()
-                }
-            }
-            
-            let message_id = "MSG_" + crypto.sha3_256(
-                broadcast.message_type + 
-                broadcast.target_chain + 
-                string(datetime.now().timestamp()) + 
-                this.node_id
-            )
-            
-            print("📢 Broadcasting " + broadcast.message_type + 
-                  " to " + string(target_peers.count()) + " peers on " + broadcast.target_chain)
-            
-            // Prepare message
-            let prepared_message = this.prepare_message_for_broadcast(broadcast, message_id)
-            
-            // Track delivery results
-            let successful_deliveries = 0
-            let failed_deliveries = 0
-            let total_latency = 0.0
-            
-            // Send to each peer (could be optimized with batching)
-            for each peer_id in target_peers {
-                if this.peers.has(peer_id) {
-                    let peer = this.peers[peer_id]
-                    
-                    // Skip if peer is not connected
-                    if not peer.is_connected {
-                        failed_deliveries += 1
-                        continue
-                    }
-                    
-                    // Apply rate limiting per peer
-                    if not this.check_message_rate_limit(peer_id) {
-                        print("⚠️ Rate limit exceeded for peer: " + peer_id)
-                        failed_deliveries += 1
-                        continue
-                    }
-                    
-                    // Send message
-                    let send_result = this.send_message_to_peer(
-                        peer_id, 
-                        prepared_message, 
-                        broadcast.encryption_required
-                    )
-                    
-                    if send_result.success {
-                        successful_deliveries += 1
-                        if send_result.latency_ms != null {
-                            total_latency += send_result.latency_ms
-                        }
-                        
-                        // Update peer metrics
-                        peer.messages_sent = (peer.messages_sent or 0) + 1
-                        peer.bytes_sent = (peer.bytes_sent or 0) + message_size
-                        peer.connection_score = math.min(1.0, peer.connection_score + 0.001)
-                    } else {
-                        failed_deliveries += 1
-                        peer.connection_score = math.max(0.0, peer.connection_score - 0.01)
-                        
-                        // Check if peer should be blacklisted
-                        if this.should_blacklist_peer(peer_id) {
-                            this.blacklist_peer(peer_id, "High message failure rate")
-                        }
-                    }
-                } else {
-                    failed_deliveries += 1
-                }
-            }
-            
-            let average_latency = successful_deliveries > 0 ? total_latency / successful_deliveries : 0
-            let broadcast_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            // Record message in database
-            try {
-                db.execute("""
-                    INSERT INTO network_messages (
-                        message_id, message_type, sender_id, chain_type, data_hash,
-                        size_bytes, timestamp, delivered, encryption_used, priority, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
-                """, [
-                    message_id,
-                    broadcast.message_type,
-                    this.node_id,
-                    broadcast.target_chain,
-                    crypto.sha3_256(json.stringify(broadcast.data)),
-                    message_size,
-                    successful_deliveries > 0,
-                    broadcast.encryption_required,
-                    broadcast.priority,
-                    json.stringify({
-                        "target_peers_count": target_peers.count(),
-                        "successful_deliveries": successful_deliveries,
-                        "failed_deliveries": failed_deliveries,
-                        "average_latency_ms": average_latency
-                    })
-                ])
-            } catch (error) {
-                print("⚠️ Failed to record message in database: " + error)
-            }
-            
-            // Update network stats
-            this.network_stats.messages_sent += successful_deliveries
-            this.network_stats.bytes_sent += message_size * successful_deliveries
-            
-            audit("message_broadcast", {
-                "message_id": message_id,
-                "message_type": broadcast.message_type,
-                "target_chain": broadcast.target_chain,
-                "target_peers": target_peers.count(),
-                "successful_deliveries": successful_deliveries,
-                "failed_deliveries": failed_deliveries,
-                "average_latency_ms": average_latency,
-                "broadcast_time_ms": broadcast_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return BroadcastResult{
-                success: successful_deliveries > 0,
-                message_id: message_id,
-                target_peers_count: target_peers.count(),
-                successful_deliveries: successful_deliveries,
-                failed_deliveries: failed_deliveries,
-                average_latency_ms: average_latency,
-                encryption_used: broadcast.encryption_required,
-                broadcast_time_ms: broadcast_time_ms,
-                timestamp: datetime.now().timestamp()
-            }
-            
-        } catch (error) {
-            let broadcast_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("message_broadcast_failed", {
-                "message_type": broadcast?.message_type or "unknown",
-                "error": error,
-                "broadcast_time_ms": broadcast_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
+    // ---------------------------------------------------------------
+    // broadcast_message
+    // ---------------------------------------------------------------
+    action broadcast_message(msg_type, data, target_chain) {
+        if msg_type == "" {
             return BroadcastResult{
                 success: false,
-                message_id: "failed",
-                target_peers_count: 0,
+                message_id: "",
+                target_peers: 0,
                 successful_deliveries: 0,
                 failed_deliveries: 0,
-                broadcast_time_ms: broadcast_time_ms,
-                error: error,
-                timestamp: datetime.now().timestamp()
+                explanation: "Message type is required",
+                timestamp: int(dt.timestamp())
             }
         }
-    }
 
-    action protect broadcast_message_batch(broadcasts: list) -> list {
-        """
-        Broadcast multiple messages in batch with optimization
-        """
-        let results = []
-        let batch_size = 10 // Process in batches
-        
-        for each batch_start in range(0, len(broadcasts), batch_size) {
-            let batch_end = math.min(batch_start + batch_size, len(broadcasts))
-            let broadcast_batch = broadcasts.slice(batch_start, batch_end)
-            
-            // Process batch in parallel
-            let batch_results = []
-            for each broadcast in broadcast_batch {
-                let result = await this.broadcast_message(broadcast)
-                batch_results.push(result)
-            }
-            
-            results = results + batch_results
-            
-            // Throttle between batches
-            if batch_end < len(broadcasts) {
-                await sleep(0.1) // 100ms delay
-            }
-        }
-        
-        let successful_broadcasts = results.filter(action(r) { return r.success }).count()
-        print("✅ Batch broadcast complete: " + string(successful_broadcasts) + "/" + 
-              string(len(broadcasts)) + " successful")
-        
-        return results
-    }
+        // Generate message ID
+        let msg_id = "MSG_" + crypto.keccak256(msg_type + target_chain + string(dt.timestamp()))
 
-    action protect discover_peers(options: DiscoveryOptions) -> DiscoveryResult {
-        """
-        Discover peers using multiple methods with validation and caching
-        """
-        let start_time = datetime.now().timestamp_ms()
-        
-        try {
-            print("🔍 Discovering peers with methods: " + string(options.discovery_methods))
-            
-            let discovered_peers = []
-            let discovery_methods_used = []
-            
-            // Use cached peers if enabled
-            let cached_peers = []
-            if options.use_cache {
-                cached_peers = this.get_cached_peers(options.chain_types)
-                discovered_peers = discovered_peers + cached_peers
-                discovery_methods_used.push("cache")
-            }
-            
-            // DNS-based discovery
-            if options.discovery_methods.contains("dns") {
-                let dns_peers = await this.discover_via_dns(options)
-                discovered_peers = discovered_peers + dns_peers
-                discovery_methods_used.push("dns")
-            }
-            
-            // Bootstrap nodes
-            if options.discovery_methods.contains("bootstrap") {
-                let bootstrap_peers = this.get_bootstrap_nodes(options.chain_types)
-                discovered_peers = discovered_peers + bootstrap_peers
-                discovery_methods_used.push("bootstrap")
-            }
-            
-            // Peer exchange
-            if options.discovery_methods.contains("peer_exchange") {
-                let exchanged_peers = await this.exchange_peers_with_connected()
-                discovered_peers = discovered_peers + exchanged_peers
-                discovery_methods_used.push("peer_exchange")
-            }
-            
-            // Multicast discovery (for local networks)
-            if options.discovery_methods.contains("multicast") {
-                let multicast_peers = await this.discover_via_multicast()
-                discovered_peers = discovered_peers + multicast_peers
-                discovery_methods_used.push("multicast")
-            }
-            
-            // Remove duplicates
-            discovered_peers = this.deduplicate_peers(discovered_peers)
-            
-            // Validate peers if requested
-            let validated_peers = []
-            if options.validate_peers {
-                for each peer_info in discovered_peers {
-                    let validation = this.validate_peer(peer_info)
-                    if validation.valid {
-                        validated_peers.push(peer_info)
-                    }
-                }
-            } else {
-                validated_peers = discovered_peers
-            }
-            
-            // Limit to max_peers
-            let limited_peers = validated_peers.slice(0, options.max_peers)
-            
-            // Connect to new peers
-            let connected_peers = []
-            for each peer_info in limited_peers {
-                // Check if already connected
-                if not this.peers.has(peer_info.id) {
-                    let connection = PeerConnection{
-                        peer_info: peer_info,
-                        connection_type: "outbound",
-                        established_at: datetime.now().timestamp()
-                    }
-                    
-                    let result = await this.connect_to_peer(connection)
-                    if result.success {
-                        connected_peers.push(peer_info)
+        // Find connected peers for target chain
+        let target_count = 0
+        let delivered = 0
+        let failed = 0
+
+        for each pid, peer in _peers {
+            if peer["connected"] == 1 {
+                if peer["chain_type"] == target_chain {
+                    target_count = target_count + 1
+
+                    // Simulate delivery (95% success rate)
+                    let r = random()
+                    if r < 0.95 {
+                        delivered = delivered + 1
+                        peer["messages_received"] = peer["messages_received"] + 1
+
+                        // Adjust reputation up
+                        let rep = peer["reputation_score"]
+                        rep = rep + 0.001
+                        if rep > 1.0 {
+                            rep = 1.0
+                        }
+                        peer["reputation_score"] = rep
+                    } else {
+                        failed = failed + 1
+                        // Adjust reputation down
+                        let rep2 = peer["reputation_score"]
+                        rep2 = rep2 - 0.01
+                        if rep2 < 0.0 {
+                            rep2 = 0.0
+                        }
+                        peer["reputation_score"] = rep2
                     }
                 }
             }
-            
-            let discovery_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            // Update discovery cache
-            cache_set("discovery_cache_" + string(options.chain_types), {
-                "peers": limited_peers,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            audit("peer_discovery", {
-                "discovery_methods": discovery_methods_used,
-                "discovered_peers": discovered_peers.count(),
-                "validated_peers": validated_peers.count(),
-                "connected_peers": connected_peers.count(),
-                "discovery_time_ms": discovery_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return DiscoveryResult{
-                success: true,
-                discovered_peers: discovered_peers.count(),
-                validated_peers: validated_peers.count(),
-                connected_peers: connected_peers.count(),
-                discovery_methods_used: discovery_methods_used,
-                discovery_time_ms: discovery_time_ms,
-                new_peers: connected_peers,
-                cached_peers: cached_peers,
-                timestamp: datetime.now().timestamp()
-            }
-            
-        } catch (error) {
-            let discovery_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("peer_discovery_failed", {
-                "error": error,
-                "discovery_time_ms": discovery_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return DiscoveryResult{
-                success: false,
-                discovered_peers: 0,
-                validated_peers: 0,
-                connected_peers: 0,
-                discovery_time_ms: discovery_time_ms,
-                error: error,
-                timestamp: datetime.now().timestamp()
-            }
+        }
+
+        // Update stats
+        _network_stats["messages_sent"] = _network_stats["messages_sent"] + delivered
+
+        // Queue message
+        _message_queue.push({
+            "message_id": msg_id,
+            "type": msg_type,
+            "target_chain": target_chain,
+            "delivered": delivered,
+            "timestamp": int(dt.timestamp())
+        })
+
+        return BroadcastResult{
+            success: delivered > 0,
+            message_id: msg_id,
+            target_peers: target_count,
+            successful_deliveries: delivered,
+            failed_deliveries: failed,
+            explanation: string(delivered) + "/" + string(target_count) + " delivered",
+            timestamp: int(dt.timestamp())
         }
     }
 
-    action protect get_network_status() -> NetworkStatus {
-        """
-        Get comprehensive network status with health metrics
-        """
-        let timestamp = datetime.now().timestamp()
-        
-        // Calculate active connections
-        let active_connections = 0
-        for each peer_id, peer in this.peers {
-            if peer.is_connected {
-                active_connections += 1
+    // ---------------------------------------------------------------
+    // discover_peers — returns bootstrap nodes for chain
+    // ---------------------------------------------------------------
+    action discover_peers(chain_type) {
+        let discovered = 0
+        let connected = 0
+
+        let b_idx = 0
+        while b_idx < len(_DEFAULT_BOOTSTRAP) {
+            let bn = _DEFAULT_BOOTSTRAP[b_idx]
+            if bn["chain_type"] == chain_type {
+                discovered = discovered + 1
+                let boot_id = "DISC_" + crypto.keccak256(bn["address"] + string(dt.timestamp()))
+                let existing = _peers[boot_id]
+                if existing == null {
+                    let res = self.connect_to_peer(boot_id, bn["address"], chain_type)
+                    if res.success {
+                        connected = connected + 1
+                    }
+                }
+            }
+            b_idx = b_idx + 1
+        }
+
+        return DiscoveryResult{
+            success: true,
+            discovered_peers: discovered,
+            connected_peers: connected,
+            chain_type: chain_type,
+            timestamp: int(dt.timestamp())
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // get_network_status
+    // ---------------------------------------------------------------
+    action get_network_status() {
+        let active = 0
+        let total = 0
+        let total_latency = 0
+        let healthy = 0
+        let degraded = 0
+        let unhealthy = 0
+
+        for each pid, peer in _peers {
+            total = total + 1
+            if peer["connected"] == 1 {
+                active = active + 1
+                total_latency = total_latency + peer["latency_ms"]
+
+                let rep = peer["reputation_score"]
+                if rep >= 0.7 {
+                    healthy = healthy + 1
+                } elif rep >= 0.3 {
+                    degraded = degraded + 1
+                } else {
+                    unhealthy = unhealthy + 1
+                }
             }
         }
-        
-        // Calculate chain distribution
-        let chain_distribution = {}
-        for each peer_id, peer in this.peers {
-            let chain_type = peer.peer_info.chain_type
-            chain_distribution[chain_type] = chain_distribution.get(chain_type, 0) + 1
+
+        let avg_latency = 0.0
+        if active > 0 {
+            avg_latency = 1.0 * total_latency / active
         }
-        
-        // Calculate peer health stats
-        let peer_health = this.calculate_peer_health_stats()
-        
-        // Calculate network throughput
-        let throughput = this.calculate_network_throughput()
-        
-        // Get resource usage
-        let resource_usage = this.get_resource_usage()
-        
-        // Check for alerts
-        let alerts = this.check_for_network_alerts(peer_health, throughput, resource_usage)
-        
+
+        let uptime = 0
+        if self.started_at > 0 {
+            uptime = int(dt.timestamp()) - self.started_at
+        }
+
+        let avg_reputation = 0.0
+        if active > 0 {
+            let total_rep = 0.0
+            for each pid2, peer2 in _peers {
+                if peer2["connected"] == 1 {
+                    total_rep = total_rep + peer2["reputation_score"]
+                }
+            }
+            avg_reputation = total_rep / active
+        }
+
         return NetworkStatus{
-            node_id: this.node_id,
-            is_listening: this.is_listening,
-            uptime_seconds: this.node_config.created_at > 0 ? 
-                          datetime.now().timestamp() - this.node_config.created_at : 0,
-            total_connections: len(this.peers),
-            active_connections: active_connections,
-            chain_distribution: chain_distribution,
-            message_queue_size: len(this.message_queue),
-            network_throughput: throughput,
-            peer_health: peer_health,
-            security_status: this.get_security_status(),
-            resource_usage: resource_usage,
-            alerts: alerts,
-            timestamp: timestamp
+            node_id: self.node_id,
+            is_listening: self.listening,
+            uptime_seconds: uptime,
+            total_connections: total,
+            active_connections: active,
+            message_queue_size: len(_message_queue),
+            messages_sent: _network_stats["messages_sent"],
+            average_latency_ms: avg_latency,
+            healthy_peers: healthy,
+            degraded_peers: degraded,
+            unhealthy_peers: unhealthy,
+            average_reputation: avg_reputation,
+            protocol_version: self.protocol_version,
+            timestamp: int(dt.timestamp())
         }
     }
 
-    action protect get_peer_metrics(peer_id: string? = null) -> PeerMetrics {
-        """
-        Get metrics for specific peer or all peers
-        """
-        if peer_id != null {
-            if not this.peers.has(peer_id) {
-                throw "Peer not found: " + peer_id
-            }
-            
-            let peer = this.peers[peer_id]
-            return this.calculate_peer_metrics(peer)
-        }
-        
-        // Return aggregated metrics for all peers
-        let all_metrics = []
-        for each id, peer in this.peers {
-            all_metrics.push(this.calculate_peer_metrics(peer))
-        }
-        
-        return this.aggregate_peer_metrics(all_metrics)
-    }
-
-    action protect validate_peer(peer_info: PeerInfo) -> ValidationResult {
-        """
-        Validate a peer with comprehensive security checks
-        """
-        let start_time = datetime.now().timestamp_ms()
-        
-        try {
-            // Basic validation
-            verify(peer_info.address != null, "Peer address is required")
-            verify(peer_info.chain_type != null, "Chain type is required")
-            verify(peer_info.protocol_version != null, "Protocol version is required")
-            
-            // Check if blacklisted
-            if this.is_peer_blacklisted(peer_info.id) {
-                return ValidationResult{
-                    valid: false,
-                    reason: "Peer is blacklisted",
-                    confidence: 1.0,
-                    timestamp: datetime.now().timestamp()
-                }
-            }
-            
-            // Validate address format
-            if not this.validate_address_format(peer_info.address) {
-                return ValidationResult{
-                    valid: false,
-                    reason: "Invalid address format",
-                    confidence: 0.8,
-                    timestamp: datetime.now().timestamp()
-                }
-            }
-            
-            // Validate protocol version compatibility
-            if not this.validate_protocol_version(peer_info.protocol_version) {
-                return ValidationResult{
-                    valid: false,
-                    reason: "Incompatible protocol version: " + peer_info.protocol_version,
-                    confidence: 0.9,
-                    timestamp: datetime.now().timestamp()
-                }
-            }
-            
-            // Check for suspicious patterns
-            if this.detect_suspicious_patterns(peer_info) {
-                return ValidationResult{
-                    valid: false,
-                    reason: "Suspicious patterns detected",
-                    confidence: 0.7,
-                    timestamp: datetime.now().timestamp()
-                }
-            }
-            
-            // AI-powered validation
-            let ai_validation = await zaie.validate_peer(peer_info)
-            if not ai_validation.valid {
-                return ValidationResult{
-                    valid: false,
-                    reason: ai_validation.reason,
-                    confidence: ai_validation.confidence,
-                    timestamp: datetime.now().timestamp()
-                }
-            }
-            
-            let validation_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            return ValidationResult{
-                valid: true,
-                reason: "Peer validation passed",
-                confidence: ai_validation.confidence,
-                validation_time_ms: validation_time_ms,
-                timestamp: datetime.now().timestamp()
-            }
-            
-        } catch (error) {
-            let validation_time_ms = datetime.now().timestamp_ms() - start_time
-            
+    // ---------------------------------------------------------------
+    // validate_peer
+    // ---------------------------------------------------------------
+    action validate_peer(peer_id, address, chain_type) {
+        // Check blacklist
+        let bl = _blacklisted_peers[peer_id]
+        if bl != null {
             return ValidationResult{
                 valid: false,
-                reason: "Validation error: " + error,
-                confidence: 0.0,
-                validation_time_ms: validation_time_ms,
-                timestamp: datetime.now().timestamp()
+                reason: "Peer is blacklisted",
+                confidence: 1.0,
+                timestamp: int(dt.timestamp())
             }
+        }
+
+        // Validate address
+        if address == "" {
+            return ValidationResult{
+                valid: false,
+                reason: "Address is empty",
+                confidence: 0.9,
+                timestamp: int(dt.timestamp())
+            }
+        }
+
+        // Check chain type is supported
+        let supported = 0
+        let s_idx = 0
+        while s_idx < len(_SUPPORTED_CHAINS) {
+            if _SUPPORTED_CHAINS[s_idx] == chain_type {
+                supported = 1
+            }
+            s_idx = s_idx + 1
+        }
+        if supported == 0 {
+            return ValidationResult{
+                valid: false,
+                reason: "Unsupported chain type: " + chain_type,
+                confidence: 0.8,
+                timestamp: int(dt.timestamp())
+            }
+        }
+
+        return ValidationResult{
+            valid: true,
+            reason: "Peer validation passed",
+            confidence: 0.9,
+            timestamp: int(dt.timestamp())
         }
     }
 
-    action protect emergency_isolate(reason: string) -> EmergencyResult {
-        """
-        Emergency isolate the node from the network for security reasons
-        """
-        let start_time = datetime.now().timestamp_ms()
-        
-        try {
-            print("🚨 EMERGENCY ISOLATION: " + reason)
-            
-            // Disconnect from all peers
-            let disconnection_results = this.disconnect_from_all_peers("emergency_isolation")
-            
-            // Clear all incoming connections
-            this.reject_all_incoming_connections()
-            
-            // Suspend all background services
-            this.suspend_background_services()
-            
-            // Set emergency flag
-            this.is_listening = false
-            
-            // Log emergency state
-            this.log_emergency_state(reason)
-            
-            let isolation_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("emergency_isolation", {
-                "node_id": this.node_id,
-                "reason": reason,
-                "disconnected_peers": disconnection_results.disconnected_count,
-                "isolation_time_ms": isolation_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return EmergencyResult{
-                success: true,
-                action: "isolated",
-                reason: reason,
-                disconnected_peers: disconnection_results.disconnected_count,
-                isolation_time_ms: isolation_time_ms,
-                timestamp: datetime.now().timestamp(),
-                requires_review: true,
-                review_deadline: datetime.now().timestamp() + 3600 // 1 hour
+    // ---------------------------------------------------------------
+    // emergency_isolate
+    // ---------------------------------------------------------------
+    action emergency_isolate(reason) {
+        let disconnected = 0
+        for each pid, peer in _peers {
+            if peer["connected"] == 1 {
+                peer["connected"] = 0
+                disconnected = disconnected + 1
             }
-            
-        } catch (error) {
-            let isolation_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("emergency_isolation_failed", {
-                "node_id": this.node_id,
-                "reason": reason,
-                "error": error,
-                "isolation_time_ms": isolation_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
-            return EmergencyResult{
-                success: false,
-                action: "failed",
-                reason: reason,
-                error: error,
-                isolation_time_ms: isolation_time_ms
-            }
+        }
+
+        self.listening = 0
+        self.total_peers = 0
+
+        // Reset chain connections
+        for each chain, count in _chain_connections {
+            _chain_connections[chain] = 0
+        }
+
+        return EmergencyResult{
+            success: true,
+            action_taken: "isolated",
+            reason: reason,
+            disconnected_peers: disconnected,
+            timestamp: int(dt.timestamp())
         }
     }
 
-    action protect upgrade_protocol(version: string) -> UpgradeResult {
-        """
-        Upgrade network protocol version with backward compatibility
-        """
-        let start_time = datetime.now().timestamp_ms()
-        
-        try {
-            verify(this.protocol_versions.has(version), 
-                   "Unsupported protocol version: " + version)
-            verify(this.protocol_versions[version].supported,
-                   "Protocol version not supported: " + version)
-            
-            print("🔄 Upgrading protocol to version: " + version)
-            
-            let old_version = this.node_config.protocol_version
-            
-            // Notify connected peers about upgrade
-            this.notify_peers_about_upgrade(version)
-            
-            // Update configuration
-            this.node_config.protocol_version = version
-            this.node_config.updated_at = datetime.now().timestamp()
-            
-            // Handle backward compatibility
-            if not this.handle_backward_compatibility(version, old_version) {
-                throw "Backward compatibility check failed"
+    // ---------------------------------------------------------------
+    // get_peer_metrics
+    // ---------------------------------------------------------------
+    action get_peer_metrics() {
+        let total_msg_sent = 0
+        let total_msg_recv = 0
+        let total_bytes_s = 0
+        let total_bytes_r = 0
+        let connection_count = 0
+        let total_latency = 0
+        let reputation_sum = 0.0
+
+        for each pid, peer in _peers {
+            if peer["connected"] == 1 {
+                connection_count = connection_count + 1
+                total_msg_sent = total_msg_sent + peer["messages_sent"]
+                total_msg_recv = total_msg_recv + peer["messages_received"]
+                total_bytes_s = total_bytes_s + peer["bytes_sent"]
+                total_bytes_r = total_bytes_r + peer["bytes_received"]
+                total_latency = total_latency + peer["latency_ms"]
+                reputation_sum = reputation_sum + peer["reputation_score"]
             }
-            
-            // Update protocol features
-            this.update_protocol_features(version)
-            
-            let upgrade_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("protocol_upgraded", {
-                "node_id": this.node_id,
-                "old_version": old_version,
-                "new_version": version,
-                "upgrade_time_ms": upgrade_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
+        }
+
+        let avg_latency = 0.0
+        let avg_reputation = 0.0
+        if connection_count > 0 {
+            avg_latency = 1.0 * total_latency / connection_count
+            avg_reputation = reputation_sum / connection_count
+        }
+
+        return PeerMetrics{
+            connection_count: connection_count,
+            total_messages_sent: total_msg_sent,
+            total_messages_received: total_msg_recv,
+            total_bytes_sent: total_bytes_s,
+            total_bytes_received: total_bytes_r,
+            average_latency_ms: avg_latency,
+            average_reputation: avg_reputation,
+            timestamp: int(dt.timestamp())
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // upgrade_protocol
+    // ---------------------------------------------------------------
+    action upgrade_protocol(version) {
+        let pv = _PROTOCOL_VERSIONS[version]
+        if pv == null {
             return UpgradeResult{
-                success: true,
-                old_version: old_version,
+                success: false,
+                old_version: self.protocol_version,
                 new_version: version,
-                upgrade_time_ms: upgrade_time_ms,
-                backward_compatible: this.check_backward_compatibility(version, old_version),
-                requires_peer_upgrade: this.check_peer_upgrade_requirement(version),
-                timestamp: datetime.now().timestamp()
+                explanation: "Unknown protocol version: " + version,
+                timestamp: int(dt.timestamp())
             }
-            
-        } catch (error) {
-            let upgrade_time_ms = datetime.now().timestamp_ms() - start_time
-            
-            audit("protocol_upgrade_failed", {
-                "node_id": this.node_id,
-                "target_version": version,
-                "error": error,
-                "upgrade_time_ms": upgrade_time_ms,
-                "timestamp": datetime.now().timestamp()
-            })
-            
+        }
+        if pv == 0 {
             return UpgradeResult{
                 success: false,
-                target_version: version,
-                error: error,
-                upgrade_time_ms: upgrade_time_ms
+                old_version: self.protocol_version,
+                new_version: version,
+                explanation: "Protocol version not supported: " + version,
+                timestamp: int(dt.timestamp())
             }
+        }
+
+        let old_ver = self.protocol_version
+        self.protocol_version = version
+
+        return UpgradeResult{
+            success: true,
+            old_version: old_ver,
+            new_version: version,
+            explanation: "Upgraded from " + old_ver + " to " + version,
+            timestamp: int(dt.timestamp())
         }
     }
 
-    // Internal helper methods (simplified implementations)
-    action start_background_services() -> map {
-        // Start message processor
-        spawn this.start_message_processor()
-        
-        // Start peer discovery
-        spawn this.start_peer_discovery()
-        
-        // Start health monitor
-        spawn this.start_health_monitor()
-        
-        // Start heartbeat service
-        spawn this.start_heartbeat_service()
-        
-        return {
-            "all_success": true,
-            "warnings": [],
-            "services_started": ["message_processor", "peer_discovery", "health_monitor", "heartbeat"]
+    // ---------------------------------------------------------------
+    // blacklist_peer
+    // ---------------------------------------------------------------
+    action blacklist_peer(peer_id, reason) {
+        _blacklisted_peers[peer_id] = {
+            "reason": reason,
+            "timestamp": int(dt.timestamp())
         }
-    }
-    
-    action connect_to_bootstrap_nodes() -> map {
-        let connected_count = 0
-        let failed_count = 0
-        
-        for each bootstrap_node in this.node_config.bootstrap_nodes {
-            try {
-                let peer_info = PeerInfo{
-                    id: "BOOTSTRAP_" + crypto.sha3_256(bootstrap_node.address),
-                    address: bootstrap_node.address,
-                    chain_type: bootstrap_node.chain_type or "ZIVER",
-                    protocol_version: this.node_config.protocol_version,
-                    first_seen: datetime.now().timestamp(),
-                    last_seen: datetime.now().timestamp(),
-                    reputation_score: 1.0
-                }
-                
-                let connection = PeerConnection{
-                    peer_info: peer_info,
-                    connection_type: "outbound",
-                    established_at: datetime.now().timestamp()
-                }
-                
-                let result = await this.connect_to_peer(connection)
-                if result.success {
-                    connected_count += 1
-                } else {
-                    failed_count += 1
-                }
-            } catch (error) {
-                failed_count += 1
-                print("⚠️ Failed to connect to bootstrap node: " + bootstrap_node.address)
+
+        // Disconnect if connected
+        let peer = _peers[peer_id]
+        if peer != null {
+            if peer["connected"] == 1 {
+                self.disconnect_from_peer(peer_id, "blacklisted: " + reason)
             }
         }
-        
-        print("✅ Connected to " + string(connected_count) + "/" + 
-              string(this.node_config.bootstrap_nodes.count()) + " bootstrap nodes")
-        
-        return {
-            "connected_count": connected_count,
-            "failed_count": failed_count
-        }
+
+        return true
     }
-    
-    action initialize_chain_connections() {
-        this.chain_connections = {
-            "ZIVER": [],
-            "ETHEREUM": [],
-            "TON": [],
-            "BSC": [],
-            "POLYGON": [],
-            "ARBITRUM": [],
-            "OPTIMISM": [],
-            "AVALANCHE": [],
-            "SOLANA": [],
-            "COSMOS": []
-        }
-    }
-    
-    action add_to_chain_connections(chain_type: string, peer_id: string) {
-        if not this.chain_connections.has(chain_type) {
-            this.chain_connections[chain_type] = []
-        }
-        
-        if not this.chain_connections[chain_type].contains(peer_id) {
-            this.chain_connections[chain_type].push(peer_id)
-        }
-    }
-    
-    action remove_from_chain_connections(chain_type: string, peer_id: string) {
-        if this.chain_connections.has(chain_type) {
-            this.chain_connections[chain_type] = this.chain_connections[chain_type]
-                .filter(action(id) { return id != peer_id })
-        }
-    }
-    
-    action get_peers_by_chain(chain_type: string) -> list {
-        return this.chain_connections.get(chain_type, [])
-    }
-    
-    action can_establish_connection(chain_type: string) -> boolean {
-        let current_connections = this.get_peers_by_chain(chain_type).count()
-        let max_per_chain = NETWORK_POLICIES.max_peers_per_chain
-        
-        return current_connections < max_per_chain
-    }
-    
-    action is_peer_blacklisted(peer_id: string) -> boolean {
-        return this.blacklisted_peers.has(peer_id)
-    }
-    
-    action establish_connection(peer_info: PeerInfo, connection: PeerConnection) -> map {
-        // Simplified connection establishment
-        return {
-            "success": true,
-            "session_id": "SESSION_" + crypto.sha3_256(peer_info.id + string(datetime.now().timestamp()))
-        }
-    }
-    
-    action establish_encryption(peer_id: string, encryption_key: string, session_id: string?) -> boolean {
-        // Simplified encryption establishment
-        return this.node_config.enable_encryption
-    }
-    
-    action async measure_latency(peer_id: string) -> integer? {
-        // Simplified latency measurement
-        await sleep(0.05) // Simulate network delay
-        return 50 // Return 50ms latency
-    }
-    
-    action start_heartbeat_monitor(peer_id: string) {
-        // Start monitoring heartbeat for this peer
-        async {
-            while this.peers.has(peer_id) and this.peers[peer_id].is_connected {
-                await sleep(this.node_config.heartbeat_interval)
-                this.send_heartbeat(peer_id)
-            }
-        }
-    }
-    
-    // Dependency injection setup
-    inject database: db
-    inject ai_engine: zaie
-    
-    // Middleware for network operations
-    middleware("network_operations", action(req, res, next) {
-        let operation = req["operation"]
-        
-        if operation in ["connect_to_peer", "broadcast_message"] {
-            // Check rate limits
-            if not security.check_rate_limit(this.node_id, "network_operations") {
-                res["status"] = 429
-                res["error"] = "Rate limit exceeded for network operations"
-                return
-            }
-            
-            // Check if node is in emergency isolation
-            if not this.is_listening {
-                res["status"] = 503
-                res["error"] = "Node is in emergency isolation mode"
-                return
-            }
-        }
-        
-        next()
-    })
 }
 
-// Additional entity definitions
+// -------------------------------------------------------------------
+// Entities (R-026: specify ALL fields)
+// -------------------------------------------------------------------
+
+entity NodeConfig {
+    port: 30303
+    host: "0.0.0.0"
+    network_type: "mainnet"
+    max_connections: 100
+    protocol_version: "2.0"
+    security_level: "high"
+}
+
+entity NodeStartResult {
+    success: false
+    node_id: ""
+    listening_address: ""
+    started_at: 0
+    bootstrap_peers_connected: 0
+    explanation: ""
+}
+
 entity NodeStopResult {
-    success: boolean
-    node_id: string
-    uptime_seconds: integer
-    disconnected_peers: integer
-    stop_time_ms: integer
-    error: string?
-    timestamp: integer
+    success: false
+    node_id: ""
+    uptime_seconds: 0
+    disconnected_peers: 0
+    explanation: ""
+}
+
+entity ConnectionResult {
+    success: false
+    peer_id: ""
+    session_id: ""
+    latency_ms: 0
+    explanation: ""
+    timestamp: 0
 }
 
 entity DisconnectionResult {
-    success: boolean
-    peer_id: string
-    reason: string
-    connection_duration_seconds: integer
-    bytes_sent: integer
-    bytes_received: integer
-    disconnection_time_ms: integer
-    error: string?
-    timestamp: integer
+    success: false
+    peer_id: ""
+    reason: ""
+    connection_duration: 0
+    explanation: ""
+    timestamp: 0
+}
+
+entity BroadcastResult {
+    success: false
+    message_id: ""
+    target_peers: 0
+    successful_deliveries: 0
+    failed_deliveries: 0
+    explanation: ""
+    timestamp: 0
+}
+
+entity DiscoveryResult {
+    success: false
+    discovered_peers: 0
+    connected_peers: 0
+    chain_type: ""
+    timestamp: 0
+}
+
+entity NetworkStatus {
+    node_id: ""
+    is_listening: 0
+    uptime_seconds: 0
+    total_connections: 0
+    active_connections: 0
+    message_queue_size: 0
+    messages_sent: 0
+    average_latency_ms: 0.0
+    healthy_peers: 0
+    degraded_peers: 0
+    unhealthy_peers: 0
+    average_reputation: 0.0
+    protocol_version: ""
+    timestamp: 0
 }
 
 entity ValidationResult {
-    valid: boolean
-    reason: string
-    confidence: float
-    validation_time_ms: integer?
-    timestamp: integer
+    valid: false
+    reason: ""
+    confidence: 0.0
+    timestamp: 0
 }
 
 entity EmergencyResult {
-    success: boolean
-    action: string
-    reason: string
-    disconnected_peers: integer
-    isolation_time_ms: integer
-    error: string?
-    timestamp: integer
-    requires_review: boolean
-    review_deadline: integer?
+    success: false
+    action_taken: ""
+    reason: ""
+    disconnected_peers: 0
+    timestamp: 0
 }
 
 entity UpgradeResult {
-    success: boolean
-    old_version: string?
-    new_version: string
-    upgrade_time_ms: integer
-    backward_compatible: boolean
-    requires_peer_upgrade: boolean
-    error: string?
-    timestamp: integer
+    success: false
+    old_version: ""
+    new_version: ""
+    explanation: ""
+    timestamp: 0
 }
 
 entity PeerMetrics {
-    peer_id: string?
-    connection_count: integer
-    total_messages_sent: integer
-    total_messages_received: integer
-    total_bytes_sent: integer
-    total_bytes_received: integer
-    average_latency_ms: float
-    connection_stability: float
-    reputation_score: float
-    uptime_percentage: float
-    error_rate: float
-    timestamp: integer
+    connection_count: 0
+    total_messages_sent: 0
+    total_messages_received: 0
+    total_bytes_sent: 0
+    total_bytes_received: 0
+    average_latency_ms: 0.0
+    average_reputation: 0.0
+    timestamp: 0
 }
 
-// Register network service for dependency injection
-register_dependency("network_service", P2PNetwork("node_" + string(datetime.now().timestamp())))
+// -------------------------------------------------------------------
+// Test
+// -------------------------------------------------------------------
+action test_network() {
+    print("=== P2P Network Test Suite ===")
+    let pass_count = 0
+    let fail_count = 0
 
-// Test Enhanced Network with comprehensive features
-action async test_enhanced_network() {
-    print("🌐 Testing Enhanced P2P Network v2.0...")
-    
-    // Enable error recovery mode
-    continue
-    
-    try {
-        let node_id = "test_node_" + string(datetime.now().timestamp())
-        let network = P2PNetwork(node_id)
-        
-        // Create node configuration
-        let config = NodeConfig{
-            port: 30303,
-            host: "0.0.0.0",
-            network_type: "testnet",
-            max_connections: 50,
-            enable_encryption: true,
-            bootstrap_nodes: [
-                {"address": "bootnode1.test.ziver.io:30303", "chain_type": "ZIVER"},
-                {"address": "bootnode2.test.ziver.io:30303", "chain_type": "ZIVER"}
-            ],
-            protocol_version: "2.0",
-            heartbeat_interval: 30,
-            peer_discovery_interval: 300,
-            security_level: "high",
-            metrics_collection: true,
-            created_at: datetime.now().timestamp(),
-            updated_at: datetime.now().timestamp()
+    // T1 — Initialize network
+    let net = P2PNetwork{}
+    if len(net.node_id) > 0 {
+        print("[PASS] T1: Network initialized, node_id=" + net.node_id)
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T1: No node_id")
+        fail_count = fail_count + 1
+    }
+
+    // T2 — Start node
+    let config = NodeConfig{
+        port: 30303,
+        host: "0.0.0.0",
+        network_type: "testnet",
+        max_connections: 50,
+        protocol_version: "2.0",
+        security_level: "high"
+    }
+    let start = net.start_node(config)
+    if start.success {
+        if start.bootstrap_peers_connected > 0 {
+            print("[PASS] T2: Node started, bootstrap=" + string(start.bootstrap_peers_connected) + " addr=" + start.listening_address)
+            pass_count = pass_count + 1
+        } else {
+            print("[FAIL] T2: No bootstrap peers connected")
+            fail_count = fail_count + 1
         }
-        
-        // Start node
-        let start_result = await network.start_node(config)
-        print("✅ Node Startup:")
-        print("  Success: " + string(start_result.success))
-        print("  Node ID: " + start_result.node_id)
-        print("  Address: " + start_result.listening_address)
-        print("  Bootstrap Peers Connected: " + string(start_result.bootstrap_peers_connected))
-        
-        if start_result.warnings.count() > 0:
-            print("  ⚠️ Warnings: " + string(start_result.warnings))
-        
-        if start_result.success:
-            // Test peer discovery
-            let discovery_options = DiscoveryOptions{
-                discovery_methods: ["dns", "bootstrap", "peer_exchange"],
-                chain_types: ["ZIVER", "ETHEREUM"],
-                max_peers: 10,
-                timeout_seconds: 30,
-                use_cache: true,
-                validate_peers: true,
-                timestamp: datetime.now().timestamp()
-            }
-            
-            let discovery_result = await network.discover_peers(discovery_options)
-            print("✅ Peer Discovery:")
-            print("  Success: " + string(discovery_result.success))
-            print("  Discovered: " + string(discovery_result.discovered_peers))
-            print("  Validated: " + string(discovery_result.validated_peers))
-            print("  Connected: " + string(discovery_result.connected_peers))
-            print("  Methods Used: " + string(discovery_result.discovery_methods_used))
-            
-            // Test message broadcasting
-            let test_message = NetworkBroadcast{
-                message_type: "transaction",
-                data: {
-                    "hash": "test_tx_" + string(datetime.now().timestamp()),
-                    "from": "test_sender",
-                    "to": "test_receiver",
-                    "value": 1000,
-                    "chain": "ZIVER"
-                },
-                target_chain: "ZIVER",
-                priority: "normal",
-                encryption_required: true,
-                ttl: 3600,
-                timestamp: datetime.now().timestamp()
-            }
-            
-            let broadcast_result = await network.broadcast_message(test_message)
-            print("✅ Message Broadcast:")
-            print("  Success: " + string(broadcast_result.success))
-            print("  Message ID: " + broadcast_result.message_id)
-            print("  Target Peers: " + string(broadcast_result.target_peers_count))
-            print("  Successful Deliveries: " + string(broadcast_result.successful_deliveries))
-            print("  Average Latency: " + string(broadcast_result.average_latency_ms) + "ms")
-            
-            // Test network status
-            let network_status = await network.get_network_status()
-            print("✅ Network Status:")
-            print("  Is Listening: " + string(network_status.is_listening))
-            print("  Active Connections: " + string(network_status.active_connections))
-            print("  Chain Distribution: " + string(network_status.chain_distribution))
-            print("  Message Queue: " + string(network_status.message_queue_size))
-            
-            // Test peer validation
-            let test_peer = PeerInfo{
-                id: "test_peer_validation",
-                address: "test.peer.io:30303",
-                chain_type: "ZIVER",
-                protocol_version: "2.0",
-                first_seen: datetime.now().timestamp(),
-                last_seen: datetime.now().timestamp(),
-                reputation_score: 1.0
-            }
-            
-            let validation_result = await network.validate_peer(test_peer)
-            print("✅ Peer Validation:")
-            print("  Valid: " + string(validation_result.valid))
-            print("  Reason: " + validation_result.reason)
-            print("  Confidence: " + string(validation_result.confidence))
-            
-            // Test protocol upgrade
-            let upgrade_result = await network.upgrade_protocol("2.0")
-            print("✅ Protocol Upgrade:")
-            print("  Success: " + string(upgrade_result.success))
-            print("  New Version: " + upgrade_result.new_version)
-            print("  Backward Compatible: " + string(upgrade_result.backward_compatible))
-            
-            // Test peer metrics
-            let peer_metrics = await network.get_peer_metrics()
-            print("✅ Peer Metrics:")
-            print("  Connection Count: " + string(peer_metrics.connection_count))
-            print("  Total Messages Sent: " + string(peer_metrics.total_messages_sent))
-            print("  Average Latency: " + string(peer_metrics.average_latency_ms) + "ms")
-            
-            // Stop node (optional - comment out to keep running)
-            // let stop_result = await network.stop_node()
-            // print("✅ Node Stopped:")
-            // print("  Success: " + string(stop_result.success))
-            // print("  Uptime: " + string(stop_result.uptime_seconds) + " seconds")
-        
-    } catch (error) {
-        print("❌ Test failed: " + error)
+    } else {
+        print("[FAIL] T2: Start failed: " + start.explanation)
+        fail_count = fail_count + 1
+    }
+
+    // T3 — Connect to peer
+    let conn = net.connect_to_peer("peer_001", "192.168.1.10:30303", "ZIVER")
+    if conn.success {
+        print("[PASS] T3: Connected to peer, latency=" + string(conn.latency_ms) + "ms")
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T3: Connect failed: " + conn.explanation)
+        fail_count = fail_count + 1
+    }
+
+    // T4 — Duplicate connection returns success
+    let conn2 = net.connect_to_peer("peer_001", "192.168.1.10:30303", "ZIVER")
+    if conn2.success {
+        if conn2.explanation == "Already connected" {
+            print("[PASS] T4: Duplicate connect handled")
+            pass_count = pass_count + 1
+        } else {
+            print("[PASS] T4: Duplicate connect ok (new session)")
+            pass_count = pass_count + 1
+        }
+    } else {
+        print("[FAIL] T4: Duplicate connect failed")
+        fail_count = fail_count + 1
+    }
+
+    // T5 — Validate peer
+    let valid = net.validate_peer("peer_002", "10.0.0.1:30303", "ZIVER")
+    if valid.valid {
+        print("[PASS] T5: Peer validated, confidence=" + string(valid.confidence))
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T5: Validation failed: " + valid.reason)
+        fail_count = fail_count + 1
+    }
+
+    // T6 — Validate peer with unsupported chain
+    let bad_valid = net.validate_peer("peer_bad", "10.0.0.2:30303", "UNKNOWNCHAIN")
+    if !bad_valid.valid {
+        print("[PASS] T6: Unsupported chain rejected: " + bad_valid.reason)
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T6: Should reject unsupported chain")
+        fail_count = fail_count + 1
+    }
+
+    // T7 — Broadcast message
+    let bc = net.broadcast_message("transaction", {"hash": "tx_123", "amount": 100}, "ZIVER")
+    if bc.target_peers > 0 {
+        print("[PASS] T7: Broadcast " + string(bc.successful_deliveries) + "/" + string(bc.target_peers) + " delivered")
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T7: No target peers for broadcast")
+        fail_count = fail_count + 1
+    }
+
+    // T8 — Get network status
+    let status = net.get_network_status()
+    if status.active_connections > 0 {
+        print("[PASS] T8: Status: active=" + string(status.active_connections) + " latency=" + string(status.average_latency_ms) + "ms")
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T8: No active connections in status")
+        fail_count = fail_count + 1
+    }
+
+    // T9 — Peer metrics
+    let metrics = net.get_peer_metrics()
+    if metrics.connection_count > 0 {
+        print("[PASS] T9: Metrics: connections=" + string(metrics.connection_count) + " avg_latency=" + string(metrics.average_latency_ms))
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T9: No connections in metrics")
+        fail_count = fail_count + 1
+    }
+
+    // T10 — Disconnect peer
+    let disc = net.disconnect_from_peer("peer_001", "test_disconnect")
+    if disc.success {
+        print("[PASS] T10: Disconnected peer_001")
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T10: Disconnect failed: " + disc.explanation)
+        fail_count = fail_count + 1
+    }
+
+    // T11 — Disconnect non-existent peer
+    let bad_disc = net.disconnect_from_peer("nonexistent_peer", "cleanup")
+    if !bad_disc.success {
+        print("[PASS] T11: Non-existent peer disconnect handled")
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T11: Should fail for non-existent peer")
+        fail_count = fail_count + 1
+    }
+
+    // T12 — Blacklist peer
+    net.connect_to_peer("bad_peer", "evil.node.io:666", "ZIVER")
+    let bl_result = net.blacklist_peer("bad_peer", "malicious activity")
+    if bl_result {
+        let bl_conn = net.connect_to_peer("bad_peer", "evil.node.io:666", "ZIVER")
+        if !bl_conn.success {
+            print("[PASS] T12: Blacklisted peer rejected on reconnect")
+            pass_count = pass_count + 1
+        } else {
+            print("[FAIL] T12: Blacklisted peer should be rejected")
+            fail_count = fail_count + 1
+        }
+    } else {
+        print("[FAIL] T12: Blacklist failed")
+        fail_count = fail_count + 1
+    }
+
+    // T13 — Protocol upgrade
+    let upgrade = net.upgrade_protocol("1.5")
+    if upgrade.success {
+        print("[PASS] T13: Protocol upgraded: " + upgrade.old_version + " -> " + upgrade.new_version)
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T13: Upgrade failed: " + upgrade.explanation)
+        fail_count = fail_count + 1
+    }
+
+    // T14 — Unsupported protocol version rejected
+    let bad_upgrade = net.upgrade_protocol("0.5")
+    if !bad_upgrade.success {
+        print("[PASS] T14: Unsupported version rejected: " + bad_upgrade.explanation)
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T14: Should reject unsupported version")
+        fail_count = fail_count + 1
+    }
+
+    // T15 — Emergency isolate
+    let em = net.emergency_isolate("security test")
+    if em.success {
+        if em.disconnected_peers > 0 {
+            print("[PASS] T15: Emergency isolated, disconnected=" + string(em.disconnected_peers))
+            pass_count = pass_count + 1
+        } else {
+            print("[PASS] T15: Emergency isolated (no active peers)")
+            pass_count = pass_count + 1
+        }
+    } else {
+        print("[FAIL] T15: Emergency isolate failed")
+        fail_count = fail_count + 1
+    }
+
+    // T16 — After isolation, node is not listening
+    let status2 = net.get_network_status()
+    if status2.is_listening == 0 {
+        print("[PASS] T16: Node not listening after isolation")
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T16: Node should not be listening after isolation")
+        fail_count = fail_count + 1
+    }
+
+    // T17 — Discover peers
+    let start2 = net.start_node(config)
+    let disc_result = net.discover_peers("ZIVER")
+    if disc_result.success {
+        print("[PASS] T17: Discovery: found=" + string(disc_result.discovered_peers) + " connected=" + string(disc_result.connected_peers))
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T17: Discovery failed")
+        fail_count = fail_count + 1
+    }
+
+    // T18 — Stop node
+    let stop = net.stop_node()
+    if stop.success {
+        print("[PASS] T18: Node stopped, uptime=" + string(stop.uptime_seconds) + "s disconnected=" + string(stop.disconnected_peers))
+        pass_count = pass_count + 1
+    } else {
+        print("[FAIL] T18: Stop failed: " + stop.explanation)
+        fail_count = fail_count + 1
+    }
+
+    // Summary
+    let total = pass_count + fail_count
+    print("")
+    print("=== Network Results: " + string(pass_count) + "/" + string(total) + " passed ===")
+    if fail_count == 0 {
+        print("ALL TESTS PASSED")
+    } else {
+        print("FAILURES: " + string(fail_count))
     }
 }
 
+test_network()
+
+// -------------------------------------------------------------------
+// Exports
+// -------------------------------------------------------------------
 export {
     P2PNetwork,
-    P2PNetworkProtocol,
     NETWORK_POLICIES,
-    test_enhanced_network,
     NodeConfig,
-    PeerInfo,
-    NetworkBroadcast,
-    DiscoveryOptions
+    NodeStartResult,
+    NodeStopResult,
+    ConnectionResult,
+    DisconnectionResult,
+    BroadcastResult,
+    DiscoveryResult,
+    NetworkStatus,
+    ValidationResult,
+    EmergencyResult,
+    UpgradeResult,
+    PeerMetrics
 }

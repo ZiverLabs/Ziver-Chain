@@ -22,7 +22,7 @@
 |---|---|
 | Zexus version | **v1.8.3** (installed & verified) |
 | Total `.zx` code | ~20,000 lines across 17 files (original); shrinking as files are rewritten |
-| Phase 0 progress | **7/17 files rewritten and passing** |
+| Phase 0 progress | **8/17 files rewritten and passing** |
 | Architecture | Well-structured: core/, network/, rpc/, runtime/, contracts/ |
 | Runs? | **Not yet** — individual files pass standalone, `main.zx` integration pending |
 | Known bugs | 25 issues tracked (R-001–R-025); R-001–R-019 fixed in v1.8.3 except R-015 partial |
@@ -39,8 +39,8 @@
 | src/core/zvm.zx | ~1674 | ~1131 | 18/18 pass | ✅ Done |
 | src/core/social_capital.zx | ~1238 | ~530 | 15/15 pass | ✅ Done |
 | src/core/seb_defi.zx | ~1213 | ~750 | 18/18 pass | ✅ Done |
-| src/network/network.zx | ~1819 | — | — | 🔄 Next |
-| src/network/p2p.zx | ~2870 | — | — | ❌ Pending |
+| src/network/network.zx | ~1819→1139 | 18/18 | ✅ | Done |
+| src/network/p2p.zx | ~2870 | — | — | 🔄 Next |
 | src/rpc/server.zx | ~2753 | — | — | ❌ Pending |
 | src/rpc/websocket.zx | ~3006 | — | — | ❌ Pending |
 | src/runtime/contract_runtime.zx | ~583 | — | — | ❌ Pending |
@@ -106,7 +106,7 @@ exports
 - [x] Rewrite src/core/zvm.zx — 18/18 tests pass
 - [x] Rewrite src/core/social_capital.zx — 15/15 tests pass
 - [x] Rewrite src/core/seb_defi.zx — 18/18 tests pass
-- [ ] Rewrite src/network/network.zx
+- [x] Rewrite src/network/network.zx
 - [ ] Rewrite src/network/p2p.zx
 - [ ] Rewrite src/rpc/server.zx
 - [ ] Rewrite src/rpc/websocket.zx

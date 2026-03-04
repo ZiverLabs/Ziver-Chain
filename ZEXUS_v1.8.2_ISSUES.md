@@ -270,7 +270,7 @@ print(remainder)  // 1.5
 | src/core/zvm.zx | ~1674 | ✅ Done | Ziver Virtual Machine — deploy, execute, upgrade, security, metrics |
 | src/core/social_capital.zx | ~1238→~530 | ✅ Done | 15/15 tests pass |
 | src/core/seb_defi.zx | ~1213→~750 | ✅ Done | 18/18 tests pass |
-| src/network/network.zx | ~1819 | ❌ Not started | P2P networking |
+| src/network/network.zx | ~1819→~1139 | ✅ Done | 18/18 tests pass |
 | src/network/p2p.zx | ~2870 | ❌ Not started | Peer discovery |
 | src/rpc/server.zx | ~2753 | ❌ Not started | JSON-RPC server |
 | src/rpc/websocket.zx | ~3006 | ❌ Not started | WebSocket server |
@@ -302,4 +302,4 @@ Added missing range(start, end, step), typeof(val), and abs(num) built-in functi
 Test results: 24 .zx test files all passing, 300 unit tests passing, 0 CodeQL alerts.
 
 ---
-*Last updated: 2026-03-04 — v1.8.3, seb_defi.zx rewrite complete, R-026 new*
+*Last updated: 2026-03-04 — v1.8.3, network.zx rewrite complete (8/17 done)*
